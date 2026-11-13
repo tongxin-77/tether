@@ -1,0 +1,13 @@
+# Cargo workspace：GUI（src-tauri）+ 后台进程（daemon）+ 共享协议类型（proto）
+# 产物统一输出到根目录 target/，GUI 与 daemon 同目录，便于互相拉起
+[workspace]
+members = ["src-tauri", "daemon", "proto"]
+resolver = "3"
+
+# profile 只在 workspace 根生效，从 src-tauri/Cargo.toml 迁移至此
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

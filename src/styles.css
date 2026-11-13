@@ -1,0 +1,614 @@
+/* 视觉语言参照 Lobe UI（@lobehub/ui）暗色主题：只移植其设计 token 的取值，不引入任何依赖。
+   中性色取 Lobe 暗色 gray 阶梯（colorBgContainer #0d0d0d、文本阶梯 #e6e6e6 / #b4b4b4 / #8f8f8f / #6b6b6b），
+   主色取其默认的中性墨色（primary 按钮为浅底深字），圆角 8 / 12 / 6 / 4，字号 14 / 12。
+   布局为“浮起卡片”：窗口底色 --app-bg 略亮于终端卡片 --bg，侧栏 / 文件树直接坐在底色上，无分隔线。
+   窗口透明度：窗口为透明窗口，三层底色的 alpha 取 --alpha（main.ts 按设置写入，默认 1 即完全不透明）；
+   对话框 / 菜单等浮层用 --alpha-strong（至少 0.88）保证可读。文字、图标、边框颜色不受影响 */
+:root {
+  --alpha: 1;
+  --alpha-strong: 1;
+  --lobe-bg-layout: #080808;
+  /* 窗口底色：介于 Lobe 暗色 gray 阶梯的 #111 与 #1a1a1a 之间，衬出更深的终端卡片（#161616） */
+  --app-bg: rgba(22, 22, 22, var(--alpha));
+  /* #0d0d0d */
+  --lobe-bg-container: rgba(13, 13, 13, var(--alpha));
+  /* #1a1a1a */
+  --lobe-bg-elevated: rgba(26, 26, 26, var(--alpha-strong));
+  --lobe-fill: rgba(255, 255, 255, 0.15);
+  --lobe-fill-secondary: rgba(255, 255, 255, 0.1);
+  --lobe-fill-tertiary: rgba(255, 255, 255, 0.06);
+  --lobe-fill-quaternary: rgba(255, 255, 255, 0.03);
+  --lobe-border: #333333;
+  --lobe-border-secondary: #222222;
+  --lobe-text: #e6e6e6;
+  --lobe-text-secondary: #b4b4b4;
+  --lobe-text-tertiary: #8f8f8f;
+  --lobe-text-quaternary: #6b6b6b;
+  --lobe-primary: #e6e6e6;
+  --lobe-primary-hover: #ffffff;
+  --lobe-primary-text: #0d0d0d;
+  --lobe-success: #55b467;
+  --lobe-warning: #e8a33d;
+  --lobe-error: #f0605e;
+  --lobe-info: #4a9cf6;
+  --lobe-radius: 8px;
+  --lobe-radius-lg: 12px;
+  --lobe-radius-sm: 6px;
+  --lobe-radius-xs: 4px;
+  --lobe-font: "HarmonyOS Sans", "Segoe UI", "SF Pro Display", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --lobe-font-code: "Cascadia Mono", "Fira Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --lobe-shadow: 0 0 0 1px var(--lobe-border-secondary), 0 6px 16px rgba(0, 0, 0, 0.32), 0 9px 28px 8px rgba(0, 0, 0, 0.2);
+  --lobe-focus-ring: 0 0 0 2px rgba(255, 255, 255, 0.1);
+  --lobe-motion: 150ms ease-out;
+
+  /* 原有语义变量映射到 Lobe token，其余规则沿用 */
+  --bg: var(--lobe-bg-container);
+  --side: var(--app-bg);
+  --hover: var(--lobe-fill-tertiary);
+  --active: var(--lobe-fill-secondary);
+  --fg: var(--lobe-text);
+  --muted: var(--lobe-text-tertiary);
+  /* 强调色沿用 Lobe 中性墨色（不引入新色相）：激活会话左侧竖条 */
+  --accent: var(--lobe-primary);
+  --card-head: 32px;
+  font-family: var(--lobe-font);
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--side);
+}
+
+* { box-sizing: border-box; }
+
+/* 滚动条：细、透明轨道；区域未悬停时淡化，悬停加深，拖动更亮。xterm 自绘滚动条在 main.ts 的 theme 里用同一组颜色 */
+:root {
+  --sb-thumb: rgba(255, 255, 255, 0.12);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.24);
+  --sb-thumb-active: rgba(255, 255, 255, 0.4);
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; }
+::-webkit-scrollbar-thumb {
+  min-height: 24px;
+  background-color: var(--sb-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 5px;
+}
+*:not(:hover)::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.04); }
+::-webkit-scrollbar-thumb:hover { background-color: var(--sb-thumb-hover); }
+::-webkit-scrollbar-thumb:active { background-color: var(--sb-thumb-active); }
+.xterm .xterm-scrollable-element > .scrollbar > .slider { border-radius: 5px; }
+/* xterm 6 不再给 .xterm-viewport 写内联背景，xterm.css 默认的 #000 会盖住透明主题（半透明时终端区不透明）；底色改由 xterm-scrollable-element 上的 theme.background 提供 */
+.xterm .xterm-viewport { background-color: transparent; }
+
+html, body { height: 100%; margin: 0; overflow: hidden; }
+
+/* 窗口底色只由 :root 画一层（body / 侧栏 / 文件树不再叠加），半透明时各处透明度一致 */
+body { display: flex; }
+
+::selection { background: rgba(255, 255, 255, 0.18); }
+
+/* ---------------- 按钮：default（描边）/ primary（墨色实心）/ text（无边框）/ danger ---------------- */
+button { transition: color var(--lobe-motion), background-color var(--lobe-motion), border-color var(--lobe-motion); }
+button:focus-visible { outline: none; box-shadow: var(--lobe-focus-ring); }
+
+#settings-btn, dialog button, #empty-new, #pwsh-banner button, #pv-open {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--lobe-border);
+  border-radius: var(--lobe-radius-sm);
+  cursor: pointer;
+}
+#settings-btn:hover, dialog button:hover, #empty-new:hover, #pwsh-banner button:hover, #pv-open:hover {
+  color: var(--lobe-primary-hover);
+  background: var(--lobe-fill-tertiary);
+  border-color: #474747;
+}
+#settings-btn:active, dialog button:active, #empty-new:active, #pwsh-banner button:active, #pv-open:active { background: var(--lobe-fill-secondary); }
+
+/* primary：空状态新建入口、对话框确认（.actions 首个按钮即保存 / 确定，视觉上由 row-reverse 排在右侧） */
+#empty-new, dialog .actions button:first-child, #pwsh-install {
+  font-weight: 500;
+  color: var(--lobe-primary-text);
+  background: var(--lobe-primary);
+  border-color: var(--lobe-primary);
+}
+#empty-new:hover, dialog .actions button:first-child:hover, #pwsh-install:hover {
+  color: var(--lobe-primary-text);
+  background: var(--lobe-primary-hover);
+  border-color: var(--lobe-primary-hover);
+}
+#empty-new:active, dialog .actions button:first-child:active, #pwsh-install:active { background: #cccccc; }
+
+/* text：设置入口、提示条“不再提示” */
+#settings-btn, #pwsh-dismiss { color: var(--lobe-text-secondary); border-color: transparent; }
+#settings-btn:hover, #pwsh-dismiss:hover { border-color: transparent; }
+
+/* danger：删除类操作 */
+dialog button.danger { color: var(--lobe-error); border-color: rgba(240, 96, 94, 0.4); }
+dialog button.danger:hover { color: #ff7875; background: rgba(240, 96, 94, 0.1); border-color: var(--lobe-error); }
+dialog .actions button.danger:first-child { color: #fff; background: #d03f3d; border-color: #d03f3d; }
+dialog .actions button.danger:first-child:hover { color: #fff; background: var(--lobe-error); border-color: var(--lobe-error); }
+
+#sidebar {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#brand { height: 40px; flex-shrink: 0; display: flex; align-items: center; padding: 8px 16px 0; font-size: 13px; font-weight: 600; letter-spacing: 0.3px; color: var(--lobe-text-secondary); user-select: none; }
+
+/* 新建入口（Lobe filled 按钮：填充底色、无边框，悬停更亮） */
+#new-btn {
+  height: 32px;
+  flex-shrink: 0;
+  margin: 6px 8px 10px;
+  padding: 0 12px;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: var(--lobe-fill-tertiary);
+  border: 1px solid transparent;
+  border-radius: var(--lobe-radius);
+  cursor: pointer;
+}
+#new-btn:hover { color: var(--lobe-primary-hover); background: var(--lobe-fill-secondary); }
+#new-btn:active { background: var(--lobe-fill); }
+
+/* 设置入口：与会话项同形的列表项 + 齿轮图标 */
+#settings-btn { display: flex; align-items: center; gap: 8px; height: 36px; flex-shrink: 0; margin: 4px 8px 8px; padding: 0 12px; border-radius: var(--lobe-radius); }
+#settings-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* ---------------- 对话框 ---------------- */
+dialog {
+  width: 420px;
+  padding: 20px;
+  color: var(--fg);
+  background: var(--lobe-bg-elevated);
+  border: 1px solid var(--lobe-border-secondary);
+  border-radius: var(--lobe-radius-lg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+#settings { width: 600px; max-width: calc(100vw - 48px); }
+dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+dialog label { display: flex; flex-direction: column; gap: 6px; color: var(--lobe-text-secondary); font-size: 13px; }
+dialog select, dialog input {
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--lobe-fill-quaternary);
+  border: 1px solid var(--lobe-border);
+  border-radius: var(--lobe-radius-sm);
+  transition: border-color var(--lobe-motion), box-shadow var(--lobe-motion), background-color var(--lobe-motion);
+}
+dialog select:hover, dialog input:hover { border-color: #474747; }
+dialog select:focus, dialog input:focus { outline: none; border-color: var(--lobe-text-tertiary); box-shadow: var(--lobe-focus-ring); }
+dialog input::placeholder { color: var(--lobe-text-quaternary); }
+dialog select option { color: var(--fg); background: var(--lobe-bg-elevated); }
+dialog .hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+dialog .actions { display: flex; flex-direction: row-reverse; gap: 8px; margin-top: 20px; }
+dialog .actions button { height: 32px; margin: 0; padding: 0 16px; }
+
+/* ---------------- 侧栏会话列表（Lobe List 项：圆角、悬停填充） ---------------- */
+#session-list { flex: 1; list-style: none; margin: 0; padding: 0 8px; overflow-y: auto; }
+
+/* 两行：状态点 + 名称（主机标签、×）/ 启动目录 */
+#session-list li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-height: 44px;
+  margin-bottom: 2px;
+  padding: 5px 8px 5px 12px;
+  color: var(--lobe-text-secondary);
+  border-radius: var(--lobe-radius);
+  cursor: pointer;
+  transition: background-color var(--lobe-motion), color var(--lobe-motion);
+}
+#session-list li:hover { color: var(--fg); background: var(--hover); }
+#session-list li.active { color: var(--fg); background: var(--active); }
+#session-list li.active::before { content: ""; position: absolute; top: 12px; bottom: 12px; left: 0; width: 3px; background: var(--accent); border-radius: 2px; }
+#session-list .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 第二行：Claude 状态（有时）+ 启动目录 */
+#session-list .sub { display: flex; align-items: center; gap: 6px; min-width: 0; padding-left: 16px; font-size: 12px; }
+#session-list .cwd { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--lobe-text-quaternary); }
+#session-list li.active .cwd { color: var(--lobe-text-tertiary); }
+#session-list li.exited .name { color: var(--muted); text-decoration: line-through; }
+
+/* 状态点：运行中绿 / 等待确认橙 / 已退出灰；未读时加外圈 */
+.dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; }
+li.running .dot { background: var(--lobe-success); }
+li.waiting .dot { background: var(--lobe-warning); }
+li.exited .dot { background: var(--lobe-text-quaternary); }
+li.unread .dot { box-shadow: 0 0 0 2px var(--side), 0 0 0 3px var(--lobe-warning); }
+
+.name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.name input { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--lobe-text-tertiary); border-radius: var(--lobe-radius-xs); outline: none; }
+
+.close { width: 18px; line-height: 18px; flex-shrink: 0; color: var(--muted); text-align: center; border-radius: var(--lobe-radius-xs); visibility: hidden; }
+li:hover .close, li.active .close { visibility: visible; }
+.close:hover { color: var(--fg); background: var(--lobe-fill-secondary); }
+
+/* 终端区：浮在底色上的圆角卡片（与窗口上下边缘留 8px，左右由侧栏 / 文件树自身留白） */
+#terminals {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  margin: 8px 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: var(--lobe-radius-lg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+/* 卡片标题行：会话名 · shell / 主机 */
+#card-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--card-head);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--lobe-text-tertiary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  user-select: none;
+}
+#ch-name { flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--lobe-text-secondary); }
+#ch-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#ch-meta:not(:empty)::before { content: "·"; margin-right: 6px; color: var(--lobe-text-quaternary); }
+#ch-claude { flex-shrink: 0; margin-left: 4px; }
+
+/* Claude 状态标记（侧栏第二行 / 卡片标题行）：✳ + 状态文字，静态无动画 */
+.cc { flex-shrink: 0; font-size: 12px; white-space: nowrap; color: var(--lobe-text-tertiary); }
+.cc.thinking { color: var(--lobe-info); }
+.cc.waiting { color: var(--lobe-warning); }
+.cc.background { color: var(--lobe-info); }
+.cc.done { color: var(--lobe-success); }
+
+/* 复制成功的短暂提示，不拦截鼠标 */
+#copied {
+  position: absolute;
+  top: calc(var(--card-head) + 8px);
+  right: 16px;
+  z-index: 7;
+  padding: 2px 10px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--lobe-text-secondary);
+  background: var(--lobe-bg-elevated);
+  border: 1px solid var(--lobe-border-secondary);
+  border-radius: var(--lobe-radius-sm);
+  pointer-events: none;
+}
+
+/* 每个会话一个容器，切换时只隐藏不销毁 */
+/* 留白用定位偏移而非 padding：fit 插件读父元素高度时会把 border-box 的 padding 算进可用高度，导致底部被裁；底部 / 右侧留几像素避开卡片圆角 */
+.term { position: absolute; top: calc(var(--card-head) + 4px); right: 2px; bottom: 6px; left: 8px; }
+.term.hidden { display: none; }
+
+[hidden] { display: none !important; }
+
+/* 无会话时的空状态：最近关闭的目录（与 .term 同级，不影响 xterm 容器） */
+#empty { position: absolute; inset: var(--card-head) 0 0 0; display: flex; justify-content: center; padding: 24px; overflow-y: auto; }
+/* 内容整体左对齐于居中的盒子：标题、按钮、“最近关闭”与列表行文字同一左边线（列表行用负外边距抵消自身内边距）；margin auto 垂直居中，超高时可滚动 */
+#empty-box { width: min(520px, 100%); display: flex; flex-direction: column; margin: auto 0; }
+#empty-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--fg); }
+#empty-sub { margin: 6px 0 16px; color: var(--muted); font-size: 13px; }
+#recent-head { margin: 28px 0 6px; color: var(--muted); font-size: 12px; }
+#recent-list { list-style: none; margin: 0 -10px; padding: 0; }
+#recent-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: var(--lobe-radius);
+  cursor: pointer;
+  transition: background-color var(--lobe-motion);
+}
+#recent-list li:hover { background: var(--hover); }
+#recent-list li.gone { opacity: 0.45; cursor: default; }
+#recent-list li.gone:hover { background: none; }
+.recent-icon { flex-shrink: 0; width: 18px; text-align: center; }
+.recent-path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.recent-time { flex-shrink: 0; color: var(--muted); font-size: 12px; }
+#recent-list .close { cursor: pointer; }
+#recent-none { margin: 28px 0 0; color: var(--lobe-text-quaternary); font-size: 13px; }
+#empty-new { align-self: flex-start; height: 32px; padding: 0 16px; }
+
+/* 未检测到 PowerShell 7 的提示条（Lobe Alert 风格）：在卡片标题行下方，显示时 .term / 空状态 / 预览整体下移（main.ts 随后重新 fit） */
+#pwsh-banner {
+  position: absolute;
+  top: var(--card-head);
+  left: 0;
+  right: 0;
+  height: 30px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  font-size: 12px;
+  color: var(--lobe-text-secondary);
+  background: linear-gradient(rgba(74, 156, 246, 0.08), rgba(74, 156, 246, 0.08)), var(--bg);
+  border-bottom: 1px solid rgba(74, 156, 246, 0.2);
+}
+#pwsh-banner::before { content: "i"; flex-shrink: 0; width: 14px; height: 14px; font: 600 10px/14px var(--lobe-font); color: var(--lobe-primary-text); text-align: center; background: var(--lobe-info); border-radius: 50%; }
+#pwsh-banner span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#pwsh-banner button { height: 22px; padding: 0 10px; font-size: 12px; border-radius: var(--lobe-radius-xs); }
+#terminals.banner .term { top: calc(var(--card-head) + 34px); }
+#daemon-banner {
+  position: absolute;
+  top: var(--card-head);
+  left: 0;
+  right: 0;
+  height: 30px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--lobe-text-secondary);
+  background: linear-gradient(rgba(232, 163, 61, 0.14), rgba(232, 163, 61, 0.14)), var(--bg);
+  border-bottom: 1px solid rgba(232, 163, 61, 0.35);
+}
+#daemon-banner[hidden] { display: none; }
+#terminals.banner #empty, #terminals.banner #preview { top: calc(var(--card-head) + 30px); }
+
+/* ---------------- 菜单（Lobe Dropdown：浮层底色、圆角、内缩的圆角菜单项） ---------------- */
+#sidebar { position: relative; }
+#new-menu {
+  position: absolute;
+  top: 82px;
+  left: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--lobe-bg-elevated);
+  border-radius: var(--lobe-radius);
+  box-shadow: var(--lobe-shadow);
+}
+#new-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 6px 10px;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--lobe-radius-sm);
+  cursor: pointer;
+}
+#new-menu button:hover { background: var(--lobe-fill-tertiary); }
+#new-menu small, .host-addr { color: var(--muted); font-size: 12px; }
+
+/* 设置面板主机区 */
+.section-head { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; padding-bottom: 8px; font-weight: 600; border-bottom: 1px solid var(--lobe-border-secondary); }
+dialog .section-head button { height: 24px; margin: 0; padding: 0 10px; font-size: 12px; font-weight: 400; }
+#host-list { list-style: none; margin: 4px 0 0; padding: 0; max-height: 220px; overflow-y: auto; }
+#host-list li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--lobe-radius-sm); }
+#host-list li:hover { background: var(--lobe-fill-quaternary); }
+#host-list .host-name { flex-shrink: 0; }
+#host-list .host-addr { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#host-list button { height: 24px; margin: 0; padding: 0 8px; font-size: 12px; }
+#completion-list { list-style: none; margin: 4px 0 0; padding: 0; max-height: 220px; overflow-y: auto; }
+#completion-list li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+#completion-list input { flex: 1; min-width: 0; height: 28px; }
+#completion-list input:first-child { font-family: var(--lobe-font-code); }
+#completion-list button { height: 24px; margin: 0; padding: 0 8px; font-size: 12px; }
+/* Lobe Tag：填充底色 + 细边 */
+.tag, .host {
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--lobe-text-secondary);
+  background: var(--lobe-fill-tertiary);
+  border: 1px solid var(--lobe-border-secondary);
+  border-radius: var(--lobe-radius-xs);
+}
+
+/* 设置面板 Claude Code 集成 */
+#cc-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+#cc-status { flex: 1; color: var(--muted); font-size: 13px; }
+#cc-status.on { color: var(--lobe-success); }
+#cc-status.outdated { color: var(--lobe-warning); }
+dialog #cc-row button { height: 28px; margin: 0; padding: 0 12px; }
+#cc-path { word-break: break-all; font-family: var(--lobe-font-code); }
+#sound-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+#sound-row .check { flex: 1; flex-direction: row; align-items: center; }
+dialog #sound-row button { height: 28px; margin: 0; padding: 0 12px; }
+
+#host-dialog label { margin-bottom: 12px; }
+#h-pw-state { display: flex; align-items: center; gap: 8px; margin-top: -4px; }
+#h-pw-status { flex: 1; color: var(--muted); font-size: 13px; }
+#h-pw-status.on { color: var(--lobe-success); }
+dialog #h-pw-state button { height: 28px; margin: 0; padding: 0 12px; }
+
+/* 交互提示：密码 / 口令 / 主机指纹 */
+#prompt-dialog h3 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+#p-host { color: var(--lobe-text-secondary); font-family: var(--lobe-font-code); font-size: 13px; }
+#p-message { margin: 8px 0; line-height: 1.6; }
+#p-fingerprint { display: block; margin-bottom: 8px; padding: 8px 10px; font-family: var(--lobe-font-code); word-break: break-all; background: var(--lobe-fill-tertiary); border: 1px solid var(--lobe-border-secondary); border-radius: var(--lobe-radius-sm); }
+#p-input { width: 100%; }
+#prompt-dialog .check, #fs-conflict .check { flex-direction: row; align-items: center; margin-top: 10px; color: var(--muted); }
+dialog input[type="checkbox"] { width: 16px; height: 16px; margin: 0 8px 0 0; padding: 0; accent-color: var(--lobe-primary); }
+
+/* ---------------- 侧边文件树（终端右侧，可收起） ---------------- */
+#files {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+#files.collapsed { width: 28px; }
+#files.collapsed > :not(#files-head), #files.collapsed #files-head > :not(#fs-toggle) { display: none; }
+#files-head { display: flex; align-items: center; gap: 2px; padding: 12px 6px 2px; }
+#files.collapsed #files-head { padding: 12px 2px 2px; }
+#fs-title { flex: 1; min-width: 0; padding: 0 4px; font-size: 13px; font-weight: 600; color: var(--lobe-text-secondary); user-select: none; }
+#fs-path { flex-shrink: 0; min-height: 18px; padding: 0 12px 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+/* Lobe ActionIcon：方形图标按钮，悬停填充 */
+.fs-btn {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--lobe-radius-xs);
+  cursor: pointer;
+}
+.fs-btn:hover { color: var(--fg); background: var(--lobe-fill-secondary); }
+.fs-btn:disabled { opacity: 0.4; cursor: default; background: none; }
+
+#fs-tree { flex: 1; overflow: auto; padding: 4px; user-select: none; font-size: 13px; }
+#fs-tree:focus { outline: none; }
+.fs-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding-right: 6px;
+  color: var(--lobe-text-secondary);
+  white-space: nowrap;
+  border-radius: var(--lobe-radius-xs);
+  cursor: pointer;
+}
+.fs-row:hover { color: var(--fg); background: var(--hover); }
+.fs-row.selected { color: var(--fg); background: var(--active); }
+.fs-arrow { width: 10px; flex-shrink: 0; color: var(--lobe-text-quaternary); font-size: 10px; text-align: center; }
+.fs-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.fs-icon path[stroke] { stroke: var(--lobe-text-tertiary); }
+.fs-name { overflow: hidden; text-overflow: ellipsis; }
+.fs-row.link .fs-name { font-style: italic; }
+.fs-note { padding-top: 3px; padding-bottom: 3px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fs-note.error { color: var(--lobe-error); white-space: normal; word-break: break-all; }
+/* 拖入上传时的目标高亮 */
+#fs-tree.drop, .fs-row.drop { outline: 1px dashed var(--lobe-text-tertiary); outline-offset: -1px; background: var(--lobe-fill-tertiary); }
+
+#fs-transfers .fs-transfer { padding: 6px 8px; font-size: 12px; border-top: 1px solid var(--lobe-border-secondary); }
+.fs-t-line { display: flex; gap: 8px; }
+.fs-t-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.fs-t-pct { flex-shrink: 0; color: var(--muted); }
+.fs-t-bar { height: 3px; margin-top: 4px; overflow: hidden; background: var(--lobe-fill-secondary); border-radius: 2px; }
+.fs-t-bar i { display: block; width: 0; height: 100%; background: var(--lobe-primary); border-radius: 2px; }
+
+/* claude 命令补全弹出层：定位在终端光标下方（main.ts / claude-complete.ts 计算坐标） */
+#cc-popup {
+  position: absolute;
+  z-index: 8;
+  min-width: 240px;
+  max-width: 460px;
+  padding: 4px;
+  overflow-y: auto;
+  font-size: 12px;
+  background: var(--lobe-bg-elevated);
+  border-radius: var(--lobe-radius);
+  box-shadow: var(--lobe-shadow);
+}
+.cc-item { display: flex; align-items: baseline; gap: 12px; height: 26px; padding: 0 8px; line-height: 26px; white-space: nowrap; border-radius: var(--lobe-radius-sm); cursor: pointer; }
+.cc-item b { flex-shrink: 0; font-family: var(--lobe-font-code); font-weight: 400; color: var(--fg); }
+.cc-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.cc-item:hover { background: var(--lobe-fill-tertiary); }
+.cc-item.sel { background: var(--lobe-fill-secondary); }
+
+/* 文件树右键菜单 */
+#fs-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 170px;
+  padding: 4px;
+  background: var(--lobe-bg-elevated);
+  border-radius: var(--lobe-radius);
+  box-shadow: var(--lobe-shadow);
+}
+#fs-menu button { display: block; width: 100%; padding: 5px 10px; font: inherit; font-size: 13px; color: var(--fg); text-align: left; background: none; border: none; border-radius: var(--lobe-radius-sm); cursor: pointer; }
+#fs-menu button:hover { background: var(--lobe-fill-tertiary); }
+#fs-menu button:disabled { color: var(--lobe-text-quaternary); background: none; cursor: default; }
+#fs-menu button.danger { color: var(--lobe-error); }
+#fs-menu button.danger:hover { background: rgba(240, 96, 94, 0.12); }
+#fs-menu hr { margin: 4px 0; border: none; border-top: 1px solid var(--lobe-border-secondary); }
+
+#fs-d-msg, #fs-c-msg { margin: 0 0 12px; line-height: 1.6; word-break: break-all; }
+#fs-c-hint { margin: 0; line-height: 1.6; }
+#fs-d-input { width: 100%; }
+
+/* ---------------- Markdown 预览：覆盖终端区域（.term 样式不变），排版参照 Lobe Markdown ---------------- */
+/* 预览底色由终端卡片提供（不再叠一层），打开时隐藏下方终端，半透明下也不透出终端文字 */
+#preview { position: absolute; inset: var(--card-head) 0 0 0; z-index: 5; display: flex; flex-direction: column; }
+#terminals:has(> #preview:not([hidden])) > .term { visibility: hidden; }
+#pv-head { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 12px; background: var(--side); border-bottom: 1px solid var(--lobe-border-secondary); }
+#pv-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+#pv-open { height: 24px; padding: 0 10px; font-size: 12px; }
+#pv-body { flex: 1; overflow: auto; outline: none; }
+#pv-doc {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+  font-family: var(--lobe-font);
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--lobe-text-secondary);
+  word-wrap: break-word;
+}
+#pv-doc strong { color: var(--fg); }
+#pv-doc h1, #pv-doc h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--lobe-border-secondary); }
+#pv-doc h1, #pv-doc h2, #pv-doc h3, #pv-doc h4, #pv-doc h5, #pv-doc h6 { margin: 1.4em 0 0.6em; font-weight: 600; line-height: 1.35; color: var(--fg); }
+#pv-doc h1 { font-size: 1.85em; }
+#pv-doc h2 { font-size: 1.5em; }
+#pv-doc h3 { font-size: 1.25em; }
+#pv-doc a { color: var(--lobe-info); text-decoration: none; }
+#pv-doc a:hover { text-decoration: underline; }
+#pv-doc a:not([href]) { color: inherit; text-decoration: underline dotted; }
+#pv-doc code { padding: 0.15em 0.4em; font-family: var(--lobe-font-code); font-size: 0.875em; color: var(--fg); background: var(--lobe-fill-secondary); border: 1px solid var(--lobe-border-secondary); border-radius: var(--lobe-radius-xs); }
+#pv-doc pre { padding: 12px 16px; overflow-x: auto; line-height: 1.6; background: var(--lobe-fill-quaternary); border: 1px solid var(--lobe-border-secondary); border-radius: var(--lobe-radius); }
+#pv-doc pre code { padding: 0; background: none; border: none; }
+#pv-doc blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 3px solid var(--lobe-border); }
+#pv-doc table { border-collapse: collapse; display: block; overflow-x: auto; }
+#pv-doc th, #pv-doc td { padding: 6px 12px; border: 1px solid var(--lobe-border); }
+#pv-doc th { color: var(--fg); font-weight: 600; text-align: left; background: var(--lobe-fill-tertiary); }
+#pv-doc hr { border: none; border-top: 1px solid var(--lobe-border-secondary); }
+#pv-doc li:has(> input[type="checkbox"]) { list-style: none; }
+#pv-doc input[type="checkbox"] { accent-color: var(--lobe-primary); }
+#pv-doc .md-img { color: var(--muted); font-style: italic; }
+
+/* 设置面板外观区 */
+dialog label.range { margin-top: 12px; }
+dialog label.range span { display: flex; justify-content: space-between; }
+dialog label.range output { color: var(--muted); font-family: var(--lobe-font-code); font-size: 12px; }
+/* Lobe Slider 的墨色滑块：原生 range 用 accent-color 近似 */
+dialog input[type="range"] { height: 16px; padding: 0; background: none; border: none; box-shadow: none; accent-color: var(--lobe-primary); cursor: pointer; }
+
+/* 表格单元格内拖选的高亮，与 xterm 原生选区同色 */
+.cell-sel {
+  background: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+}
+
+/* 会话项拖动中（拖出窗口外松开即成为独立窗口） */
+#session-list li.dragging { opacity: 0.5; cursor: grabbing; }
+/* 拖出的独立窗口：只有终端卡片，无会话列表与文件面板 */
+body.detached #sidebar, body.detached #files { display: none; }
+body.detached #terminals { margin: 8px; }

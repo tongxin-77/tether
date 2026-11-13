@@ -1,0 +1,27 @@
+[package]
+name = "tether"
+version = "0.1.0"
+description = "轻量多会话终端（GUI 查看器）"
+authors = ["you"]
+edition = "2024"
+
+[lib]
+# `_lib` 后缀用于避免 Windows 上 lib 与 bin 同名冲突，见 https://github.com/rust-lang/cargo/issues/8519
+name = "tether_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.8"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+proto = { path = "../proto" }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["net", "io-util", "sync", "time"] }
+# 读系统剪贴板中资源管理器复制的文件（CF_HDROP）与剪贴板序号，供文件树粘贴
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_UI_Shell"] }
+
+# release profile 已迁移到 workspace 根 Cargo.toml

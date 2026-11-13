@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tether</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <div id="brand">Tether</div>
+      <button id="new-btn" title="新建本地或远程会话">＋ 新建会话</button>
+      <div id="new-menu" hidden></div>
+      <ul id="session-list"></ul>
+      <button id="settings-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>设置</button>
+    </aside>
+    <!-- 终端区为浮起的圆角卡片：顶部标题行显示当前会话名 · shell / 主机 -->
+    <main id="terminals">
+      <div id="card-head"><span id="ch-name"></span><span id="ch-meta"></span><span id="ch-claude" hidden></span></div>
+      <!-- 复制成功的短暂提示 -->
+      <div id="copied" hidden>已复制</div>
+      <!-- 未检测到 PowerShell 7 时的安装提示（可关闭），位于卡片标题行下方；显示时终端区内容整体下移 -->
+      <div id="pwsh-banner" hidden>
+        <span>未检测到 PowerShell 7，新建会话将使用 Windows PowerShell</span>
+        <button id="pwsh-install">安装</button>
+        <button id="pwsh-dismiss">不再提示</button>
+      </div>
+      <!-- 与后台服务的连接断开（daemon 崩溃 / 被结束）时显示，重连成功后隐藏；覆盖在 PowerShell 提示条之上 -->
+      <div id="daemon-banner" hidden>后台服务已断开，正在重连…</div>
+      <!-- 无会话时的空状态：最近关闭的目录 -->
+      <div id="empty" hidden>
+        <div id="empty-box">
+          <h2 id="empty-title">没有打开的会话</h2>
+          <p id="empty-sub">新建一个本地会话，或从最近关闭的目录继续</p>
+          <button id="empty-new">＋ 新建本地会话</button>
+          <div id="recent-head">最近关闭</div>
+          <ul id="recent-list"></ul>
+          <p id="recent-none">暂无最近关闭的会话</p>
+        </div>
+      </div>
+      <!-- Markdown 预览：覆盖在终端上方（与 .term 同级，不影响 xterm 容器） -->
+      <div id="preview" hidden>
+        <div id="pv-head">
+          <span id="pv-name"></span>
+          <button id="pv-open">用默认程序打开</button>
+          <button id="pv-close" class="fs-btn" title="关闭（Esc）">×</button>
+        </div>
+        <div id="pv-body" tabindex="-1"><article id="pv-doc"></article></div>
+      </div>
+    </main>
+    <aside id="files">
+      <div id="files-head">
+        <button id="fs-toggle" class="fs-btn"></button>
+        <span id="fs-title">文件</span>
+        <button id="fs-up" class="fs-btn" title="上一级">↑</button>
+        <button id="fs-refresh" class="fs-btn" title="刷新">⟳</button>
+      </div>
+      <div id="fs-path"></div>
+      <div id="fs-tree" tabindex="0"></div>
+      <div id="fs-transfers"></div>
+    </aside>
+    <div id="fs-menu" hidden></div>
+    <dialog id="fs-dialog">
+      <form method="dialog">
+        <p id="fs-d-msg"></p>
+        <input id="fs-d-input" autocomplete="off" spellcheck="false" />
+        <div class="actions">
+          <button value="ok" id="fs-d-ok">确定</button>
+          <button value="cancel">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="fs-conflict">
+      <form method="dialog">
+        <p id="fs-c-msg"></p>
+        <p id="fs-c-hint" class="hint"></p>
+        <label class="check" id="fs-c-all-row"><input type="checkbox" id="fs-c-all" /><span id="fs-c-all-text"></span></label>
+        <div class="actions">
+          <button value="keep" autofocus>都保留</button>
+          <button value="skip">跳过</button>
+          <button value="overwrite">覆盖</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="settings">
+      <form method="dialog">
+        <label>默认 shell<select id="shell-select"></select></label>
+        <p class="hint">仅对之后新建的会话生效<span id="pwsh-hint" hidden>；未检测到 PowerShell 7，自动将使用 Windows PowerShell（可用 winget 安装）</span></p>
+        <div class="section-head">外观</div>
+        <label class="range"><span>窗口透明度<output id="opacity-val"></output></span><input type="range" id="opacity-range" min="30" max="100" step="1" /></label>
+        <p class="hint">100% 为完全不透明；调低后窗口背景半透明，文字与图标不受影响</p>
+        <div class="section-head">通知</div>
+        <div id="sound-row">
+          <label class="check"><input type="checkbox" id="sound-check" />提示音</label>
+          <button type="button" id="sound-test">试听</button>
+        </div>
+        <p class="hint">弹出系统通知时播放鸟鸣提示音；关闭后通知静音</p>
+        <div class="section-head">Claude Code 集成</div>
+        <!-- 在 Claude Code 的 settings.json 中写入 hooks，会话内的 claude 把状态与通知发回 Tether -->
+        <div id="cc-row">
+          <span id="cc-status">未启用</span>
+          <button type="button" id="cc-enable">启用</button>
+          <button type="button" id="cc-remove">移除</button>
+        </div>
+        <p class="hint" id="cc-path"></p>
+        <div class="section-head">主机<button type="button" id="host-add">+ 添加</button></div>
+        <ul id="host-list"></ul>
+        <div class="section-head">自定义联想命令<button type="button" id="completion-add">+ 添加</button></div>
+        <ul id="completion-list"></ul>
+        <p class="hint">在终端输入命令开头时弹出联想，Tab 接受</p>
+        <div class="actions">
+          <!-- 保存在前：回车提交时取首个按钮；视觉顺序由 CSS row-reverse 调换 -->
+          <button value="save">保存</button>
+          <button value="cancel">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="host-dialog">
+      <form method="dialog">
+        <label>名称<input id="h-name" required /></label>
+        <label>主机<input id="h-host" required /></label>
+        <label>端口<input id="h-port" type="number" min="1" max="65535" required /></label>
+        <label>用户<input id="h-user" required /></label>
+        <label>认证方式
+          <select id="h-auth">
+            <option value="key">密钥</option>
+            <option value="password">密码</option>
+          </select>
+        </label>
+        <label>私钥路径（可选）<input id="h-key" placeholder="留空依次尝试 ~/.ssh/id_ed25519、id_ecdsa、id_rsa" /></label>
+        <div id="h-pw-row">
+          <label id="h-pw-label">密码（保存到 Windows 凭据管理器）<input id="h-password" type="password" autocomplete="off" placeholder="留空则不修改已保存的密码" /></label>
+          <div id="h-pw-state"><span id="h-pw-status"></span><button type="button" id="h-pw-clear" class="danger">清除已保存密码</button></div>
+        </div>
+        <div class="actions">
+          <button value="save">保存</button>
+          <button value="cancel" formnovalidate>取消</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="prompt-dialog">
+      <form method="dialog">
+        <h3 id="p-title"></h3>
+        <div id="p-host"></div>
+        <p id="p-message"></p>
+        <code id="p-fingerprint"></code>
+        <input id="p-input" type="password" autocomplete="off" />
+        <label class="check" id="p-save-row"><input type="checkbox" id="p-save" />保存密码（Windows 凭据管理器）</label>
+        <div class="actions">
+          <button value="ok" id="p-ok">确定</button>
+          <button value="cancel">取消</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

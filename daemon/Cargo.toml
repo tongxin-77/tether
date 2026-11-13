@@ -1,0 +1,24 @@
+[package]
+name = "tetherd"
+version = "0.1.0"
+description = "Tether 后台进程：持有全部终端会话，GUI 通过命名管道接入"
+edition = "2024"
+
+[dependencies]
+proto = { path = "../proto" }
+portable-pty = "0.9"
+vt100 = "0.18.1"
+tauri-winrt-notification = "0.8.1"
+winreg = "0.56"
+base64 = "0.23.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tokio = { version = "1.54.1", features = ["rt", "net", "io-util", "sync", "time", "macros", "fs"] }
+# SSH 客户端：纯 Rust；不用默认的 aws-lc-rs 后端（Windows 上需 cmake/nasm），改用 ring
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+# 文件树的远程后端：在已有 SSH 连接上开 sftp 子系统（不依赖 russh 本身，基于 channel stream）
+russh-sftp = "3.0.1"
+# 保存 SSH 密码到 Windows 凭据管理器（v1 特性在 Windows 上只启用 windows-native 后端）
+keyring = "4.2.0"
+# 保持进程 MTA（CoIncrementMTAUsage，见 notify.rs）、播放提示音（PlaySoundW）与崩溃日志（SetUnhandledExceptionFilter，见 crash.rs）
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel"] }

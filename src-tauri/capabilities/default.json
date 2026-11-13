@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口与拖出的会话独立窗口（session-<id>）所需的最小权限",
+  "windows": ["main", "session-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "core:webview:allow-create-webview-window",
+    "dialog:allow-open",
+    "dialog:allow-message",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
+  ]
+}

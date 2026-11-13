@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#25304a"/>
+      <stop offset="1" stop-color="#0e1320"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#60a5fa"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="208" fill="url(#bg)"/>
+  <g transform="translate(-28 40)">
+  <!-- 提示符 > -->
+  <path d="M232 400 L392 520 L232 640" fill="none" stroke="#e6edf7" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 光标 _ -->
+  <rect x="448" y="636" width="176" height="68" rx="34" fill="#2dd4bf"/>
+  <!-- 系绳：光标拴到右上的节点 -->
+  <path d="M592 636 C 640 470, 700 380, 762 312" fill="none" stroke="url(#line)" stroke-width="54" stroke-linecap="round"/>
+  <circle cx="776" cy="296" r="72" fill="#60a5fa"/>
+  <circle cx="776" cy="296" r="30" fill="#0e1320"/>
+  </g>
+</svg>
