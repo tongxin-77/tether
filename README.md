@@ -2,7 +2,7 @@
 
 轻量多会话终端（Tauri 2 + TypeScript + xterm.js + ConPTY），会话由后台进程持有，关闭窗口不中断；可在会话中运行 Claude Code 并接收完成通知。
 
-需求文档见 [docs/](docs/README.md)（前端 / 后台服务 / 管理服务器 hub）。
+需求文档见 [docs/](docs/README.md)（前端 / 后台服务 / 管理服务器 hub）。版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 架构
 
