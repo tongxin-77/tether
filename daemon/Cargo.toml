@@ -1,6 +1,6 @@
 [package]
 name = "tetherd"
-version = "0.1.0"
+version = "0.1.1"
 license = "Apache-2.0"
 description = "Tether 后台进程：持有全部终端会话，GUI 通过命名管道接入"
 edition = "2024"

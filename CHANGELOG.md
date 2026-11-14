@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [0.1.1] - 2026-11-14
+
 ### 新增
 
 - 以 Apache-2.0 许可证开源。
@@ -37,5 +39,6 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.1.0...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/tongxin-77/tether/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tongxin-77/tether/releases/tag/v0.1.0

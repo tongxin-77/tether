@@ -3927,7 +3927,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5694,7 +5694,7 @@ dependencies = [
 
 [[package]]
 name = "tether"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proto",
  "serde_json",
@@ -5711,7 +5711,7 @@ dependencies = [
 
 [[package]]
 name = "tetherd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "keyring",
