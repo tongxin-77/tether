@@ -4,6 +4,16 @@
 
 ## [未发布]
 
+## [0.2.0] - 2026-11-14
+
+### 新增
+
+- 文件树底部新增主机信息卡片，显示当前会话所在机器（本地为本机、SSH 会话为远程服务器）的 CPU 型号与占用率、内存、显卡与网络速率，每 3 秒刷新，文件树收起或窗口不可见时暂停。
+
+### 变更
+
+- 安装包体积减小（3.9 MB → 2.7 MB）：自动更新改用系统 HTTPS，编译改为体积优先。
+
 ## [0.1.1] - 2026-11-14
 
 ### 新增
@@ -39,6 +49,7 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.1.1...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tongxin-77/tether/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tongxin-77/tether/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tongxin-77/tether/releases/tag/v0.1.0
