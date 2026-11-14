@@ -1,7 +1,7 @@
 # Tether 后台服务（daemon）需求文档
 
 > 组件：`tetherd.exe`（`daemon/`）+ 共享协议 crate（`proto/`）
-> 相关文档：[前端 GUI](frontend-requirements.md) · [管理服务器 hub](hub-requirements.md) · [索引](README.md)
+> 相关文档：[前端 GUI](frontend-requirements.md) · [管理服务器 hub](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md) · [索引](README.md)
 
 ## 1. 背景与目标
 
@@ -113,7 +113,7 @@
 | D-7.3 | 接管：hub 请求接管时先发 vt100 快照，再流式推送输出，并接受 hub 的输入 / resize；本地 GUI 可收回控制 | 接管期间本地 GUI 显示被接管标识；收回后 hub 只读或断开 | 计划中 |
 | D-7.4 | 本地开关可禁止接管（按机器；按会话为待定项） | 开关关闭时 hub 接管请求被拒绝 | 计划中 |
 
-协议与安全细节见 [hub-requirements.md](hub-requirements.md)。
+协议与安全细节见 [tether-hub 需求文档](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md)。
 
 ## 4. 接口：GUI ↔ daemon 管道协议
 

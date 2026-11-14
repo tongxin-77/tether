@@ -1,7 +1,7 @@
 # Tether 前端（GUI）需求文档
 
 > 组件：`tether.exe`，Tauri 2 + TypeScript + xterm.js（`src/` + `src-tauri/`）
-> 相关文档：[后台服务 daemon](daemon-requirements.md) · [管理服务器 hub](hub-requirements.md) · [索引](README.md)
+> 相关文档：[后台服务 daemon](daemon-requirements.md) · [管理服务器 hub](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md) · [索引](README.md)
 
 ## 1. 背景与目标
 
@@ -144,7 +144,7 @@ Tether 是面向个人的轻量 Windows 多会话终端，最初为运行 Claude
 
 - **GUI ↔ daemon**：命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），换行分隔 JSON，终端数据 base64。消息定义见 [daemon §4](daemon-requirements.md#4-接口gui--daemon-管道协议)。
 - **daemon 同时只服务一个 GUI 连接**：新 GUI 连接顶替旧连接（单实例保证正常情况下只有一个）。
-- **hub 接管提示**（计划中）：会话被 hub 接管时 GUI 需显示“被接管中”标识并提供“收回控制”，见 [hub §3.3](hub-requirements.md#33-远程接管)。
+- **hub 接管提示**（计划中）：会话被 hub 接管时 GUI 需显示“被接管中”标识并提供“收回控制”，见 [hub §3.3](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md#33-远程接管)。
 
 ## 6. 待定项
 
