@@ -14,6 +14,7 @@ import { attachFileLinks } from "./file-links";
 import { attachTableSelect, cellSelectionText, clearCellSelection } from "./table-select";
 import { closePreview, initPreview } from "./preview";
 import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
+import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostStats, showHostInfo } from "./host-info";
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -85,7 +86,8 @@ type ServerMsg =
   | { type: "hello"; version: string; proto: number }
   | { type: "claudeHooks"; path: string; enabled: boolean; outdated: boolean; error: string | null }
   | PromptMsg
-  | FsServerMsg;
+  | FsServerMsg
+  | HostStatsServerMsg;
 
 interface ShellOption {
   name: string;
@@ -131,7 +133,8 @@ type ClientMsg =
   | { type: "getClaudeHooks" }
   | { type: "setClaudeHooks"; enabled: boolean }
   | { type: "playSound" }
-  | FsClientMsg;
+  | FsClientMsg
+  | HostStatsClientMsg;
 
 /** 每个会话一个 xterm，切换时只隐藏不销毁 */
 interface View {
@@ -362,6 +365,7 @@ promptDialog.addEventListener("close", () => {
 });
 
 initFiles({ send, active: () => activeView()?.info, newSession: createAt });
+initHostInfo({ send, active: () => activeView()?.info });
 initPreview({
   openUrl: (url) => send({ type: "openUrl", url }),
   onClose: () => {
@@ -465,6 +469,8 @@ async function init() {
       case "fsResult":
       case "transfer":
         return onFsMessage(m);
+      case "hostStats":
+        return onHostStats(m);
     }
   });
   // 独立窗口：daemon 断开后会话已不存在，直接关闭；连接由主窗口建立，这里只取状态
@@ -541,6 +547,7 @@ async function onDaemonClosed() {
   renderEmpty();
   renderCardHead();
   showFiles();
+  showHostInfo();
   $("daemon-banner").hidden = false;
   for (let i = 0; ; i++) {
     await new Promise((r) => setTimeout(r, RECONNECT_DELAYS[Math.min(i, RECONNECT_DELAYS.length - 1)]));
@@ -764,6 +771,7 @@ function syncSessions(sessions: SessionInfo[]) {
   renderEmpty();
   renderCardHead();
   showFiles();
+  showHostInfo();
 }
 
 /** 卡片标题行：当前会话名 · shell（远程为 ssh user@host） */
@@ -1093,6 +1101,7 @@ function activate(id: number) {
   v.term.focus();
   reportFocus();
   showFiles();
+  showHostInfo();
 }
 
 /** 主窗口：把会话拖成独立窗口（屏幕坐标 x / y 处）。会话从列表移除；独立窗口关闭后重新取列表，会话回到主窗口 */

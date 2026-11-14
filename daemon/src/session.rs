@@ -14,7 +14,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use proto::{ClaudeState, ClaudeStatus, ClientMsg, Config, FsSource, HostSource, RecentItem, ServerMsg, SessionInfo, Status, Target};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-use crate::{claude, config, fs, notify, now_ms, recent, saved, ssh};
+use crate::{claude, config, fs, notify, now_ms, recent, saved, ssh, stats};
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -445,6 +445,10 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             log!("GUI 版本 {version}（协议 {proto}），daemon 版本 {}", env!("CARGO_PKG_VERSION"));
             st.send(&ServerMsg::Hello { version: env!("CARGO_PKG_VERSION").into(), proto: proto::PROTO_VERSION });
         }
+        ClientMsg::HostStats { req_id, session_id } => match st.sessions.get(&session_id) {
+            Some(s) => drop(tokio::spawn(stats::run(state.clone(), req_id, s.fs.clone()))),
+            None => st.send(&ServerMsg::HostStats { req_id, stats: None, error: Some("会话已不存在".into()) }),
+        },
         // 先落盘会话列表再退出：GUI 重连时拉起（可能是更新后的）tetherd.exe，按 sessions.json 恢复会话
         ClientMsg::Shutdown => {
             st.save_sessions();

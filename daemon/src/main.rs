@@ -30,6 +30,7 @@ mod recent;
 mod saved;
 mod session;
 mod ssh;
+mod stats;
 
 use session::{Gui, Shared, State};
 

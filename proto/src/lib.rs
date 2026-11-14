@@ -299,6 +299,38 @@ pub struct CopyItem {
     pub keep_both: bool,
 }
 
+/// 主机信息卡片：会话所在机器（本地会话为本机，远程会话为服务器）的一次采样。
+/// 占用率与网速由相邻两次采样的差值计算，首次采样（或距上次过久）时为 None
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostStats {
+    /// CPU 型号，未知为空串
+    pub cpu_model: String,
+    /// 逻辑处理器数
+    pub cores: u32,
+    /// CPU 占用（百分比）
+    pub cpu_usage: Option<f32>,
+    /// 内存（字节）
+    pub mem_used: u64,
+    pub mem_total: u64,
+    /// 本地为 DXGI 枚举到的显卡；远程只有 NVIDIA（nvidia-smi），没有时为空
+    pub gpus: Vec<GpuStats>,
+    /// 非回环网卡合计的下行 / 上行速率（字节/秒）
+    pub net_rx: Option<u64>,
+    pub net_tx: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuStats {
+    pub name: String,
+    /// 3D 引擎占用（百分比），取不到为 None
+    pub usage: Option<f32>,
+    /// 显存（字节），取不到为 None
+    pub mem_used: Option<u64>,
+    pub mem_total: Option<u64>,
+}
+
 /// GUI → daemon
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -399,6 +431,8 @@ pub enum ClientMsg {
     Hello { version: String, proto: u32 },
     /// 让 daemon 保存会话列表后退出（GUI 更新后“重启后台”）；GUI 重连时拉起新 daemon 并恢复会话
     Shutdown,
+    /// 采样会话所在机器的主机信息，daemon 以同一 req_id 回 HostStats（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
+    HostStats { req_id: u64, session_id: u32 },
 }
 
 /// daemon → GUI
@@ -457,6 +491,8 @@ pub enum ServerMsg {
     },
     /// 回复 GUI 的 Hello：daemon 自身版本与协议版本
     Hello { version: String, proto: u32 },
+    /// HostStats 的结果：成功时 stats 有值，失败（会话不存在、远程非 Linux、SSH 断开等）时 error 有值
+    HostStats { req_id: u64, stats: Option<HostStats>, error: Option<String> },
 }
 
 #[cfg(test)]
@@ -497,6 +533,19 @@ mod tests {
         assert!(items[0].keep_both && !items[1].keep_both);
         let local: super::FsSource = serde_json::from_str(r#"{"kind":"local"}"#).unwrap();
         assert_eq!(local, super::FsSource::Local);
+    }
+
+    #[test]
+    fn host_stats_json() {
+        let req: super::ClientMsg = serde_json::from_str(r#"{"type":"hostStats","reqId":1,"sessionId":2}"#).unwrap();
+        assert!(matches!(req, super::ClientMsg::HostStats { req_id: 1, session_id: 2 }));
+        let stats = super::HostStats { cores: 8, cpu_usage: Some(12.5), gpus: vec![Default::default()], ..Default::default() };
+        let reply = super::ServerMsg::HostStats { req_id: 1, stats: Some(stats), error: None };
+        let v = serde_json::to_value(&reply).unwrap();
+        assert_eq!(v["type"], "hostStats");
+        assert_eq!(v["stats"]["cpuUsage"], 12.5);
+        assert_eq!(v["stats"]["gpus"][0]["memTotal"], serde_json::Value::Null);
+        assert!(v["stats"]["netRx"].is_null());
     }
 
     #[test]

@@ -515,6 +515,13 @@ dialog input[type="checkbox"] { width: 16px; height: 16px; margin: 0 8px 0 0; pa
 .fs-t-bar { height: 3px; margin-top: 4px; overflow: hidden; background: var(--lobe-fill-secondary); border-radius: 2px; }
 .fs-t-bar i { display: block; width: 0; height: 100%; background: var(--lobe-primary); border-radius: 2px; }
 
+/* 文件面板底部的主机信息卡片 */
+#host-info { flex-shrink: 0; padding: 6px 12px 8px; font-size: 12px; border-top: 1px solid var(--lobe-border-secondary); user-select: none; }
+.hi-row { display: flex; align-items: center; gap: 8px; height: 20px; }
+.hi-k { width: 28px; flex-shrink: 0; color: var(--muted); }
+.hi-v { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--lobe-text-secondary); font-variant-numeric: tabular-nums; }
+.hi-note .hi-v { color: var(--muted); }
+
 /* claude 命令补全弹出层：定位在终端光标下方（main.ts / claude-complete.ts 计算坐标） */
 #cc-popup {
   position: absolute;
