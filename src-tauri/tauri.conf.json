@@ -24,6 +24,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDRkNFOTRENUIzMUZDNDUKUldSRi9ERmJUZW44akh2YlFqcjNweVp5RlpzUHFjUktnYkxEclMvc2V3dmpGYzU2elp3OUdzeDQK",
+      "endpoints": ["https://github.com/tongxin-77/tether/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

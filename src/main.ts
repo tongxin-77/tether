@@ -13,6 +13,7 @@ import { type FsClientMsg, type FsServerMsg, ask, forgetFiles, initFiles, onFsMe
 import { attachFileLinks } from "./file-links";
 import { attachTableSelect, cellSelectionText, clearCellSelection } from "./table-select";
 import { closePreview, initPreview } from "./preview";
+import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -81,6 +82,7 @@ type ServerMsg =
   | { type: "error"; message: string }
   | { type: "config"; config: Config; shells: ShellOption[]; hosts: Host[]; sshHosts: Host[]; passwordSaved: string[] }
   | { type: "recent"; items: RecentItem[] }
+  | { type: "hello"; version: string; proto: number }
   | { type: "claudeHooks"; path: string; enabled: boolean; outdated: boolean; error: string | null }
   | PromptMsg
   | FsServerMsg;
@@ -442,6 +444,8 @@ async function init() {
       case "recent":
         recent = m.items;
         return renderEmpty();
+      case "hello":
+        return onHello(m.version, m.proto);
       case "claudeHooks":
         claudeSettingsPath = m.path;
         // 旧版只写了部分事件：提示更新，“启用”按钮改为“更新”（重新启用即补齐）
@@ -470,12 +474,15 @@ async function init() {
   }
   await listen("daemon-closed", onDaemonClosed);
   try {
+    beforeConnect();
     pendingActivate = (await invoke<number | null>("connect")) ?? undefined;
   } catch (err) {
     alert(`连接后台进程失败：${err}`);
     return;
   }
+  afterConnect();
   requestState();
+  initUpdater(() => views.size + detached.size, syncBannerSpace);
 }
 
 /** 独立窗口只处理自己会话的消息；交互提示、错误提示、设置面板等由主窗口处理 */
@@ -538,6 +545,7 @@ async function onDaemonClosed() {
   for (let i = 0; ; i++) {
     await new Promise((r) => setTimeout(r, RECONNECT_DELAYS[Math.min(i, RECONNECT_DELAYS.length - 1)]));
     try {
+      beforeConnect();
       await invoke("connect");
       break;
     } catch (err) {
@@ -546,6 +554,7 @@ async function onDaemonClosed() {
   }
   if (epoch !== disconnects) return;
   $("daemon-banner").hidden = true;
+  afterConnect();
   requestState();
 }
 
@@ -570,7 +579,12 @@ function renderPwshNotice() {
   $("pwsh-hint").hidden = pwshDetected;
   if (banner.hidden === !show) return;
   banner.hidden = !show;
-  terminals.classList.toggle("banner", show);
+  syncBannerSpace();
+}
+
+/** 终端区顶部提示条（PowerShell 7 安装 / 后台旧版本）任一显示时内容下移 */
+function syncBannerSpace() {
+  terminals.classList.toggle("banner", !$("pwsh-banner").hidden || daemonBannerShown());
   // .term 下移不改变 #terminals 尺寸，ResizeObserver 不会触发，手动 fit
   activeView()?.fit.fit();
 }

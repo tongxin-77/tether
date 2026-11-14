@@ -87,6 +87,20 @@ impl client::Handler for Client {
             }
         }
     }
+
+    /// 记录连接断开原因（服务端主动断开 / 网络错误 / keepalive 超时），便于排查掉线
+    async fn disconnected(&mut self, reason: client::DisconnectReason<Self::Error>) -> Result<(), Self::Error> {
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(info) => {
+                log!("SSH 连接 {} 被服务端断开：{info:?}", self.label);
+                Ok(())
+            }
+            client::DisconnectReason::Error(e) => {
+                log!("SSH 连接 {} 异常断开：{e}", self.label);
+                Err(e)
+            }
+        }
+    }
 }
 
 /// 新建远程会话（异步任务）：结果以 Sessions + Activate 或 Error 告知 GUI
@@ -170,17 +184,34 @@ async fn pump(
     wr: ChannelWriteHalf<client::Msg>,
     mut rx: UnboundedReceiver<Cmd>,
 ) {
+    // 结束原因写入日志：远端 shell 退出（含 TMOUT 自动登出）与连接断开需区分
+    let mut reason = String::from("连接已断开");
     loop {
         tokio::select! {
             msg = rd.wait() => match msg {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                     if !session::on_output(&state, id, &data) {
+                        reason = "会话被关闭".into();
                         let _ = wr.close().await;
                         break;
                     }
                 }
-                Some(ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } | ChannelMsg::ExitSignal { .. }) => session::on_exit(&state, id),
-                Some(ChannelMsg::Close) | None => break,
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    reason = format!("远端进程退出，状态码 {exit_status}");
+                    session::on_exit(&state, id);
+                }
+                Some(ChannelMsg::ExitSignal { signal_name, .. }) => {
+                    reason = format!("远端进程被信号 {signal_name:?} 结束");
+                    session::on_exit(&state, id);
+                }
+                Some(ChannelMsg::Eof) => session::on_exit(&state, id),
+                Some(ChannelMsg::Close) => {
+                    if reason == "连接已断开" {
+                        reason = "服务端关闭 channel".into();
+                    }
+                    break;
+                }
+                None => break,
                 Some(_) => {}
             },
             cmd = rx.recv() => match cmd {
@@ -191,6 +222,7 @@ async fn pump(
                     let _ = wr.window_change(cols.into(), rows.into(), 0, 0).await;
                 }
                 Some(Cmd::Close) | None => {
+                    reason = "会话被关闭".into();
                     let _ = wr.close().await;
                     break;
                 }
@@ -198,7 +230,7 @@ async fn pump(
         }
     }
     session::on_exit(&state, id);
-    log!("远程会话 {id} 的 channel 已结束");
+    log!("远程会话 {id} 的 channel 已结束：{reason}");
     drop(conn);
 }
 

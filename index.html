@@ -12,6 +12,8 @@
       <button id="new-btn" title="新建本地或远程会话">＋ 新建会话</button>
       <div id="new-menu" hidden></div>
       <ul id="session-list"></ul>
+      <!-- 自动检查发现新版本时显示，点击打开更新对话框 -->
+      <button id="update-badge" hidden></button>
       <button id="settings-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>设置</button>
     </aside>
     <!-- 终端区为浮起的圆角卡片：顶部标题行显示当前会话名 · shell / 主机 -->
@@ -27,6 +29,11 @@
       </div>
       <!-- 与后台服务的连接断开（daemon 崩溃 / 被结束）时显示，重连成功后隐藏；覆盖在 PowerShell 提示条之上 -->
       <div id="daemon-banner" hidden>后台服务已断开，正在重连…</div>
+      <!-- 更新后 daemon 仍为旧版本（安装时不打断会话）：提示用户择机重启后台 -->
+      <div id="daemon-old-banner" hidden>
+        <span id="daemon-old-text"></span>
+        <button id="daemon-restart">重启后台</button>
+      </div>
       <!-- 无会话时的空状态：最近关闭的目录 -->
       <div id="empty" hidden>
         <div id="empty-box">
@@ -103,6 +110,12 @@
           <button type="button" id="cc-remove">移除</button>
         </div>
         <p class="hint" id="cc-path"></p>
+        <div class="section-head">关于与更新</div>
+        <div id="update-row">
+          <span>当前版本 <span id="about-version"></span><span id="update-status"></span></span>
+          <button type="button" id="update-check">检查更新</button>
+        </div>
+        <label class="check"><input type="checkbox" id="update-auto" />启动时自动检查更新</label>
         <div class="section-head">主机<button type="button" id="host-add">+ 添加</button></div>
         <ul id="host-list"></ul>
         <div class="section-head">自定义联想命令<button type="button" id="completion-add">+ 添加</button></div>
@@ -135,6 +148,19 @@
         <div class="actions">
           <button value="save">保存</button>
           <button value="cancel" formnovalidate>取消</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="update-dialog">
+      <form method="dialog">
+        <h3 id="upd-title"></h3>
+        <pre id="upd-notes"></pre>
+        <p class="hint">安装时只重启窗口，会话继续运行；之后可在提示条中重启后台进程以启用新版后台。</p>
+        <progress id="upd-progress" hidden></progress>
+        <div class="actions">
+          <button type="button" id="upd-install">立即更新</button>
+          <button value="skip">跳过此版本</button>
+          <button value="later">稍后</button>
         </div>
       </form>
     </dialog>

@@ -27,3 +27,6 @@ dist-ssr
 
 # 构建时复制的 tetherd sidecar
 src-tauri/binaries/
+
+# 更新签名私钥（只放在 %USERPROFILE%\.tauri\，以防误放进仓库）
+*.key

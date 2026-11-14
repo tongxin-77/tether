@@ -2,7 +2,7 @@
 
 use std::{
     io::ErrorKind,
-    os::windows::process::CommandExt,
+    os::windows::{io::AsRawHandle, process::CommandExt},
     process::Command,
     sync::Mutex,
     time::Duration,
@@ -24,6 +24,10 @@ const DAEMON_EXE: &str = "tetherd.exe";
 /// 发往 daemon 的消息通道（连接建立后才有）
 #[derive(Default)]
 struct Pipe(Mutex<Option<UnboundedSender<String>>>);
+
+/// 当前连接的 daemon 进程 id（管道服务端），供“重启后台”结束不支持 Shutdown 的旧版 daemon
+#[derive(Default)]
+struct DaemonPid(Mutex<Option<u32>>);
 
 /// daemon 与 GUI 同目录（workspace 下 debug/release 产物同在 target/<profile>/）
 fn spawn_daemon() {
@@ -66,11 +70,19 @@ fn session_arg(args: &[String]) -> Option<u32> {
 }
 
 /// 前端注册好事件监听后调用：建立连接，daemon 消息以 `daemon` 事件转给前端，断开时发 `daemon-closed`
+/// 连接后首条消息为 Hello（GUI 版本与协议版本），daemon 回 Hello；旧版 daemon 不回复，由前端超时判定
 #[tauri::command]
-async fn connect(app: AppHandle, pipe: State<'_, Pipe>) -> Result<Option<u32>, String> {
+async fn connect(app: AppHandle, pipe: State<'_, Pipe>, daemon_pid: State<'_, DaemonPid>) -> Result<Option<u32>, String> {
     let client = open_pipe().await?;
+    let mut pid = 0u32;
+    let ok = unsafe { windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(client.as_raw_handle(), &mut pid) };
+    *daemon_pid.0.lock().unwrap() = (ok != 0).then_some(pid);
     let (rd, mut wr) = tokio::io::split(client);
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let hello = ClientMsg::Hello { version: app.package_info().version.to_string(), proto: proto::PROTO_VERSION };
+    if let Ok(json) = serde_json::to_string(&hello) {
+        let _ = tx.send(json + "\n");
+    }
     *pipe.0.lock().unwrap() = Some(tx);
 
     tauri::async_runtime::spawn(async move {
@@ -98,6 +110,32 @@ fn send(pipe: State<'_, Pipe>, msg: ClientMsg) {
     if let (Some(tx), Ok(json)) = (guard.as_ref(), serde_json::to_string(&msg)) {
         let _ = tx.send(json + "\n");
     }
+}
+
+/// 结束当前连接的 daemon 进程（用于不支持 Shutdown 的旧版 daemon）；会话已持续写入 sessions.json，
+/// GUI 随后重连时拉起新的 tetherd.exe 并恢复会话
+#[tauri::command]
+fn kill_daemon(daemon_pid: State<'_, DaemonPid>) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess},
+    };
+    let pid = daemon_pid.0.lock().unwrap().ok_or("未连接后台进程")?;
+    unsafe {
+        let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if h.is_null() {
+            return Err(format!("无法打开后台进程 {pid}"));
+        }
+        let ok = TerminateProcess(h, 0);
+        CloseHandle(h);
+        if ok == 0 { Err(format!("结束后台进程 {pid} 失败")) } else { Ok(()) }
+    }
+}
+
+/// debug 构建（dev）不检查更新，避免开发版去安装发布版
+#[tauri::command]
+fn is_debug() -> bool {
+    cfg!(debug_assertions)
 }
 
 /// 系统剪贴板序号：每次剪贴板内容变化递增；文件树复制时记下，粘贴时据此判断系统剪贴板是否更新过
@@ -185,7 +223,10 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Pipe::default())
+        .manage(DaemonPid::default())
         .setup(|app| {
             remove_legacy_backgrounds(app.handle());
             Ok(())
@@ -196,7 +237,7 @@ pub fn run() {
                 win.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![connect, send, clipboard_seq, clipboard_files])
+        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files])
         .run(context)
         .expect("error while running tauri application");
 }

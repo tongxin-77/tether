@@ -41,6 +41,7 @@
 从 [Releases](https://github.com/tongxin-77/tether/releases) 下载 `tether_<版本>_x64-setup.exe` 安装即可（Windows 10/11，需 WebView2）。
 
 - 默认按当前用户安装到 `%LOCALAPPDATA%\tether`，安装时自动注册登录自启与系统通知。
+- 之后的版本会自动检查更新，更新时会话不中断。
 - 想在会话中使用 Claude Code：直接运行 `claude`，并在 **设置 → Claude Code 集成** 点 **启用**。
 
 ## ⌨️ 常用操作

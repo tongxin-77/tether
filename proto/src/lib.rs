@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 管道协议版本：GUI 与 daemon 互发 Hello 时携带。0.1.0 的 daemon 不认识 Hello（视为 0），也不支持 Shutdown
+pub const PROTO_VERSION: u32 = 1;
+
 /// 本地命名管道名，按用户名区分，同一用户只会有一个 daemon；debug 构建用 `tetherd-dev-`，与安装版隔离
 pub fn pipe_name() -> String {
     let prefix = if cfg!(debug_assertions) { "tetherd-dev" } else { "tetherd" };
@@ -392,6 +395,10 @@ pub enum ClientMsg {
     SetClaudeHooks { enabled: bool },
     /// 试听提示音（设置面板），不受 Config.sound 开关影响
     PlaySound,
+    /// GUI 连接后的首条消息：GUI 版本与协议版本，daemon 回 Hello（旧 daemon 不回复，GUI 超时后按旧版处理）
+    Hello { version: String, proto: u32 },
+    /// 让 daemon 保存会话列表后退出（GUI 更新后“重启后台”）；GUI 重连时拉起新 daemon 并恢复会话
+    Shutdown,
 }
 
 /// daemon → GUI
@@ -448,6 +455,8 @@ pub enum ServerMsg {
         outdated: bool,
         error: Option<String>,
     },
+    /// 回复 GUI 的 Hello：daemon 自身版本与协议版本
+    Hello { version: String, proto: u32 },
 }
 
 #[cfg(test)]
@@ -457,6 +466,16 @@ mod tests {
     fn debug_build_uses_dev_names() {
         assert!(super::pipe_name().starts_with(r"\\.\pipe\tetherd-dev-"));
         assert_eq!(super::data_dir_name(), "tether-dev");
+    }
+
+    #[test]
+    fn hello_and_shutdown_wire_format() {
+        let hello = super::ClientMsg::Hello { version: "0.1.1".into(), proto: super::PROTO_VERSION };
+        assert_eq!(serde_json::to_string(&hello).unwrap(), r#"{"type":"hello","version":"0.1.1","proto":1}"#);
+        let shutdown: super::ClientMsg = serde_json::from_str(r#"{"type":"shutdown"}"#).unwrap();
+        assert!(matches!(shutdown, super::ClientMsg::Shutdown));
+        let reply: super::ServerMsg = serde_json::from_str(r#"{"type":"hello","version":"0.1.1","proto":1}"#).unwrap();
+        assert!(matches!(reply, super::ServerMsg::Hello { proto: 1, .. }));
     }
 
     #[test]

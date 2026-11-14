@@ -94,7 +94,7 @@ body { display: flex; }
 button { transition: color var(--lobe-motion), background-color var(--lobe-motion), border-color var(--lobe-motion); }
 button:focus-visible { outline: none; box-shadow: var(--lobe-focus-ring); }
 
-#settings-btn, dialog button, #empty-new, #pwsh-banner button, #pv-open {
+#settings-btn, dialog button, #empty-new, #pwsh-banner button, #daemon-old-banner button, #pv-open {
   font: inherit;
   color: var(--fg);
   background: transparent;
@@ -102,12 +102,12 @@ button:focus-visible { outline: none; box-shadow: var(--lobe-focus-ring); }
   border-radius: var(--lobe-radius-sm);
   cursor: pointer;
 }
-#settings-btn:hover, dialog button:hover, #empty-new:hover, #pwsh-banner button:hover, #pv-open:hover {
+#settings-btn:hover, dialog button:hover, #empty-new:hover, #pwsh-banner button:hover, #daemon-old-banner button:hover, #pv-open:hover {
   color: var(--lobe-primary-hover);
   background: var(--lobe-fill-tertiary);
   border-color: #474747;
 }
-#settings-btn:active, dialog button:active, #empty-new:active, #pwsh-banner button:active, #pv-open:active { background: var(--lobe-fill-secondary); }
+#settings-btn:active, dialog button:active, #empty-new:active, #pwsh-banner button:active, #daemon-old-banner button:active, #pv-open:active { background: var(--lobe-fill-secondary); }
 
 /* primary：空状态新建入口、对话框确认（.actions 首个按钮即保存 / 确定，视觉上由 row-reverse 排在右侧） */
 #empty-new, dialog .actions button:first-child, #pwsh-install {
@@ -612,3 +612,35 @@ dialog input[type="range"] { height: 16px; padding: 0; background: none; border:
 /* 拖出的独立窗口：只有终端卡片，无会话列表与文件面板 */
 body.detached #sidebar, body.detached #files { display: none; }
 body.detached #terminals { margin: 8px; }
+
+/* 更新：侧栏新版本标签、后台旧版本提示条、设置面板“关于与更新”、更新对话框 */
+#update-badge { flex-shrink: 0; margin: 4px 8px 0; height: 28px; padding: 0 12px; font-size: 12px; color: var(--lobe-primary-text); background: var(--lobe-info); border: none; border-radius: var(--lobe-radius); cursor: pointer; }
+#update-badge[hidden] { display: none; }
+#daemon-old-banner {
+  position: absolute;
+  top: var(--card-head);
+  left: 0;
+  right: 0;
+  height: 30px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  font-size: 12px;
+  color: var(--lobe-text-secondary);
+  background: linear-gradient(rgba(232, 163, 61, 0.14), rgba(232, 163, 61, 0.14)), var(--bg);
+  border-bottom: 1px solid rgba(232, 163, 61, 0.35);
+}
+#daemon-old-banner[hidden] { display: none; }
+#daemon-old-banner span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#daemon-old-banner button { height: 22px; padding: 0 10px; font-size: 12px; border-radius: var(--lobe-radius-xs); }
+#update-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
+#update-row > span { flex: 1; }
+#update-status { margin-left: 8px; color: var(--muted); }
+dialog #update-row button { height: 28px; margin: 0; padding: 0 12px; }
+#settings .check:has(#update-auto) { flex-direction: row; align-items: center; margin-top: 8px; }
+#update-dialog { width: 520px; max-width: calc(100vw - 48px); }
+#update-dialog h3 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+#upd-notes { max-height: 280px; overflow: auto; margin: 0; padding: 8px 10px; white-space: pre-wrap; font: 12px/1.6 var(--lobe-font); background: var(--lobe-fill-tertiary); border-radius: var(--lobe-radius-xs); }
+#upd-progress { width: 100%; margin-top: 8px; }

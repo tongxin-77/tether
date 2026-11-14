@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { showPreview } from "./preview";
 
 // 与 proto crate 的文件树协议保持一致
@@ -633,13 +634,15 @@ function newSessionAt(s: FsSession, dir: string) {
 
 // ---------------- 复制 / 粘贴 ----------------
 
-/** 复制当前显示中的选中项到内部剪贴板（不改动系统剪贴板）；盘符不能复制 */
+/** 复制当前显示中的选中项到内部剪贴板，同时把文件名（多项按行分隔）写入系统剪贴板，可直接粘贴到终端；盘符不能复制 */
 async function copySelection(s: FsSession, t: Tree) {
   if (t.root === "" || (isRemote(s) && !s.hostId)) return;
   const shown = new Set([...treeEl.querySelectorAll<HTMLElement>(".fs-row")].map((r) => r.dataset.path));
   const paths = [...t.selected].filter((p) => shown.has(p));
   if (!paths.length) return;
   const source: FsSource = isRemote(s) ? { kind: "remote", hostId: s.hostId! } : { kind: "local" };
+  await writeText(paths.map(baseName).join("\n")).catch(() => {});
+  // 写入文件名后再取序号：之后系统剪贴板若再变化（如资源管理器复制文件），粘贴时以系统剪贴板为准
   const seq = await invoke<number>("clipboard_seq").catch(() => 0);
   clip = { source, paths, seq };
 }

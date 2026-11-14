@@ -39,7 +39,10 @@
 | D-1.5 | 未注册 AUMID 时 toast 回退 PowerShell AUMID | 未 install 时仍能弹通知（来源显示 Windows PowerShell） | 已实现 |
 | D-1.6 | 点击通知时 GUI 未运行则拉起同目录 `tether.exe --session <id>` | GUI 关闭状态下点击 toast，窗口打开并定位会话 | 已实现 |
 | D-1.7 | 日志追加到 `%LOCALAPPDATA%\tether\daemon.log` | 启动、连接、错误均有记录 | 已实现 |
-| D-1.8 | 打包：`scripts/tauri.mjs` 在 build 时编译 release daemon 并作为 sidecar 打入单个 NSIS 安装包（当前用户安装）；安装 / 升级 / 卸载前 `taskkill` 两个进程，安装后 `--install`，卸载前 `--uninstall` | 安装包约 3 MB，安装后 `tether.exe` 与 `tetherd.exe` 同目录 | 已实现 |
+| D-1.8 | 打包：`scripts/tauri.mjs` 在 build 时编译 release daemon 并作为 sidecar 打入单个 NSIS 安装包（当前用户安装）；安装 / 升级只结束 `tether.exe`，把运行中的 `tetherd.exe` 改名为 `tetherd.old*.exe` 让出文件名（改名失败才结束 daemon），安装后 `--install`；卸载前结束两者并 `--uninstall` | 安装包约 3 MB，安装后 `tether.exe` 与 `tetherd.exe` 同目录；升级时会话不中断 | 已实现未实测 |
+| D-1.9 | 版本握手：GUI 连接后首条消息 `Hello { version, proto }`，daemon 回 `Hello`（自身版本与 `PROTO_VERSION`）；0.1.0 daemon 不回复，GUI 1 秒超时后按旧版处理 | 版本不一致时 GUI 显示“后台进程为旧版本”提示条 | 已实现未实测 |
+| D-1.10 | `Shutdown`：保存 sessions.json 后退出；GUI 重连时拉起新 `tetherd.exe` 并恢复会话。旧版 daemon 不支持时 GUI 按管道服务端进程 id 结束它 | “重启后台”后会话在原目录重开、Claude 对话 resume、SSH 重连 | 已实现未实测 |
+| D-1.11 | 新 daemon 启动时删除同目录 `tetherd.old*.exe`；写入 Run 键与 Claude hooks 的路径一律为 `tetherd.exe`（不记旧文件名） | 重启后台后旧文件被清理 | 已实现未实测 |
 
 ### 3.2 会话
 
@@ -118,7 +121,7 @@
 - **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
 - **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsResult、Transfer、Recent、ClaudeHooks。
 - 文件类请求以 `reqId` 关联回复；Prompt 以 `reqId` 关联 PromptReply，`value=null` 表示取消。
-- 版本策略：同包发布，不做协议版本协商（见待定项）。
+- 版本策略：GUI 与 daemon 同包发布，但更新时只替换 GUI、旧 daemon 继续运行，因此新 GUI 须兼容上一版 daemon（新增消息旧 daemon 会记日志后忽略）；连接时以 Hello 交换版本（`proto::PROTO_VERSION`，0.1.0 视为 0），不一致时提示重启后台。
 
 ## 5. 非功能需求
 
@@ -150,7 +153,7 @@
 
 1. 管道 ACL：当前依赖默认安全描述符，是否需要显式限定当前用户 SID。
 2. vt100 无回滚缓冲（scrollback 0），GUI 重连只恢复当前屏；是否增加有限回滚（内存预算待定）。
-3. 协议无版本号；引入 hub 后若 daemon 与 hub 独立升级，需要版本协商。
-4. 安装 / 升级会 `taskkill` 结束所有会话，是否需要升级前提示或会话迁移。
-5. daemon 崩溃即丢失全部会话，暂无持久化 / 恢复方案。
+3. 协议已有版本号（Hello），但除提示重启外无降级处理；引入 hub 后若 daemon 与 hub 独立升级，需要更完整的版本协商。
+4. 升级时旧 daemon 继续运行，用户不重启后台则一直是旧版后台；是否需要在无会话时自动切换。
+5. 会话列表持续写入 `sessions.json`，daemon 崩溃 / 重启后本地会话在原目录重开、Claude 对话 resume、远程会话在 GUI 接入时重连；运行中的进程与屏幕内容无法恢复。
 6. 标为“已实现未实测”的条目需补测。

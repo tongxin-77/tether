@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "检查 / 下载 / 安装更新与安装后重启，仅主窗口（拖出的会话窗口不检查更新）",
+  "windows": ["main"],
+  "permissions": ["updater:default", "process:allow-restart"]
+}

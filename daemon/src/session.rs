@@ -441,6 +441,16 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             st.send(&claude::status_msg(result.err()));
         }
         ClientMsg::PlaySound => notify::play(),
+        ClientMsg::Hello { version, proto } => {
+            log!("GUI 版本 {version}（协议 {proto}），daemon 版本 {}", env!("CARGO_PKG_VERSION"));
+            st.send(&ServerMsg::Hello { version: env!("CARGO_PKG_VERSION").into(), proto: proto::PROTO_VERSION });
+        }
+        // 先落盘会话列表再退出：GUI 重连时拉起（可能是更新后的）tetherd.exe，按 sessions.json 恢复会话
+        ClientMsg::Shutdown => {
+            st.save_sessions();
+            log!("收到 Shutdown，保存 {} 个会话后退出", st.sessions.len() + st.pending.len());
+            std::process::exit(0);
+        }
     }
     true
 }

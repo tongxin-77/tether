@@ -58,9 +58,29 @@ fn main() {
     rt.block_on(serve(Arc::new(Mutex::new(state))));
 }
 
+/// 更新时安装程序把运行中的 tetherd.exe 改名为 tetherd.old*.exe 让出文件名（见 hooks.nsh），旧 daemon 继续服务。
+/// 写入注册表 / Claude hooks 的路径一律指向同目录的 tetherd.exe，避免记下即将被删除的旧文件名
+pub fn stable_exe() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let old = exe.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with("tetherd.old"));
+    Ok(if old { exe.with_file_name("tetherd.exe") } else { exe })
+}
+
+/// 删除更新遗留的 tetherd.old*.exe（旧 daemon 已退出才删得掉，仍在运行时忽略）
+fn remove_old_exes() {
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if name.starts_with("tetherd.old") && name.ends_with(".exe") && std::fs::remove_file(entry.path()).is_ok() {
+            log!("已删除更新遗留的 {name}");
+        }
+    }
+}
+
 /// 写入登录自启项，并注册 AUMID（DisplayName）供系统通知使用
 fn install() -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = stable_exe()?;
     let (run, _) = HKCU.create_subkey(RUN_KEY)?;
     run.set_value(RUN_VALUE, &format!("\"{}\"", exe.display()))?;
     let (aumid, _) = HKCU.create_subkey(AUMID_KEY)?;
@@ -81,7 +101,8 @@ async fn serve(state: Shared) {
         Ok(s) => s,
         Err(e) => return log!("管道 {name} 创建失败（可能已有 daemon 在运行），退出：{e}"),
     };
-    log!("daemon 启动，监听 {name}");
+    log!("daemon {} 启动，监听 {name}", env!("CARGO_PKG_VERSION"));
+    remove_old_exes();
     // 确认是唯一的 daemon 后再恢复上次未关闭的会话
     session::restore(&state);
     let mut conn = 0u64;

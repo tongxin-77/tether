@@ -32,7 +32,22 @@ pnpm tauri dev                # 启动 GUI，连不上时自动拉起 target/deb
 
 **单实例**：GUI 用 `tauri-plugin-single-instance` 保证只有一个进程；再次启动 `tether.exe` 会立即退出，已有主窗口还原并前置，若带 `--session <id>`（点击通知拉起）则切到该会话（会话已拖出为独立窗口时前置该窗口）。
 
-打包：`pnpm tauri build` 一条命令产出 NSIS 安装包 `target/release/bundle/nsis/tether_<版本>_x64-setup.exe`。`package.json` 的 `tauri` 脚本经 `scripts/tauri.mjs` 包装：build 时先 `cargo build --release -p tetherd` 并复制为 `src-tauri/binaries/tetherd-x86_64-pc-windows-msvc.exe`，再以 sidecar（`bundle.externalBin`，仅 build 时通过 `--config` 注入，dev 不受影响）打包，安装后与 `tether.exe` 同目录、名为 `tetherd.exe`。安装包默认按当前用户安装到 `%LOCALAPPDATA%\tether`，钩子（`src-tauri/windows/hooks.nsh`）在安装 / 升级前结束运行中的 `tether.exe` 与 `tetherd.exe`（会结束所有会话），安装后执行 `tetherd --install`；卸载前同样结束两者并执行 `tetherd --uninstall`。
+打包：`pnpm tauri build` 一条命令产出 NSIS 安装包 `target/release/bundle/nsis/tether_<版本>_x64-setup.exe`。`package.json` 的 `tauri` 脚本经 `scripts/tauri.mjs` 包装：build 时先 `cargo build --release -p tetherd` 并复制为 `src-tauri/binaries/tetherd-x86_64-pc-windows-msvc.exe`，再以 sidecar（`bundle.externalBin`，仅 build 时通过 `--config` 注入，dev 不受影响）打包，安装后与 `tether.exe` 同目录、名为 `tetherd.exe`。安装包默认按当前用户安装到 `%LOCALAPPDATA%\tether`，钩子（`src-tauri/windows/hooks.nsh`）在安装 / 升级前只结束 `tether.exe`，把运行中的 `tetherd.exe` 改名为 `tetherd.old.exe`（被占用时加时间后缀）让出文件名，旧 daemon 继续持有会话，新 daemon 启动时清理这些旧文件；改名失败才结束 daemon。安装后执行 `tetherd --install`；卸载前结束两者并执行 `tetherd --uninstall`。
+
+## 自动更新与签名
+
+GUI 用 `tauri-plugin-updater` 检查 `https://github.com/tongxin-77/tether/releases/latest/download/latest.json`（只认正式 release，draft / prerelease 不算），安装包须用更新私钥签名。
+
+一次性准备（私钥只放本机、不进仓库；私钥与密码都要备份到密码管理器，**丢失后已安装的用户无法再自动更新**）：
+
+```powershell
+pnpm tauri signer generate -w "$env:USERPROFILE\.tauri\tether.key"   # 按提示设置密码；输出的公钥填入 tauri.conf.json 的 plugins.updater.pubkey
+cmdkey /generic:tether-updater-signing /user:tether /pass            # 把私钥密码存入 Windows 凭据管理器（交互输入，不进命令历史）
+```
+
+`pnpm tauri build` 时 `scripts/tauri.mjs` 发现 `%USERPROFILE%\.tauri\tether.key` 就从凭据管理器读密码，只通过环境变量 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 传给 tauri 子进程，并开启 `createUpdaterArtifacts`，额外产出 `tether_<版本>_x64-setup.exe.sig`；已设置这两个环境变量时优先使用。找不到私钥时照常构建无签名安装包并警告。发版时用 `node scripts/latest-json.mjs <版本> <输出路径>` 生成 `latest.json`（signature 为 .sig 内容，notes 取 CHANGELOG 对应段），与安装包一起上传。
+
+更新时只替换 GUI：GUI 连接 daemon 时互发 `Hello` 交换版本，daemon 为旧版本时显示提示条，用户点“重启后台”后新 daemon 按 `sessions.json` 恢复会话。debug 构建不检查更新。
 
 ## 登录自启
 

@@ -125,7 +125,7 @@ pub fn settings_path() -> Option<PathBuf> {
 /// 写入 settings.json 的命令：当前运行的 tetherd.exe 绝对路径（正斜杠，Git Bash 与 PowerShell 都能直接执行）+ ` hook`。
 /// 路径无空格时不加引号（两种 shell 通用）；含空格时用双引号（适用于 Claude Code 默认的 Git Bash）
 pub fn hook_command() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("无法获取 tetherd 路径：{e}"))?;
+    let exe = crate::stable_exe().map_err(|e| format!("无法获取 tetherd 路径：{e}"))?;
     Ok(command_for(&exe))
 }
 
