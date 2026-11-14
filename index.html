@@ -211,9 +211,11 @@
           <label id="h-pw-label">密码（保存到 Windows 凭据管理器）<input id="h-password" type="password" autocomplete="off" placeholder="留空则不修改已保存的密码" /></label>
           <div id="h-pw-state"><span id="h-pw-status"></span><button type="button" id="h-pw-clear" class="danger">清除已保存密码</button></div>
         </div>
+        <p id="h-test-result" role="status" hidden></p>
         <div class="actions">
           <button value="save">保存</button>
           <button value="cancel" formnovalidate>取消</button>
+          <button type="button" id="h-test">测试连接</button>
         </div>
       </form>
     </dialog>

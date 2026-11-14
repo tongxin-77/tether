@@ -97,7 +97,8 @@ type ServerMsg =
   | { type: "claudeHooks"; path: string; enabled: boolean; outdated: boolean; error: string | null }
   | PromptMsg
   | FsServerMsg
-  | HostStatsServerMsg;
+  | HostStatsServerMsg
+  | { type: "testHost"; reqId: number; elapsedMs: number | null; error: string | null };
 
 interface ShellOption {
   name: string;
@@ -144,7 +145,8 @@ type ClientMsg =
   | { type: "setClaudeHooks"; enabled: boolean }
   | { type: "playSound" }
   | FsClientMsg
-  | HostStatsClientMsg;
+  | HostStatsClientMsg
+  | { type: "testHost"; reqId: number; host: Host; password: string | null; useSaved: boolean };
 
 /** 每个会话一个 xterm，切换时只隐藏不销毁 */
 interface View {
@@ -191,6 +193,12 @@ let savedPasswords = new Set<string>();
 const pendingPasswords = new Map<string, string | null>();
 /** 主机对话框中点了“清除已保存密码” */
 let clearPassword = false;
+/** 主机对话框中进行中的连接测试：left 为剩余等待时间（毫秒），等待用户确认指纹 / 输入口令期间不扣减 */
+let hostTest: { reqId: number; left: number; timer: number } | undefined;
+/** 与文件树一样错开 reqId 起点 */
+let hostTestSeq = Math.floor(Math.random() * 2 ** 40);
+/** 等待测试结果的最长时间（daemon 测试限时 10 秒）；超时视为不认识该消息的旧版 daemon */
+const HOST_TEST_TIMEOUT = 15000;
 /** 已保存的外观（daemon 下发）；设置面板中的改动先实时预览，取消时回到它 */
 let savedAppearance: Appearance = { opacity: 100 };
 /** 设置面板中编辑中的外观 */
@@ -352,25 +360,15 @@ $("h-pw-clear").addEventListener("click", () => {
   renderPasswordRow();
 });
 $("h-password").addEventListener("input", renderPasswordRow);
+$("h-test").addEventListener("click", testHost);
 hostDialog.addEventListener("close", () => {
+  endHostTest();
   const pwInput = $<HTMLInputElement>("h-password");
   const password = $<HTMLSelectElement>("h-auth").value === "password" ? pwInput.value : "";
   // 密码不留在 DOM 中
   pwInput.value = "";
   if (hostDialog.returnValue !== "save") return;
-  const val = (id: string) => $<HTMLInputElement>(id).value.trim();
-  const old = editingHost;
-  // ssh config 主机保存为同 id 的覆盖项（source 仍为 sshConfig），不写回 ~/.ssh/config
-  const h: Host = {
-    id: old?.id ?? `h${Date.now().toString(36)}`,
-    name: val("h-name"),
-    host: val("h-host"),
-    port: Number(val("h-port")) || 22,
-    user: val("h-user"),
-    auth: $<HTMLSelectElement>("h-auth").value as Host["auth"],
-    keyPath: val("h-key") || undefined,
-    source: old?.source,
-  };
+  const h = hostFromDialog();
   const i = draftHosts.findIndex((d) => d.id === h.id);
   if (i >= 0) draftHosts[i] = h;
   else draftHosts.push(h);
@@ -521,6 +519,8 @@ async function init() {
         return onFsMessage(m);
       case "hostStats":
         return onHostStats(m);
+      case "testHost":
+        return onTestHost(m.reqId, m.elapsedMs, m.error);
     }
   });
   // 独立窗口：daemon 断开后会话已不存在，直接关闭；连接由主窗口建立，这里只取状态
@@ -744,8 +744,74 @@ function editHost(h: Host | undefined) {
   set("h-password", "");
   clearPassword = false;
   renderPasswordRow();
+  $("h-test-result").hidden = true;
   hostDialog.returnValue = "";
   hostDialog.showModal();
+}
+
+/** 主机对话框当前填写的主机配置；ssh config 主机保存为同 id 的覆盖项（source 仍为 sshConfig），不写回 ~/.ssh/config */
+function hostFromDialog(): Host {
+  const val = (id: string) => $<HTMLInputElement>(id).value.trim();
+  const old = editingHost;
+  return {
+    id: old?.id ?? `h${Date.now().toString(36)}`,
+    name: val("h-name"),
+    host: val("h-host"),
+    port: Number(val("h-port")) || 22,
+    user: val("h-user"),
+    auth: $<HTMLSelectElement>("h-auth").value as Host["auth"],
+    keyPath: val("h-key") || undefined,
+    source: old?.source,
+  };
+}
+
+/** 测试连接：用对话框当前填写的值（不必先保存）。密码与保存时的规则一致：本次填写的 > 点过清除则没有 >
+ *  设置面板中未提交的改动 > 凭据管理器中已保存的（由 daemon 按保存时的迁移规则查找） */
+function testHost() {
+  if (!["h-host", "h-port", "h-user"].every((id) => $<HTMLInputElement>(id).reportValidity())) return;
+  const typed = $<HTMLSelectElement>("h-auth").value === "password" ? $<HTMLInputElement>("h-password").value : "";
+  const pending = editingHost ? pendingPasswords.get(editingHost.id) : undefined;
+  const password = typed || (clearPassword ? null : (pending ?? null));
+  const useSaved = !typed && !clearPassword && pending === undefined;
+  endHostTest();
+  const reqId = ++hostTestSeq;
+  const timer = window.setInterval(() => {
+    if (!hostTest) return;
+    if (!promptDialog.open && !promptQueue.length) hostTest.left -= 500;
+    if (hostTest.left <= 0) {
+      endHostTest();
+      showTestResult(false, "未收到后台响应：后台版本较旧，重启后台后可用");
+    }
+  }, 500);
+  hostTest = { reqId, left: HOST_TEST_TIMEOUT, timer };
+  const btn = $<HTMLButtonElement>("h-test");
+  btn.disabled = true;
+  btn.textContent = "测试中…";
+  $("h-test-result").hidden = true;
+  send({ type: "testHost", reqId, host: hostFromDialog(), password, useSaved });
+}
+
+function onTestHost(reqId: number, elapsedMs: number | null, error: string | null) {
+  if (reqId !== hostTest?.reqId) return;
+  endHostTest();
+  if (error) showTestResult(false, error);
+  else showTestResult(true, `连接成功（耗时 ${elapsedMs ?? 0} ms）`);
+}
+
+/** 结束等待中的测试（收到结果 / 超时 / 关闭对话框），按钮恢复 */
+function endHostTest() {
+  if (hostTest) clearInterval(hostTest.timer);
+  hostTest = undefined;
+  const btn = $<HTMLButtonElement>("h-test");
+  btn.disabled = false;
+  btn.textContent = "测试连接";
+}
+
+function showTestResult(ok: boolean, text: string) {
+  const el = $("h-test-result");
+  el.textContent = text;
+  el.className = ok ? "ok" : "fail";
+  el.hidden = false;
 }
 
 /** 主机对话框的密码区：认证方式为密码时可输入；有已保存密码（含待提交的改动）时显示状态与清除按钮 */

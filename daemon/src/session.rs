@@ -210,6 +210,11 @@ impl State {
         self.prompts.clear();
     }
 
+    /// 有交互提示在等 GUI 回复（连接测试据此暂停计时）
+    pub fn prompting(&self) -> bool {
+        !self.prompts.is_empty()
+    }
+
     /// 登记一个交互提示（覆盖 msg 中的 req_id）并发给 GUI；没有 GUI 连接时返回 None
     pub fn prompt(&mut self, mut msg: ServerMsg) -> Option<oneshot::Receiver<PromptAnswer>> {
         self.gui.as_ref()?;
@@ -449,6 +454,17 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             Some(s) => drop(tokio::spawn(stats::run(state.clone(), req_id, s.fs.clone()))),
             None => st.send(&ServerMsg::HostStats { req_id, stats: None, error: Some("会话已不存在".into()) }),
         },
+        ClientMsg::TestHost { req_id, host, password, use_saved } => {
+            let password = match password {
+                Some(p) => Some(p.0),
+                None if use_saved => {
+                    let old = config::all_hosts(&st.config).into_iter().find(|h| h.id == host.id);
+                    ssh::saved_password(&ssh::Keyring, old.as_ref(), &host)
+                }
+                None => None,
+            };
+            drop(tokio::spawn(ssh::test(state.clone(), req_id, host, password)));
+        }
         // 先落盘会话列表再退出：GUI 重连时拉起（可能是更新后的）tetherd.exe，按 sessions.json 恢复会话
         ClientMsg::Shutdown => {
             st.save_sessions();

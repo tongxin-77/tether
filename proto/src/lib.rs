@@ -433,6 +433,17 @@ pub enum ClientMsg {
     Shutdown,
     /// 采样会话所在机器的主机信息，daemon 以同一 req_id 回 HostStats（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
     HostStats { req_id: u64, session_id: u32 },
+    /// 主机对话框“测试连接”：用对话框当前填写的配置（未保存）做 DNS 解析 → TCP 连接 → 主机密钥校验 → 认证，成功后立即断开，
+    /// 不进连接池、不建会话。password 为对话框填写（或设置面板中尚未提交）的密码；为 None 且 use_saved 时用凭据管理器中
+    /// 已保存的密码（按保存配置时的迁移规则查找）。daemon 以同一 req_id 回 TestHost（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
+    TestHost {
+        req_id: u64,
+        host: Host,
+        #[serde(default)]
+        password: Option<Secret>,
+        #[serde(default)]
+        use_saved: bool,
+    },
 }
 
 /// daemon → GUI
@@ -493,6 +504,8 @@ pub enum ServerMsg {
     Hello { version: String, proto: u32 },
     /// HostStats 的结果：成功时 stats 有值，失败（会话不存在、远程非 Linux、SSH 断开等）时 error 有值
     HostStats { req_id: u64, stats: Option<HostStats>, error: Option<String> },
+    /// TestHost 的结果：成功时 elapsed_ms 为耗时（毫秒），失败时 error 为按阶段区分的原因
+    TestHost { req_id: u64, elapsed_ms: Option<u64>, error: Option<String> },
 }
 
 #[cfg(test)]
@@ -546,6 +559,21 @@ mod tests {
         assert_eq!(v["stats"]["cpuUsage"], 12.5);
         assert_eq!(v["stats"]["gpus"][0]["memTotal"], serde_json::Value::Null);
         assert!(v["stats"]["netRx"].is_null());
+    }
+
+    #[test]
+    fn test_host_json() {
+        let json = r#"{"type":"testHost","reqId":7,"host":{"id":"h1","name":"n","host":"example.com","port":2222,"user":"u","auth":"password"},"password":"s3cret","useSaved":false}"#;
+        let msg: super::ClientMsg = serde_json::from_str(json).unwrap();
+        assert!(!format!("{msg:?}").contains("s3cret"));
+        let super::ClientMsg::TestHost { req_id: 7, host, password: Some(p), use_saved: false } = msg else { panic!() };
+        assert_eq!((host.port, host.auth, p.0.as_str()), (2222, super::AuthKind::Password, "s3cret"));
+        // 不带密码：password / useSaved 缺省
+        let saved: super::ClientMsg =
+            serde_json::from_str(r#"{"type":"testHost","reqId":1,"host":{"id":"","name":"","host":"h","user":"u"},"password":null,"useSaved":true}"#).unwrap();
+        assert!(matches!(saved, super::ClientMsg::TestHost { password: None, use_saved: true, .. }));
+        let ok = super::ServerMsg::TestHost { req_id: 7, elapsed_ms: Some(120), error: None };
+        assert_eq!(serde_json::to_string(&ok).unwrap(), r#"{"type":"testHost","reqId":7,"elapsedMs":120,"error":null}"#);
     }
 
     #[test]

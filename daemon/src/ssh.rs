@@ -8,12 +8,12 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::{Arc, Mutex, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use proto::{AuthKind, Host, PromptKind, ServerMsg};
 use russh::{
-    ChannelMsg, ChannelReadHalf, ChannelWriteHalf, MethodKind,
+    ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, MethodKind,
     client::{self, AuthResult, KeyboardInteractiveAuthResponse},
     keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, agent::AgentIdentity, agent::client::AgentClient, known_hosts},
 };
@@ -36,6 +36,15 @@ const KEYRING_SERVICE: &str = if cfg!(debug_assertions) { "tether-dev" } else { 
 /// Windows OpenSSH 的 ssh-agent 命名管道
 const AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
 const DEFAULT_KEYS: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
+/// 连接测试的最长耗时（等待用户确认指纹 / 输入私钥口令的时间不计）
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 密码来源：正式连接先用凭据管理器中保存的密码，再弹窗询问；连接测试只用给定的密码（None 为没有），不弹窗、不改凭据管理器
+#[derive(Clone, Copy)]
+enum Pw<'a> {
+    Interactive,
+    Given(Option<&'a str>),
+}
 
 /// 会话发给其 channel 任务的命令
 pub enum Cmd {
@@ -249,27 +258,103 @@ pub async fn connection(state: &Shared, host: &Host) -> Result<Arc<Conn>, String
     Ok(conn)
 }
 
-async fn connect(state: &Shared, host: &Host, label: &str) -> Result<Conn, String> {
+/// 客户端配置与 handler（含主机密钥校验）；reject 记录 check_server_key 拒绝的原因
+fn new_client(state: &Shared, host: &Host, label: &str) -> (Arc<client::Config>, Client, Arc<Mutex<Option<String>>>) {
     let config = client::Config { keepalive_interval: Some(Duration::from_secs(30)), keepalive_max: 3, ..Default::default() };
     let reject = Arc::new(Mutex::new(None));
     let handler =
         Client { state: state.clone(), host: host.host.clone(), port: host.port, label: label.into(), reject: reject.clone() };
-    let mut handle = match client::connect(Arc::new(config), (host.host.as_str(), host.port), handler).await {
+    (Arc::new(config), handler, reject)
+}
+
+async fn connect(state: &Shared, host: &Host, label: &str) -> Result<Conn, String> {
+    let (config, handler, reject) = new_client(state, host, label);
+    let mut handle = match client::connect(config, (host.host.as_str(), host.port), handler).await {
         Ok(h) => h,
         Err(e) => return Err(reject.lock().unwrap().take().unwrap_or_else(|| format!("连接失败：{e}"))),
     };
+    authenticate(state, &mut handle, host, label, Pw::Interactive).await?;
+    log!("SSH 认证成功 {label}");
+    Ok(Conn { handle, sftp: Default::default() })
+}
+
+async fn authenticate(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str, pw: Pw<'_>) -> Result<(), String> {
     match host.auth {
         // 与 OpenSSH 一致：密钥全部失败后回退到密码（~/.ssh/config 导入的主机只读，否则无法用密码登录）
         AuthKind::Key => {
-            if let Err(key_err) = auth_key(state, &mut handle, host, label).await {
+            if let Err(key_err) = auth_key(state, h, host, label).await {
                 log!("{label} {key_err}，改用密码认证");
-                auth_password(state, &mut handle, host, label).await.map_err(|e| format!("{key_err}；{e}"))?;
+                auth_password(state, h, host, label, pw).await.map_err(|e| format!("{key_err}；{e}"))?;
             }
         }
-        AuthKind::Password => auth_password(state, &mut handle, host, label).await?,
+        AuthKind::Password => auth_password(state, h, host, label, pw).await?,
     }
-    log!("SSH 认证成功 {label}");
-    Ok(Conn { handle, sftp: Default::default() })
+    Ok(())
+}
+
+/// 主机对话框“测试连接”（异步任务）：用对话框当前填写的配置依次 DNS 解析 → TCP 连接 → 握手与主机密钥校验（与正式连接相同，
+/// 未知主机请用户确认指纹）→ 认证，成功后立即断开；不进连接池、不建会话、不改凭据管理器。结果以 ServerMsg::TestHost 回复
+pub async fn test(state: Shared, req_id: u64, host: Host, password: Option<String>) {
+    let label = label(&host);
+    let start = Instant::now();
+    let stage = Mutex::new("DNS 解析");
+    let result = with_timeout(&state, &stage, test_connect(&state, &host, &label, password.as_deref(), &stage)).await;
+    let (elapsed_ms, error) = match result {
+        Ok(()) => (Some(start.elapsed().as_millis() as u64), None),
+        Err(e) => (None, Some(e)),
+    };
+    log!("连接测试 {label}：{}", error.as_deref().unwrap_or("成功"));
+    state.lock().unwrap().send(&ServerMsg::TestHost { req_id, elapsed_ms, error });
+}
+
+/// 连接测试限时 TEST_TIMEOUT；有交互提示在等 GUI 回复时暂停计时
+async fn with_timeout(state: &Shared, stage: &Mutex<&str>, fut: impl Future<Output = Result<(), String>>) -> Result<(), String> {
+    const TICK: Duration = Duration::from_millis(200);
+    tokio::pin!(fut);
+    let mut left = TEST_TIMEOUT;
+    loop {
+        tokio::select! {
+            r = &mut fut => return r,
+            _ = tokio::time::sleep(TICK) => {
+                if !state.lock().unwrap().prompting() {
+                    left = left.saturating_sub(TICK);
+                    if left.is_zero() {
+                        return Err(format!("连接超时：{}阶段 {} 秒内未完成", stage.lock().unwrap(), TEST_TIMEOUT.as_secs()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn test_connect(state: &Shared, host: &Host, label: &str, password: Option<&str>, stage: &Mutex<&str>) -> Result<(), String> {
+    let addrs: Vec<_> = tokio::net::lookup_host((host.host.as_str(), host.port))
+        .await
+        .map_err(|e| format!("DNS 解析失败：无法解析主机名 {}（{e}）", host.host))?
+        .collect();
+    *stage.lock().unwrap() = "TCP 连接";
+    let stream = tokio::net::TcpStream::connect(&addrs[..]).await.map_err(|e| tcp_error(&e, &host.host, host.port))?;
+    *stage.lock().unwrap() = "SSH 握手";
+    let (config, handler, reject) = new_client(state, host, label);
+    let mut handle = client::connect_stream(config, stream, handler).await.map_err(|e| match reject.lock().unwrap().take() {
+        Some(r) => format!("主机密钥校验未通过：{r}"),
+        None => format!("SSH 握手失败：{e}"),
+    })?;
+    *stage.lock().unwrap() = "认证";
+    let result = authenticate(state, &mut handle, host, label, Pw::Given(password)).await.map_err(|e| format!("认证失败：{e}"));
+    let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
+    result
+}
+
+/// TCP 连接错误按原因分类
+fn tcp_error(e: &std::io::Error, host: &str, port: u16) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        ConnectionRefused => format!("连接被拒绝：{host}:{port} 没有在监听 SSH 服务（{e}）"),
+        TimedOut => format!("连接超时：{host}:{port} 无响应（{e}）"),
+        HostUnreachable | NetworkUnreachable => format!("网络不可达：无法到达 {host}:{port}（{e}）"),
+        _ => format!("TCP 连接失败：{host}:{port}（{e}）"),
+    }
 }
 
 /// 向 GUI 发交互提示并等待回复；没有 GUI、取消、GUI 断开或超时都返回 Err
@@ -314,14 +399,17 @@ async fn auth_key(state: &Shared, h: &mut client::Handle<Client>, host: &Host, l
             return Ok(());
         }
     }
-    if try_agent(h, &host.user).await {
+    if try_agent(h, &host.user, &mut notes).await {
         return Ok(());
     }
     if explicit.is_none() {
         let dir = config::home().map(|d| d.join(".ssh")).unwrap_or_default();
-        for name in DEFAULT_KEYS {
-            let p = dir.join(name);
-            if p.is_file() && try_key_file(state, h, &host.user, &p, label, &mut notes).await {
+        let found: Vec<_> = DEFAULT_KEYS.iter().map(|name| dir.join(name)).filter(|p| p.is_file()).collect();
+        if found.is_empty() {
+            notes.push(format!("~/.ssh 下没有默认私钥（{}）", DEFAULT_KEYS.join(" / ")));
+        }
+        for p in found {
+            if try_key_file(state, h, &host.user, &p, label, &mut notes).await {
                 return Ok(());
             }
         }
@@ -339,6 +427,10 @@ async fn try_key_file(
     label: &str,
     notes: &mut Vec<String>,
 ) -> bool {
+    if !path.is_file() {
+        notes.push(format!("私钥文件 {} 不存在", path.display()));
+        return false;
+    }
     let key = match keys::load_secret_key(path, None) {
         Ok(k) => k,
         Err(keys::Error::KeyIsEncrypted) => {
@@ -361,7 +453,7 @@ async fn try_key_file(
             }
         }
         Err(e) => {
-            notes.push(format!("读取私钥 {} 失败：{e}", path.display()));
+            notes.push(format!("无法解析私钥 {}：{e}", path.display()));
             return false;
         }
     };
@@ -380,9 +472,20 @@ async fn try_key_file(
 }
 
 /// 依次尝试 Windows OpenSSH ssh-agent 中的公钥；agent 未运行时直接跳过
-async fn try_agent(h: &mut client::Handle<Client>, user: &str) -> bool {
-    let Ok(mut agent) = AgentClient::connect_named_pipe(AGENT_PIPE).await else { return false };
-    let Ok(identities) = agent.request_identities().await else { return false };
+async fn try_agent(h: &mut client::Handle<Client>, user: &str, notes: &mut Vec<String>) -> bool {
+    let Ok(mut agent) = AgentClient::connect_named_pipe(AGENT_PIPE).await else {
+        notes.push("ssh-agent 未运行".into());
+        return false;
+    };
+    let Ok(identities) = agent.request_identities().await else {
+        notes.push("读取 ssh-agent 中的密钥失败".into());
+        return false;
+    };
+    if identities.is_empty() {
+        notes.push("ssh-agent 中没有密钥".into());
+        return false;
+    }
+    notes.push(format!("服务器未接受 ssh-agent 中的 {} 个密钥", identities.len()));
     let hash = h.best_supported_rsa_hash().await.ok().flatten().flatten();
     for id in identities {
         let AgentIdentity::PublicKey { key, .. } = id else { continue };
@@ -395,8 +498,13 @@ async fn try_agent(h: &mut client::Handle<Client>, user: &str) -> bool {
     false
 }
 
-/// 密码认证：先用凭据管理器中保存的密码，失败则删除该保存项并弹窗（最多 3 次）；勾选保存且成功后写入凭据管理器
-async fn auth_password(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str) -> Result<(), String> {
+/// 密码认证：先用凭据管理器中保存的密码，失败则删除该保存项并弹窗（最多 3 次）；勾选保存且成功后写入凭据管理器。
+/// 连接测试（Pw::Given）只试给定的密码一次
+async fn auth_password(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str, pw: Pw<'_>) -> Result<(), String> {
+    if let Pw::Given(given) = pw {
+        let Some(password) = given else { return Err("未填写密码，凭据管理器中也没有已保存的密码".into()) };
+        return if try_password(h, &host.user, password).await? { Ok(()) } else { Err("密码错误".into()) };
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, label).map_err(|e| log!("打开凭据管理器失败：{e}")).ok();
     if let Some(saved) = entry.as_ref().and_then(|e| e.get_password().ok()) {
         if try_password(h, &host.user, &saved).await? {
@@ -454,6 +562,11 @@ impl CredStore for Keyring {
 /// 有已保存密码的主机 id
 pub fn password_saved(store: &impl CredStore, hosts: &[Host]) -> Vec<String> {
     hosts.iter().filter(|h| store.get(&label(h)).is_some()).map(|h| h.id.clone()).collect()
+}
+
+/// 连接测试未填写密码时用的已保存密码，与保存配置时的迁移规则一致：新账户已有密码则用它，否则用该主机原账户（old）的密码
+pub fn saved_password(store: &impl CredStore, old: Option<&Host>, new: &Host) -> Option<String> {
+    store.get(&label(new)).or_else(|| old.and_then(|o| store.get(&label(o))))
 }
 
 /// 设置（Some）/ 清除（None）主机的已保存密码
@@ -623,5 +736,60 @@ mod tests {
         assert_eq!(password_saved(&s, &[h.clone(), host("h2", "x", 22)]), vec!["h1".to_string()]);
         set_password(&s, &h, None).unwrap();
         assert!(password_saved(&s, &[h]).is_empty());
+    }
+
+    #[test]
+    fn test_uses_saved_password_like_migration() {
+        // 账户未变：用其已保存密码；账户改了且新账户无密码：用原账户的（保存时会迁过去）；新账户已有密码：用新账户的
+        let s = store(&[("test@127.0.0.1:2222", "old")]);
+        let old = host("h1", "test", 2222);
+        assert_eq!(saved_password(&s, Some(&old), &old).as_deref(), Some("old"));
+        assert_eq!(saved_password(&s, Some(&old), &host("h1", "test", 2223)).as_deref(), Some("old"));
+        s.set("test@127.0.0.1:2223", "new").unwrap();
+        assert_eq!(saved_password(&s, Some(&old), &host("h1", "test", 2223)).as_deref(), Some("new"));
+        // 新主机（无原配置）且账户无密码
+        assert_eq!(saved_password(&s, None, &host("", "x", 22)), None);
+    }
+
+    #[test]
+    fn tcp_errors_classified() {
+        use std::io::{Error, ErrorKind};
+        let msg = |k| tcp_error(&Error::from(k), "h", 22);
+        assert!(msg(ErrorKind::ConnectionRefused).starts_with("连接被拒绝"));
+        assert!(msg(ErrorKind::TimedOut).starts_with("连接超时"));
+        assert!(msg(ErrorKind::HostUnreachable).starts_with("网络不可达"));
+        assert!(msg(ErrorKind::PermissionDenied).starts_with("TCP 连接失败"));
+    }
+
+    fn shared() -> Shared {
+        Arc::new(Mutex::new(session::State::default()))
+    }
+
+    async fn run_test(port: u16) -> Result<(), String> {
+        let state = shared();
+        let stage = Mutex::new("DNS 解析");
+        let h = host("h1", "test", port);
+        with_timeout(&state, &stage, test_connect(&state, &h, &label(&h), Some("pw"), &stage)).await
+    }
+
+    #[tokio::test]
+    async fn test_refused() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let err = run_test(port).await.unwrap_err();
+        assert!(err.starts_with("连接被拒绝"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_not_ssh_server() {
+        // 对端不是 SSH 服务：回一行 HTTP 后关闭
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut s, _) = listener.accept().await.unwrap();
+            let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
+        });
+        let err = run_test(port).await.unwrap_err();
+        assert!(err.starts_with("SSH 握手失败"), "{err}");
     }
 }
