@@ -41,7 +41,7 @@ function store(key: string, value: string) {
 export async function initUpdater(count: () => number, banner: () => void) {
   sessionCount = count;
   onBanner = banner;
-  $("about-version").textContent = await version;
+  $("about-version").textContent = $("brand-ver").textContent = await version;
   const auto = $<HTMLInputElement>("update-auto");
   auto.checked = load(AUTO_KEY) !== "0";
   auto.addEventListener("change", () => store(AUTO_KEY, auto.checked ? "1" : "0"));

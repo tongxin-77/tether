@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { showPreview } from "./preview";
+import { icon } from "./icons";
 
 // 与 proto crate 的文件树协议保持一致
 export interface FsEntry {
@@ -81,10 +82,11 @@ export type MenuItem = [string, () => void, boolean?] | null;
 type Conflict = "overwrite" | "skip" | "keep";
 
 const STORE_KEY = "tether.files.open";
-const FOLDER_SVG =
-  '<svg class="fs-icon" viewBox="0 0 16 16"><path fill="#dcb67a" d="M1.5 3h4.3l1.5 1.5h7.2v8.5h-13z"/></svg>';
-const FILE_SVG =
-  '<svg class="fs-icon" viewBox="0 0 16 16"><path fill="none" stroke="#9d9d9d" d="M3.5 1.5h6l3 3v10h-9z M9.5 1.5v3h3"/></svg>';
+const FOLDER_SVG = icon("folder", "fs-icon");
+const FOLDER_OPEN_SVG = icon("folder-open", "fs-icon");
+const FILE_SVG = icon("file", "fs-icon");
+const MD_SVG = icon("file-text", "fs-icon");
+const ARROW_SVG = icon("chevron-right");
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const panel = $("files");
@@ -232,7 +234,7 @@ export function forgetFiles(id: number) {
 
 function applyOpened() {
   panel.classList.toggle("collapsed", !opened);
-  toggleBtn.textContent = opened ? "›" : "‹";
+  toggleBtn.innerHTML = icon(opened ? "panel-right-close" : "panel-right-open");
   toggleBtn.title = opened ? "收起文件树" : "展开文件树";
   if (opened) render();
 }
@@ -403,7 +405,10 @@ function row(t: Tree, e: FsEntry, path: string, depth: number, folder: boolean, 
   el.dataset.path = path;
   el.dataset.dir = folder ? "1" : "";
   el.style.paddingLeft = `${4 + depth * 14}px`;
-  el.innerHTML = `<span class="fs-arrow">${folder ? (expanded ? "▾" : "▸") : ""}</span>${folder ? FOLDER_SVG : FILE_SVG}<span class="fs-name"></span>`;
+  el.classList.toggle("open", folder && expanded);
+  el.classList.toggle("md", !folder && isMarkdown(e.name));
+  const ico = folder ? (expanded ? FOLDER_OPEN_SVG : FOLDER_SVG) : isMarkdown(e.name) ? MD_SVG : FILE_SVG;
+  el.innerHTML = `<span class="fs-arrow">${folder ? ARROW_SVG : ""}</span>${ico}<span class="fs-name"></span>`;
   el.querySelector(".fs-name")!.textContent = e.name;
   const info = [e.name];
   if (!folder) info.push(fmtSize(e.size));

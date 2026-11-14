@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tether 现代暗色</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{
+  --void:#08090B;        /* 窗口外 */
+  --base:#0F1013;        /* 窗口底 */
+  --layer1:#14151A;      /* 侧栏/面板 */
+  --layer2:#1A1C22;      /* 卡片、输入 */
+  --layer3:#22252D;      /* hover */
+  --line:#24262D;
+  --line-soft:#1C1E24;
+  --line-strong:#2F323B;
+  --text:#E4E6EB;
+  --text-2:#A3A7B1;
+  --text-3:#6B707C;
+  --accent:#8B93FF;
+  --accent-2:#B58CFF;
+  --accent-glow:rgba(139,147,255,.35);
+  --think:#F0B65A;
+  --wait:#F2677E;
+  --agent:#5BC6E8;
+  --done:#57D69B;
+  --term-bg:#0B0C0F;
+  --sans:"Geist","Noto Sans SC",system-ui,sans-serif;
+  --mono:"Geist Mono","Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(900px 500px at 20% -10%, rgba(139,147,255,.08), transparent 60%),
+    radial-gradient(700px 400px at 100% 110%, rgba(181,140,255,.06), transparent 60%),
+    var(--void);
+  color:var(--text);font:13px/1.5 var(--sans);
+  display:grid;place-items:center;overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,select{font:inherit;color:inherit}
+:focus-visible{outline:1.5px solid var(--accent);outline-offset:1px;border-radius:6px}
+svg.lucide{width:15px;height:15px;stroke-width:1.75;flex:none}
+
+kbd{
+  font:500 10.5px/1 var(--mono);color:var(--text-2);
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:18px;height:18px;padding:0 5px;border-radius:4px;
+  background:linear-gradient(#24262E,#1C1E24);
+  border:1px solid var(--line-strong);border-bottom-color:#14151A;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+}
+.kbds{display:inline-flex;gap:3px}
+
+/* ---------- 窗口 ---------- */
+.window{
+  width:min(1440px,calc(100vw - 32px));height:min(900px,calc(100vh - 32px));
+  background:var(--base);border:1px solid var(--line-strong);border-radius:12px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.6),0 30px 80px -20px rgba(0,0,0,.8),inset 0 1px 0 rgba(255,255,255,.04);
+  display:grid;grid-template-rows:38px 1fr;overflow:hidden;position:relative;
+}
+.titlebar{
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+  border-bottom:1px solid var(--line-soft);padding-left:14px;
+  background:linear-gradient(#121318,#0F1013);
+}
+.brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:-.01em}
+.brand-mark{
+  width:18px;height:18px;border-radius:5px;position:relative;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  box-shadow:0 0 12px var(--accent-glow);
+}
+.brand-mark::after{content:"";position:absolute;inset:5px 8px;background:var(--base);border-radius:2px}
+.brand small{color:var(--text-3);font-weight:400;font:400 11px var(--mono)}
+.search-trigger{
+  width:420px;height:26px;border-radius:7px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;
+  background:var(--layer1);border:1px solid var(--line);color:var(--text-3);
+  transition:border-color .15s,background .15s;
+}
+.search-trigger:hover{border-color:var(--line-strong);background:var(--layer2);color:var(--text-2)}
+.search-trigger span{flex:1;text-align:left;font-size:12px}
+.winctl{justify-self:end;display:flex;height:100%}
+.winctl button{width:46px;display:grid;place-items:center;color:var(--text-3)}
+.winctl button:hover{background:var(--layer2);color:var(--text)}
+.winctl button.close:hover{background:#C4334A;color:#fff}
+
+.body{display:grid;grid-template-columns:252px 1fr 240px;min-height:0}
+
+/* ---------- 侧栏 ---------- */
+.sidebar{background:var(--layer1);border-right:1px solid var(--line-soft);display:flex;flex-direction:column;min-height:0}
+.side-top{padding:12px 12px 8px;position:relative}
+.new-btn{
+  width:100%;height:32px;border-radius:8px;display:flex;align-items:center;gap:8px;padding:0 8px 0 10px;
+  background:linear-gradient(180deg,rgba(139,147,255,.18),rgba(139,147,255,.08));
+  border:1px solid rgba(139,147,255,.35);color:#DADDFF;font-weight:500;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 0 var(--accent-glow);
+  transition:box-shadow .2s,border-color .2s;
+}
+.new-btn:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 18px -4px var(--accent-glow);border-color:rgba(139,147,255,.6)}
+.new-btn span{flex:1;text-align:left}
+.new-btn .chev{color:var(--text-3);transition:transform .15s}
+.new-btn[aria-expanded="true"] .chev{transform:rotate(180deg)}
+.menu{
+  position:absolute;left:12px;right:12px;top:48px;z-index:20;
+  background:var(--layer2);border:1px solid var(--line-strong);border-radius:9px;padding:4px;
+  box-shadow:0 16px 40px -10px rgba(0,0,0,.7);
+  opacity:0;transform:translateY(-4px);pointer-events:none;transition:.14s ease-out;
+}
+.menu.open{opacity:1;transform:none;pointer-events:auto}
+.menu button{width:100%;display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:6px;text-align:left}
+.menu button:hover{background:var(--layer3)}
+.menu .m-txt{flex:1;display:flex;flex-direction:column;line-height:1.3}
+.menu .m-txt small{color:var(--text-3);font-size:11px}
+
+.side-label{display:flex;align-items:center;justify-content:space-between;padding:10px 16px 6px;color:var(--text-3);font-size:11.5px}
+.side-label .count{font:11px var(--mono)}
+.sessions{list-style:none;padding:0 8px;overflow:auto;flex:1;position:relative}
+/* tether 线：所有会话挂在一条后台进程的“系绳”上 */
+.sessions::before{
+  content:"";position:absolute;left:21px;top:14px;bottom:14px;width:1px;
+  background:linear-gradient(var(--line-strong),var(--line-strong) 85%,transparent);
+}
+.session{
+  position:relative;display:grid;grid-template-columns:18px 1fr auto;align-items:center;gap:8px;
+  padding:7px 8px 7px 8px;border-radius:8px;cursor:pointer;margin-bottom:1px;
+  border:1px solid transparent;
+}
+.session:hover{background:rgba(255,255,255,.025)}
+.session .node{
+  width:9px;height:9px;border-radius:50%;justify-self:center;position:relative;z-index:1;
+  background:var(--layer1);border:1.5px solid var(--text-3);
+}
+.session .node.local{border-color:#7E8494}
+.session .node.ssh{border-color:var(--agent)}
+.session.active{
+  background:linear-gradient(90deg,rgba(139,147,255,.12),rgba(139,147,255,.03));
+  border-color:rgba(139,147,255,.22);
+}
+.session.active .node{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 3px rgba(139,147,255,.18),0 0 10px var(--accent)}
+.s-main{min-width:0}
+.s-name{display:flex;align-items:center;gap:6px;font-weight:500;white-space:nowrap;overflow:hidden}
+.s-name b{font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.tag{font:500 10px/1 var(--mono);padding:2px 4px;border-radius:3px;color:var(--text-3);border:1px solid var(--line-strong);flex:none}
+.tag.ssh{color:var(--agent);border-color:rgba(91,198,232,.3)}
+.s-sub{color:var(--text-3);font:11px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-key{opacity:0;transition:opacity .12s}
+.session:hover .s-key{opacity:1}
+
+.status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;white-space:nowrap;
+  padding:2px 7px 2px 6px;border-radius:999px;border:1px solid;line-height:16px}
+.status i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.status.think{color:var(--think);border-color:rgba(240,182,90,.28);background:rgba(240,182,90,.07)}
+.status.think i{animation:pulse 1.4s ease-in-out infinite}
+.status.wait{color:var(--wait);border-color:rgba(242,103,126,.32);background:rgba(242,103,126,.08)}
+.status.wait i{box-shadow:0 0 8px currentColor}
+.status.agent{color:var(--agent);border-color:rgba(91,198,232,.28);background:rgba(91,198,232,.07)}
+.status.agent i{animation:spin 1.2s linear infinite;border-radius:1px;background:none;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;width:8px;height:8px}
+.status.done{color:var(--done);border-color:rgba(87,214,155,.25);background:rgba(87,214,155,.06)}
+.status.mini{padding:0;border:0;background:none;font-size:0;gap:0}
+.status.mini i{width:7px;height:7px}
+.status.agent.mini i{width:9px;height:9px}
+@keyframes pulse{50%{opacity:.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.side-foot{border-top:1px solid var(--line-soft);padding:10px;display:flex;flex-direction:column;gap:8px}
+.update{
+  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
+  background:linear-gradient(135deg,rgba(139,147,255,.10),rgba(181,140,255,.06));
+  border:1px solid rgba(139,147,255,.22);font-size:12px;
+}
+.update .u-txt{flex:1;line-height:1.35}
+.update .u-txt small{display:block;color:var(--text-3);font-size:11px}
+.update button{font-size:11.5px;color:#DADDFF;padding:3px 8px;border-radius:5px;border:1px solid rgba(139,147,255,.4)}
+.update button:hover{background:rgba(139,147,255,.15)}
+.foot-row{display:flex;align-items:center;gap:6px}
+.ghost{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text-2);flex:1}
+.ghost:hover{background:var(--layer2);color:var(--text)}
+.ghost span{flex:1;text-align:left}
+.daemon{display:flex;align-items:center;gap:6px;color:var(--text-3);font:11px var(--mono);padding:0 6px}
+.daemon i{width:6px;height:6px;border-radius:50%;background:var(--done);box-shadow:0 0 6px var(--done)}
+
+/* ---------- 中间 ---------- */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;padding:10px;gap:8px}
+.card{
+  flex:1;display:flex;flex-direction:column;min-height:0;border-radius:10px;overflow:hidden;
+  background:var(--term-bg);border:1px solid var(--line);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+}
+.card-head{
+  display:flex;align-items:center;gap:12px;padding:0 10px 0 14px;height:44px;flex:none;
+  border-bottom:1px solid var(--line-soft);
+  background:linear-gradient(180deg,#15161B,#111216);
+}
+.ch-title{min-width:0;display:flex;align-items:baseline;gap:10px;flex:1}
+.ch-title h1{font-size:14px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.ch-meta{color:var(--text-3);font:11.5px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.ch-meta svg.lucide{width:12px;height:12px}
+.ch-actions{display:flex;align-items:center;gap:2px}
+.icon-btn{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--text-3)}
+.icon-btn:hover{background:var(--layer2);color:var(--text)}
+.sep{width:1px;height:16px;background:var(--line);margin:0 6px}
+
+.banner{
+  display:flex;align-items:center;gap:10px;padding:8px 10px 8px 12px;border-radius:9px;flex:none;
+  background:linear-gradient(90deg,rgba(240,182,90,.09),rgba(240,182,90,.02));
+  border:1px solid rgba(240,182,90,.22);font-size:12.5px;
+}
+.banner > svg{color:var(--think)}
+.banner p{flex:1;color:var(--text-2)}
+.banner p strong{color:var(--text);font-weight:500}
+.btn{height:26px;padding:0 10px;border-radius:6px;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:var(--layer2)}
+.btn:hover{background:var(--layer3)}
+.btn.primary{background:linear-gradient(180deg,#959CFF,#7A83F5);border-color:#9AA1FF;color:#0D0E1A;box-shadow:0 0 14px -4px var(--accent-glow),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.quiet{background:none;border-color:transparent;color:var(--text-3)}
+.btn.quiet:hover{color:var(--text);background:var(--layer2)}
+
+.term{
+  flex:1;overflow:auto;padding:14px 16px 18px;font:12.5px/1.62 var(--mono);color:#C9CDD6;
+  white-space:pre-wrap;word-break:break-all;
+  scrollbar-width:thin;scrollbar-color:#2A2D35 transparent;
+}
+.term .ps{color:#6B707C}.term .path{color:#8B93FF}.term .cmd{color:#E8EAF0}
+.term .br{color:#B58CFF}.term .g{color:#57D69B}.term .r{color:#F2677E}.term .y{color:#F0B65A}
+.term .c{color:#5BC6E8}.term .d{color:#6B707C}.term .w{color:#E8EAF0;font-weight:500}
+.term .cc-box{display:block;border:1px solid #2A2D36;border-radius:6px;padding:6px 10px;margin:4px 0;color:#A3A7B1;white-space:pre-wrap}
+.term .ask{display:block;border:1px solid rgba(242,103,126,.4);border-radius:6px;padding:8px 10px;margin:6px 0;background:rgba(242,103,126,.05)}
+.term .sel{color:#0B0C0F;background:#8B93FF;padding:0 4px;border-radius:2px}
+.caret{display:inline-block;width:7px;height:15px;background:#C9CDD6;vertical-align:-3px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+.statusbar{
+  display:flex;align-items:center;gap:14px;height:26px;flex:none;padding:0 12px;
+  border-top:1px solid var(--line-soft);color:var(--text-3);font:11px var(--mono);background:#0E0F12;
+}
+.statusbar .grow{flex:1}
+.statusbar .hint{display:flex;align-items:center;gap:5px;font-family:var(--sans)}
+
+/* ---------- 右栏 ---------- */
+.files{background:var(--layer1);border-left:1px solid var(--line-soft);display:flex;flex-direction:column;min-height:0}
+.panel-head{display:flex;align-items:center;gap:4px;height:44px;padding:0 8px 0 14px;border-bottom:1px solid var(--line-soft);flex:none}
+.panel-head h2{flex:1;font-size:12.5px;font-weight:600}
+.crumb{
+  margin:10px 10px 6px;height:28px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:7px;
+  background:var(--base);border:1px solid var(--line);color:var(--text-2);font:11.5px var(--mono);overflow:hidden;white-space:nowrap
+}
+.crumb span{overflow:hidden;text-overflow:ellipsis}
+.crumb svg.lucide{color:var(--text-3);width:13px;height:13px}
+.tree{list-style:none;padding:2px 6px;overflow:auto;flex:1;font-size:12.5px;scrollbar-width:thin;scrollbar-color:#2A2D35 transparent}
+.tree li{display:flex;align-items:center;gap:6px;height:26px;padding-right:8px;border-radius:6px;cursor:default;color:var(--text-2);white-space:nowrap}
+.tree li:hover{background:rgba(255,255,255,.03);color:var(--text)}
+.tree li.sel{background:rgba(139,147,255,.10);color:var(--text);box-shadow:inset 1px 0 0 var(--accent)}
+.tree li .nm{flex:1;overflow:hidden;text-overflow:ellipsis}
+.tree li .sz{color:var(--text-3);font:10.5px var(--mono)}
+.tree li svg.lucide{width:14px;height:14px}
+.tree .dir svg.lucide.fi{color:#8B93FF}
+.tree .ic-md{color:#5BC6E8}.tree .ic-ts{color:#6E9BFF}.tree .ic-rs{color:#F0A36A}.tree .ic-json{color:#F0B65A}.tree .ic-cfg{color:#6B707C}
+.tree .tw{color:var(--text-3);width:12px!important;height:12px!important}
+.tree .gm{font:500 10px var(--mono);width:12px;text-align:center}
+.gm.m{color:var(--think)}.gm.a{color:var(--done)}
+
+.transfer{margin:6px 10px;padding:9px 10px;border-radius:8px;background:var(--base);border:1px solid var(--line);font-size:11.5px}
+.transfer .t-row{display:flex;align-items:center;gap:7px;color:var(--text-2)}
+.transfer .t-row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.transfer .t-row .pc{font:11px var(--mono);color:var(--text-3)}
+.bar{height:3px;border-radius:2px;background:var(--layer3);margin-top:7px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--accent-2));box-shadow:0 0 8px var(--accent-glow)}
+
+.host{position:relative;border-top:1px solid var(--line-soft);flex:none}
+.host-strip{width:100%;height:30px;display:flex;align-items:center;gap:6px;padding:0 10px;font:11px var(--mono);color:var(--text-2);text-align:left;white-space:nowrap}
+.host-strip:hover,.host:focus-within .host-strip{background:var(--layer2);color:var(--text)}
+.host-strip .dot{width:6px;height:6px;border-radius:50%;flex:none;margin-right:-3px}
+.host-strip .sep{color:var(--text-3)}
+.host-pop{position:absolute;right:8px;bottom:calc(100% + 6px);width:272px;z-index:40;display:none;padding:12px 14px 14px;background:var(--layer1);border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 18px 50px -12px rgba(0,0,0,.75)}
+.host:hover .host-pop,.host:focus-within .host-pop{display:block}
+.host-h{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:500;margin-bottom:10px}
+.host-h .muted{margin-left:auto;color:var(--text-3);font:11px var(--mono);font-weight:400}
+.metric{display:grid;grid-template-columns:34px 1fr 80px;align-items:center;gap:8px;margin-bottom:8px;font-size:11.5px}
+.metric .k{color:var(--text-3)}
+.metric .v{font:11px var(--mono);color:var(--text-2);text-align:right}
+.meter{height:4px;background:var(--layer3);border-radius:2px;overflow:hidden;display:flex;gap:1px}
+.meter i{display:block;height:100%;border-radius:2px}
+.os{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);color:var(--text-2);font-size:11.5px}
+.os span:last-child{margin-left:auto;color:var(--text-3);font:11px var(--mono)}
+
+/* ---------- 浮层 ---------- */
+.scrim{
+  position:absolute;inset:38px 0 0 0;z-index:50;display:grid;place-items:start center;
+  background:rgba(6,7,9,.55);backdrop-filter:blur(3px);
+  opacity:0;pointer-events:none;transition:opacity .14s;
+}
+.scrim.open{opacity:1;pointer-events:auto}
+.scrim.center{place-items:center}
+.palette{
+  margin-top:72px;width:600px;border-radius:12px;overflow:hidden;
+  background:rgba(22,23,29,.96);border:1px solid var(--line-strong);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5),0 30px 70px -10px rgba(0,0,0,.85),0 0 60px -20px var(--accent-glow);
+  transform:translateY(-6px) scale(.985);transition:transform .16s cubic-bezier(.2,.8,.2,1);
+}
+.scrim.open .palette,.scrim.open .dialog{transform:none}
+.p-input{display:flex;align-items:center;gap:10px;padding:0 14px;height:50px;border-bottom:1px solid var(--line)}
+.p-input svg.lucide{color:var(--text-3);width:17px;height:17px}
+.p-input input{flex:1;background:none;border:0;outline:0;font-size:14.5px}
+.p-input input::placeholder{color:var(--text-3)}
+.p-list{max-height:360px;overflow:auto;padding:6px}
+.p-group{color:var(--text-3);font-size:11px;padding:8px 10px 4px}
+.p-item{display:flex;align-items:center;gap:10px;padding:0 10px;height:36px;border-radius:7px;cursor:pointer;color:var(--text-2)}
+.p-item .p-t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.p-item .p-t small{color:var(--text-3);font:11px var(--mono);margin-left:8px}
+.p-item.on{background:var(--layer3);color:var(--text);box-shadow:inset 2px 0 0 var(--accent)}
+.p-item.on svg.lucide{color:var(--accent)}
+.p-empty{padding:22px;text-align:center;color:var(--text-3)}
+.p-foot{display:flex;align-items:center;gap:14px;padding:0 14px;height:36px;border-top:1px solid var(--line);color:var(--text-3);font-size:11.5px;background:rgba(15,16,19,.6)}
+.p-foot .grow{flex:1}
+.p-foot span{display:flex;align-items:center;gap:5px}
+
+.dialog{
+  width:520px;border-radius:12px;background:var(--layer1);border:1px solid var(--line-strong);
+  box-shadow:0 30px 70px -10px rgba(0,0,0,.85);transform:translateY(6px) scale(.985);transition:transform .16s cubic-bezier(.2,.8,.2,1);
+}
+.d-head{display:flex;align-items:center;gap:10px;padding:14px 14px 12px 18px;border-bottom:1px solid var(--line-soft)}
+.d-head h3{flex:1;font-size:14px;font-weight:600}
+.d-body{padding:6px 18px}
+.row{display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-soft)}
+.row:last-child{border-bottom:0}
+.row .lbl{flex:1;min-width:0}
+.row .lbl div{font-weight:500}
+.row .lbl small{display:block;color:var(--text-3);font-size:11.5px;margin-top:1px}
+.select{height:30px;padding:0 28px 0 10px;border-radius:7px;background:var(--layer2);border:1px solid var(--line-strong);appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%236B707C' stroke-width='2'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 9px center;font-size:12.5px;outline:0}
+.select:focus{border-color:var(--accent)}
+.range{display:flex;align-items:center;gap:10px}
+.range output{font:11.5px var(--mono);color:var(--text-2);width:34px;text-align:right}
+input[type=range]{-webkit-appearance:none;appearance:none;width:160px;height:4px;border-radius:2px;outline:0;
+  background:linear-gradient(90deg,var(--accent) var(--p,90%),var(--layer3) var(--p,90%))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#EEF0FF;border:0;box-shadow:0 0 0 3px rgba(139,147,255,.3),0 1px 3px rgba(0,0,0,.5)}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#EEF0FF;border:0;box-shadow:0 0 0 3px rgba(139,147,255,.3)}
+.switch{position:relative;width:32px;height:18px;flex:none}
+.switch input{position:absolute;opacity:0;inset:0;cursor:pointer;z-index:1;margin:0}
+.switch span{position:absolute;inset:0;border-radius:999px;background:var(--layer3);border:1px solid var(--line-strong);transition:.15s}
+.switch span::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#8B8F9A;transition:.15s}
+.switch input:checked + span{background:linear-gradient(180deg,#959CFF,#7A83F5);border-color:#9AA1FF;box-shadow:0 0 10px -2px var(--accent-glow)}
+.switch input:checked + span::after{left:16px;background:#fff}
+.switch input:focus-visible + span{outline:1.5px solid var(--accent);outline-offset:2px}
+.cc-state{display:inline-flex;align-items:center;gap:6px;font:11px var(--mono);color:var(--done);margin-top:4px}
+.d-foot{display:flex;align-items:center;gap:8px;padding:12px 14px 14px 18px;border-top:1px solid var(--line-soft)}
+.d-foot .grow{flex:1;color:var(--text-3);font:11px var(--mono)}
+
+.toast{position:absolute;bottom:44px;left:50%;transform:translate(-50%,8px);opacity:0;transition:.18s;z-index:60;
+  background:var(--layer2);border:1px solid var(--line-strong);border-radius:8px;padding:7px 12px;font-size:12px;display:flex;gap:8px;align-items:center;
+  box-shadow:0 10px 30px -8px rgba(0,0,0,.7);pointer-events:none}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast svg.lucide{color:var(--done)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="window" id="win">
+  <!-- 标题栏 -->
+  <header class="titlebar">
+    <div class="brand"><span class="brand-mark"></span>Tether <small>0.2.0</small></div>
+    <button class="search-trigger" id="open-palette" aria-label="打开命令面板">
+      <i data-lucide="search"></i><span>搜索会话、文件或命令</span>
+      <span class="kbds" style="flex:none"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+    </button>
+    <div class="winctl">
+      <button aria-label="最小化"><i data-lucide="minus"></i></button>
+      <button aria-label="最大化"><i data-lucide="square" style="width:12px;height:12px"></i></button>
+      <button class="close" aria-label="关闭窗口（会话继续在后台运行）" title="关闭窗口，会话继续在后台运行"><i data-lucide="x"></i></button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- 左侧栏 -->
+    <aside class="sidebar">
+      <div class="side-top">
+        <button class="new-btn" id="new-btn" aria-expanded="false" aria-haspopup="menu">
+          <i data-lucide="plus"></i><span>新建会话</span>
+          <span class="kbds"><kbd>Ctrl</kbd><kbd>T</kbd></span>
+          <i data-lucide="chevron-down" class="chev"></i>
+        </button>
+        <div class="menu" id="new-menu" role="menu">
+          <button role="menuitem"><i data-lucide="folder-open"></i><span class="m-txt">本地目录<small>在文件夹中打开 PowerShell</small></span></button>
+          <button role="menuitem"><i data-lucide="server"></i><span class="m-txt">SSH 主机<small>连接已保存的远程主机</small></span></button>
+        </div>
+      </div>
+      <div class="side-label"><span>会话</span><span class="count" id="count">5</span></div>
+      <ul class="sessions" id="sessions"></ul>
+      <div class="side-foot">
+        <div class="update">
+          <i data-lucide="sparkles" style="color:var(--accent)"></i>
+          <div class="u-txt">新版本 0.2.1 已就绪<small>更新不会中断会话</small></div>
+          <button>重启更新</button>
+        </div>
+        <div class="foot-row">
+          <button class="ghost" id="open-settings"><i data-lucide="settings-2"></i><span>设置</span><span class="kbds"><kbd>Ctrl</kbd><kbd>,</kbd></span></button>
+        </div>
+        <div class="daemon" title="会话由后台进程持有，关闭窗口不会中断"><i></i>后台进程运行中 · pid 18244</div>
+      </div>
+    </aside>
+
+    <!-- 中间 -->
+    <main class="main">
+      <div class="banner" id="banner">
+        <i data-lucide="triangle-alert"></i>
+        <p><strong>建议安装 PowerShell 7。</strong>当前使用 Windows PowerShell 5.1，中文输出和补全体验更差。</p>
+        <button class="btn primary" id="install-pwsh"><i data-lucide="download"></i>安装</button>
+        <button class="btn quiet" id="dismiss-banner">不再提示</button>
+      </div>
+      <section class="card">
+        <div class="card-head">
+          <div class="ch-title">
+            <h1 id="ch-name">tether</h1>
+            <span class="ch-meta" id="ch-meta"></span>
+          </div>
+          <span id="ch-status"></span>
+          <span class="sep"></span>
+          <div class="ch-actions">
+            <button class="icon-btn" title="复制路径" id="copy-path"><i data-lucide="copy"></i></button>
+            <button class="icon-btn" title="拆分"><i data-lucide="columns-2"></i></button>
+            <button class="icon-btn" title="更多"><i data-lucide="ellipsis"></i></button>
+          </div>
+        </div>
+        <div class="term" id="term" tabindex="0" aria-label="终端输出"></div>
+        <div class="statusbar">
+          <span id="sb-shell">pwsh 7.4.6</span><span>UTF-8</span><span id="sb-size">132×38</span>
+          <span class="grow"></span>
+          <span class="hint"><kbd>Ctrl</kbd><kbd>Tab</kbd> 切换会话</span>
+          <span class="hint"><kbd>Ctrl</kbd><kbd>W</kbd> 关闭</span>
+        </div>
+      </section>
+    </main>
+
+    <!-- 右侧 -->
+    <aside class="files">
+      <div class="panel-head">
+        <h2>文件</h2>
+        <button class="icon-btn" title="上级目录"><i data-lucide="arrow-up"></i></button>
+        <button class="icon-btn" title="刷新"><i data-lucide="rotate-cw"></i></button>
+        <button class="icon-btn" title="收起文件栏"><i data-lucide="panel-right-close"></i></button>
+      </div>
+      <div class="crumb"><i data-lucide="hard-drive"></i><span id="crumb">C:\workspace\tether</span></div>
+      <ul class="tree" id="tree"></ul>
+      <div class="transfer">
+        <div class="t-row"><i data-lucide="upload" style="width:13px;height:13px;color:var(--accent)"></i><span class="nm">tether-0.2.1-setup.exe</span><span class="pc">64%</span></div>
+        <div class="bar"><i style="width:64%"></i></div>
+        <div class="t-row" style="margin-top:6px;font-size:11px;color:var(--text-3)"><span style="flex:1">上传到 devbox:/opt/releases</span><span style="font-family:var(--mono)">4.1 MB/s</span></div>
+      </div>
+      <div class="host">
+        <button class="host-strip" id="host-strip" title="主机详情"></button>
+        <div class="host-pop" role="dialog" aria-label="主机详情">
+        <div class="host-h"><i data-lucide="cpu" style="color:var(--text-3)"></i><span id="host-name">本机 · DESKTOP-7Q2K</span><span class="muted">运行 3 天</span></div>
+        <div id="metrics"></div>
+        <div class="os"><i data-lucide="monitor" style="width:13px;height:13px;color:var(--text-3)"></i><span id="os-name">Windows 11 专业版</span><span id="os-ver">26200</span></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 命令面板 -->
+  <div class="scrim" id="palette-scrim" aria-hidden="true">
+    <div class="palette" role="dialog" aria-label="命令面板">
+      <div class="p-input"><i data-lucide="command"></i><input id="p-input" placeholder="输入命令或会话名…" autocomplete="off"><kbd>Esc</kbd></div>
+      <div class="p-list" id="p-list"></div>
+      <div class="p-foot">
+        <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span>
+        <span class="grow"></span><span>Tether 命令</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div class="scrim center" id="settings-scrim" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-labelledby="set-title">
+      <div class="d-head"><i data-lucide="settings-2" style="color:var(--text-3)"></i><h3 id="set-title">设置</h3><kbd>Esc</kbd><button class="icon-btn" data-close aria-label="关闭"><i data-lucide="x"></i></button></div>
+      <div class="d-body">
+        <div class="row">
+          <div class="lbl"><div>默认 Shell</div><small>新建本地会话时使用</small></div>
+          <select class="select"><option>PowerShell 7</option><option>Windows PowerShell 5.1</option><option>命令提示符</option><option>Git Bash</option></select>
+        </div>
+        <div class="row">
+          <div class="lbl"><div>窗口透明度</div><small>只影响窗口背景，不影响文字</small></div>
+          <div class="range"><input type="range" min="60" max="100" value="92" id="opacity" aria-label="窗口透明度"><output id="opacity-val">92%</output></div>
+        </div>
+        <div class="row">
+          <div class="lbl"><div>提示音</div><small>Claude 需要确认或完成任务时播放</small></div>
+          <button class="btn quiet" style="height:24px"><i data-lucide="volume-2" style="width:13px;height:13px"></i>试听</button>
+          <label class="switch"><input type="checkbox" checked aria-label="提示音"><span></span></label>
+        </div>
+        <div class="row">
+          <div class="lbl"><div>Claude Code 集成</div><small>在侧栏实时显示 Claude 的状态</small>
+            <span class="cc-state"><i data-lucide="check" style="width:12px;height:12px"></i>已写入 ~/.claude/settings.json</span></div>
+          <label class="switch"><input type="checkbox" checked aria-label="启用 Claude Code 集成"><span></span></label>
+        </div>
+      </div>
+      <div class="d-foot"><span class="grow">Tether 0.2.0</span><button class="btn" data-close>取消</button><button class="btn primary" data-close id="save-settings">保存</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"><i data-lucide="check"></i><span id="toast-txt"></span></div>
+</div>
+
+<script>
+const S = {think:'思考中',wait:'等待确认',agent:'子代理运行中',done:'已完成'};
+const sessions = [
+  {id:'tether',name:'tether',kind:'local',path:'C:\\workspace\\tether',status:'wait',key:'1'},
+  {id:'api',name:'billing-api',kind:'local',path:'D:\\code\\billing-api',status:'think',key:'2'},
+  {id:'devbox',name:'devbox',kind:'ssh',path:'ops@10.0.4.21:/srv/app',status:'agent',key:'3'},
+  {id:'docs',name:'docs-site',kind:'local',path:'C:\\workspace\\docs-site',status:'done',key:'4'},
+  {id:'scratch',name:'scratch',kind:'local',path:'C:\\Users\\dev',status:null,key:'5'},
+];
+const P = p => `<span class="ps">PS </span><span class="path">${p}</span><span class="ps">&gt; </span>`;
+const terms = {
+tether: `${P('C:\\workspace\\tether')}<span class="cmd">git status</span>
+On branch <span class="br">main</span>
+Your branch is up to date with '<span class="br">origin/main</span>'.
+
+Changes not staged for commit:
+  <span class="d">(use "git add &lt;file&gt;..." to update what will be committed)</span>
+	<span class="r">modified:   src/sidebar.ts</span>
+	<span class="r">modified:   src/styles.css</span>
+
+Untracked files:
+	<span class="r">docs/design/</span>
+
+${P('C:\\workspace\\tether')}<span class="cmd">claude</span>
+<span class="cc-box"><span class="y">✻</span> <span class="w">Claude Code</span>  <span class="d">v2.4.1</span>
+  cwd: C:\\workspace\\tether</span>
+<span class="w">&gt;</span> 让侧栏的会话在 Claude 等待确认时闪烁提示
+
+<span class="c">●</span> 先看一下侧栏状态徽标是怎么渲染的。
+  <span class="d">⎿</span> Read <span class="w">src/sidebar.ts</span> <span class="d">(212 行)</span>
+  <span class="d">⎿</span> Read <span class="w">src/styles.css</span> <span class="d">(653 行)</span>
+
+<span class="c">●</span> 状态来自 hook 写入的事件。我会给 <span class="y">waiting</span> 状态加一个呼吸动画，
+  并在窗口失焦时播放提示音。
+
+<span class="c">●</span> Update(<span class="w">src/styles.css</span>)
+  <span class="d">⎿</span>  <span class="g">+ .badge.waiting { animation: breathe 1.6s ease-in-out infinite; }</span>
+     <span class="g">+ @keyframes breathe { 50% { opacity: .45; } }</span>
+
+<span class="ask"><span class="w">要允许 Claude 编辑 src/sidebar.ts 吗？</span>
+  <span class="sel">❯ 1. 是</span>
+    2. 是，本次会话不再询问
+    3. 否，告诉 Claude 换个做法  <span class="d">(esc)</span></span>`,
+api: `${P('D:\\code\\billing-api')}<span class="cmd">claude</span>
+<span class="w">&gt;</span> 为发票导出补充单元测试
+
+<span class="c">●</span> 正在阅读 <span class="w">internal/invoice/export.go</span> 与现有测试…
+  <span class="d">⎿</span> Read <span class="w">export.go</span> <span class="d">(148 行)</span>
+  <span class="d">⎿</span> Grep "func Test" <span class="d">(9 个结果)</span>
+
+<span class="y">✶</span> <span class="y">思考中…</span> <span class="d">(14s · ↓ 1.2k tokens · esc 中断)</span>`,
+devbox: `<span class="g">ops@devbox</span>:<span class="path">/srv/app</span>$ <span class="cmd">claude</span>
+<span class="w">&gt;</span> 排查 nginx 502 的原因
+
+<span class="c">●</span> 我会并行派出两个子代理分别检查日志和上游服务。
+<span class="c">●</span> Task(<span class="w">检查 nginx 错误日志</span>)
+  <span class="d">⎿</span> <span class="c">运行中</span> · 读取 /var/log/nginx/error.log
+<span class="c">●</span> Task(<span class="w">检查 upstream 健康状态</span>)
+  <span class="d">⎿</span> <span class="c">运行中</span> · systemctl status app@*`,
+docs: `${P('C:\\workspace\\docs-site')}<span class="cmd">claude</span>
+<span class="w">&gt;</span> 修复中文搜索不命中的问题
+
+<span class="c">●</span> 已将分词器切换为 jieba，并重建索引。
+  <span class="d">⎿</span> <span class="g">✓ 42 个测试通过</span>
+
+<span class="g">✓</span> 完成。改动 3 个文件，+58 −12。
+${P('C:\\workspace\\docs-site')}`,
+scratch: `${P('C:\\Users\\dev')}<span class="cmd">winget upgrade --id Microsoft.PowerShell</span>
+已找到 PowerShell [Microsoft.PowerShell] 版本 7.4.6
+<span class="g">已成功安装</span>
+${P('C:\\Users\\dev')}`
+};
+const hosts = {
+  local:{name:'本机 · DESKTOP-7Q2K',os:'Windows 11 专业版',ver:'26200',m:[['CPU',23,'23%'],['内存',61,'19.5/32 GB'],['磁盘',72,'690/953 GB']]},
+  ssh:{name:'devbox · 10.0.4.21',os:'Ubuntu 24.04 LTS',ver:'6.8.0',m:[['CPU',68,'68%'],['内存',44,'7.0/16 GB'],['磁盘',38,'76/200 GB']]}
+};
+const tree = [
+  ['d','.github',0,'',true],['d','docs',0,'',false,'a'],['d','src',0,'',false,'m'],
+  ['f','main.ts',1,'4.2 KB','ts'],['f','sidebar.ts',1,'7.9 KB','ts','m'],['f','styles.css',1,'18 KB','cfg','m'],
+  ['d','src-tauri',0,'',true],['f','index.html',0,'9.1 KB','cfg'],['f','package.json',0,'1.1 KB','json'],
+  ['f','README.md',0,'3.4 KB','md'],['f','CHANGELOG.md',0,'2.8 KB','md'],['f','LICENSE',0,'11 KB','cfg']
+];
+const icon = {ts:'file-code-2',md:'file-text',json:'braces',cfg:'file',rs:'file-code'};
+
+const $ = s => document.querySelector(s);
+const badge = (st, mini) => st ? `<span class="status ${st}${mini?' mini':''}" title="${S[st]}"><i></i>${mini?'':S[st]}</span>` : '';
+let active = 'tether';
+
+function renderSessions(){
+  $('#sessions').innerHTML = sessions.map(s => `
+    <li class="session${s.id===active?' active':''}" data-id="${s.id}" tabindex="0">
+      <span class="node ${s.kind}"></span>
+      <div class="s-main">
+        <div class="s-name"><b>${s.name}</b>${s.kind==='ssh'?'<span class="tag ssh">SSH</span>':''}</div>
+        <div class="s-sub">${s.status?S[s.status]:'空闲'}</div>
+      </div>
+      ${s.status ? badge(s.status,true) : '<span class="s-key"><kbd>Alt '+s.key+'</kbd></span>'}
+    </li>`).join('');
+}
+function renderMain(){
+  const s = sessions.find(x=>x.id===active);
+  $('#ch-name').textContent = s.name;
+  $('#ch-meta').innerHTML = `<i data-lucide="${s.kind==='ssh'?'server':'folder'}"></i>${s.path}`;
+  $('#ch-status').innerHTML = badge(s.status);
+  $('#term').innerHTML = terms[s.id] + (s.status==='wait'?'':'<span class="caret"></span>');
+  $('#crumb').textContent = s.path;
+  $('#sb-shell').textContent = s.kind==='ssh' ? 'bash 5.2 · ssh' : 'pwsh 7.4.6';
+  const h = hosts[s.kind];
+  $('#host-name').textContent = h.name; $('#os-name').textContent = h.os; $('#os-ver').textContent = h.ver;
+  $('#metrics').innerHTML = h.m.map(([k,p,v]) => {
+    const c = p>80?'var(--wait)':p>60?'var(--think)':'var(--accent)';
+    return `<div class="metric"><span class="k">${k}</span><div class="meter"><i style="width:${p}%;background:${c};box-shadow:0 0 6px ${c}"></i></div><span class="v">${v}</span></div>`;
+  }).join('');
+  $('#host-strip').innerHTML = h.m.map(([k,p]) => {
+    const c = p>80?'var(--wait)':p>60?'var(--think)':'var(--accent)';
+    return `<i class="dot" style="background:${c}"></i>${k} ${p}%`;
+  }).join('<span class="sep">·</span>');
+  lucide.createIcons();
+  $('#term').scrollTop = $('#term').scrollHeight;
+}
+function renderTree(){
+  $('#tree').innerHTML = tree.map(([t,n,depth,sz,x,g],i) => {
+    const pad = 6 + depth*16;
+    if(t==='d') return `<li class="dir" style="padding-left:${pad}px"><i data-lucide="${x?'chevron-right':'chevron-down'}" class="tw"></i><i data-lucide="${x?'folder':'folder-open'}" class="fi"></i><span class="nm">${n}</span><span class="gm ${g||''}">${g?g.toUpperCase():''}</span></li>`;
+    return `<li class="${n==='sidebar.ts'?'sel':''}" style="padding-left:${pad+18}px"><i data-lucide="${icon[x]}" class="ic-${x}"></i><span class="nm">${n}</span><span class="gm ${g||''}">${g?g.toUpperCase():''}</span><span class="sz">${sz}</span></li>`;
+  }).join('');
+}
+function select(id){ active = id; renderSessions(); renderMain(); }
+
+$('#sessions').addEventListener('click', e => { const li = e.target.closest('.session'); if(li) select(li.dataset.id); });
+$('#sessions').addEventListener('keydown', e => { if(e.key==='Enter'){ const li = e.target.closest('.session'); if(li) select(li.dataset.id);} });
+
+/* 新建菜单 */
+const nb = $('#new-btn'), nm = $('#new-menu');
+nb.onclick = e => { e.stopPropagation(); const o = nm.classList.toggle('open'); nb.setAttribute('aria-expanded',o); };
+document.addEventListener('click', e => { if(!nm.contains(e.target)){ nm.classList.remove('open'); nb.setAttribute('aria-expanded','false'); } });
+nm.addEventListener('click', e => { const b = e.target.closest('button'); if(b){ nm.classList.remove('open'); toast('已打开「'+b.querySelector('.m-txt').firstChild.textContent+'」选择器'); } });
+
+/* 浮层 */
+function openLayer(id){ closeLayers(); const el = $(id); el.classList.add('open'); el.setAttribute('aria-hidden','false'); }
+function closeLayers(){ document.querySelectorAll('.scrim.open').forEach(el => { el.classList.remove('open'); el.setAttribute('aria-hidden','true'); }); }
+document.querySelectorAll('.scrim').forEach(el => el.addEventListener('mousedown', e => { if(e.target===el) closeLayers(); }));
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = closeLayers);
+$('#save-settings').addEventListener('click', () => toast('设置已保存'));
+$('#open-settings').onclick = () => openLayer('#settings-scrim');
+
+const op = $('#opacity');
+op.oninput = () => { $('#opacity-val').textContent = op.value+'%'; op.style.setProperty('--p', ((op.value-60)/40*100)+'%'); };
+op.oninput();
+
+/* 命令面板 */
+const commands = () => [
+  ...sessions.map(s => ({g:'会话',ic:s.kind==='ssh'?'server':'terminal',t:s.name,sub:s.status?S[s.status]:s.path,k:['Alt',s.key],run:()=>select(s.id)})),
+  {g:'操作',ic:'folder-plus',t:'新建本地会话',k:['Ctrl','T'],run:()=>toast('已打开「本地目录」选择器')},
+  {g:'操作',ic:'server',t:'连接 SSH 主机',run:()=>toast('已打开「SSH 主机」选择器')},
+  {g:'操作',ic:'file-text',t:'预览 README.md',run:()=>toast('已在预览中打开 README.md')},
+  {g:'操作',ic:'panel-right',t:'显示或隐藏文件栏',k:['Ctrl','B'],run:()=>{}},
+  {g:'操作',ic:'settings-2',t:'打开设置',k:['Ctrl',','],run:()=>openLayer('#settings-scrim')},
+  {g:'操作',ic:'refresh-cw',t:'检查更新',run:()=>toast('0.2.1 已下载，重启后生效')},
+];
+let pIdx = 0, pItems = [];
+function renderPalette(){
+  const q = $('#p-input').value.trim().toLowerCase();
+  pItems = commands().filter(c => (c.t+c.sub).toLowerCase().includes(q));
+  pIdx = Math.min(pIdx, Math.max(0,pItems.length-1));
+  if(!pItems.length){ $('#p-list').innerHTML = '<div class="p-empty">没有匹配的命令。试试输入会话名或“设置”。</div>'; return; }
+  let html = '', g = '';
+  pItems.forEach((c,i) => {
+    if(c.g!==g){ g = c.g; html += `<div class="p-group">${g}</div>`; }
+    html += `<div class="p-item${i===pIdx?' on':''}" data-i="${i}"><i data-lucide="${c.ic}"></i><span class="p-t">${c.t}${c.sub?`<small>${c.sub}</small>`:''}</span>${c.k?`<span class="kbds">${c.k.map(x=>`<kbd>${x}</kbd>`).join('')}</span>`:''}</div>`;
+  });
+  $('#p-list').innerHTML = html;
+  lucide.createIcons();
+  $('#p-list .p-item.on')?.scrollIntoView({block:'nearest'});
+}
+function openPalette(){ openLayer('#palette-scrim'); $('#p-input').value=''; pIdx=0; renderPalette(); setTimeout(()=>$('#p-input').focus(),20); }
+function runP(i){ const c = pItems[i]; if(!c) return; closeLayers(); c.run(); }
+$('#open-palette').onclick = openPalette;
+$('#p-input').oninput = () => { pIdx = 0; renderPalette(); };
+$('#p-list').addEventListener('mousemove', e => { const it = e.target.closest('.p-item'); if(it && +it.dataset.i!==pIdx){ pIdx = +it.dataset.i; renderPalette(); } });
+$('#p-list').addEventListener('click', e => { const it = e.target.closest('.p-item'); if(it) runP(+it.dataset.i); });
+$('#p-input').addEventListener('keydown', e => {
+  if(e.key==='ArrowDown'){ e.preventDefault(); pIdx = (pIdx+1)%pItems.length; renderPalette(); }
+  if(e.key==='ArrowUp'){ e.preventDefault(); pIdx = (pIdx-1+pItems.length)%pItems.length; renderPalette(); }
+  if(e.key==='Enter'){ e.preventDefault(); runP(pIdx); }
+});
+
+document.addEventListener('keydown', e => {
+  if(e.ctrlKey && e.key.toLowerCase()==='k'){ e.preventDefault(); $('#palette-scrim').classList.contains('open') ? closeLayers() : openPalette(); }
+  else if(e.ctrlKey && e.key===','){ e.preventDefault(); openLayer('#settings-scrim'); }
+  else if(e.key==='Escape') closeLayers();
+  else if(e.altKey && /^[1-5]$/.test(e.key)){ e.preventDefault(); select(sessions[+e.key-1].id); }
+});
+
+/* 横幅与杂项 */
+$('#dismiss-banner').onclick = () => $('#banner').remove();
+$('#install-pwsh').onclick = () => toast('正在通过 winget 安装 PowerShell 7');
+$('#copy-path').onclick = () => toast('已复制路径');
+let tt;
+function toast(t){ $('#toast-txt').textContent = t; $('#toast').classList.add('show'); clearTimeout(tt); tt = setTimeout(()=>$('#toast').classList.remove('show'),1800); }
+
+renderSessions(); renderTree(); renderMain();
+</script>
+</body>
+</html>

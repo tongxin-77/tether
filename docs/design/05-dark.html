@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tether 暗色工作台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* 布局：1440×900 无边框窗口 = 标题栏 + [侧栏 248 | 会话卡 + 终端 | 文件树 296]，层级靠底色深浅与 1px 描边区分 */
+:root {
+  color-scheme: dark;
+  /* 底色分层（偏冷的炭灰，微带靛蓝） */
+  --bg-0: #08090c;      /* 窗外 */
+  --bg-1: #0e0f13;      /* 窗体 / 侧栏 */
+  --bg-2: #13151a;      /* 面板 */
+  --bg-3: #1a1c23;      /* 悬停 / 输入框 */
+  --bg-term: #0b0c10;   /* 终端 */
+  --line: #22252e;      /* 1px 描边 */
+  --line-2: #2c303b;
+  --fg: #e6e8ee;
+  --fg-2: #a3a8b6;
+  --fg-3: #6b7080;
+  /* 强调色：靛紫发光 */
+  --accent: #8b8cff;
+  --accent-2: #6366f1;
+  --accent-glow: rgba(124, 125, 255, .35);
+  /* Claude 状态语义色 */
+  --st-think: #f5b84a;
+  --st-wait: #ff7a8a;
+  --st-agent: #4cc9f0;
+  --st-done: #4ade9a;
+  /* 终端语法色 */
+  --t-blue: #82aaff; --t-green: #9ece6a; --t-red: #f7768e; --t-yellow: #e0af68;
+  --t-cyan: #7dcfff; --t-mag: #bb9af7; --t-dim: #565b6e;
+  --font-ui: "Geist", "Inter", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+  --r-sm: 5px; --r-md: 8px; --r-lg: 12px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg-0); color: var(--fg);
+  font: 13px/1.45 var(--font-ui); -webkit-font-smoothing: antialiased;
+  display: grid; place-items: center; overflow: auto;
+  padding-block: 24px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background-image: radial-gradient(900px 500px at 50% -10%, rgba(99,102,241,.10), transparent 70%);
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+svg.lucide { width: 15px; height: 15px; stroke-width: 1.75; flex: none; }
+.kbd {
+  font: 500 10.5px/1 var(--font-mono); color: var(--fg-2);
+  padding: 3px 5px; border-radius: 4px; min-width: 18px; text-align: center;
+  background: linear-gradient(var(--bg-3), var(--bg-2));
+  border: 1px solid var(--line-2); border-bottom-width: 2px; display: inline-block;
+}
+.ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mono { font-family: var(--font-mono); }
+
+/* ===== 窗口 ===== */
+.win {
+  width: 1440px; height: 900px; flex: none;
+  background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 12px;
+  overflow: hidden; position: relative;
+  display: grid; grid-template-rows: 38px 1fr;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.6), 0 40px 120px -20px rgba(0,0,0,.8), 0 0 80px -30px var(--accent-glow);
+}
+.titlebar {
+  display: flex; align-items: center; gap: 12px; padding-left: 14px;
+  border-bottom: 1px solid var(--line); background: var(--bg-1);
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -.01em; width: 222px; }
+.logo {
+  width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 12px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.3);
+}
+.logo svg { width: 11px; height: 11px; color: #fff; stroke-width: 2.5; }
+.brand .ver { font: 400 11px var(--font-mono); color: var(--fg-3); }
+.cmd-trigger {
+  display: flex; align-items: center; gap: 8px; width: 380px; height: 26px; padding: 0 6px 0 10px;
+  margin: 0 auto; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2);
+  color: var(--fg-3); font-size: 12px; transition: border-color .15s;
+}
+.cmd-trigger:hover { border-color: var(--line-2); color: var(--fg-2); }
+.cmd-trigger span.grow { flex: 1; text-align: left; }
+.winctl { display: flex; height: 100%; }
+.winctl button { width: 46px; display: grid; place-items: center; color: var(--fg-3); }
+.winctl button:hover { background: var(--bg-3); color: var(--fg); }
+.winctl button.close:hover { background: #c42b1c; color: #fff; }
+.body { display: grid; grid-template-columns: 248px 1fr 240px; min-height: 0; }
+
+/* ===== 侧栏 ===== */
+.side { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.side-top { padding: 12px 10px 8px; position: relative; }
+.new-btn {
+  width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 10px;
+  border-radius: var(--r-md); font-weight: 500;
+  background: linear-gradient(180deg, rgba(139,140,255,.18), rgba(139,140,255,.08));
+  border: 1px solid rgba(139,140,255,.35); color: #dcdcff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 18px -6px var(--accent-glow);
+}
+.new-btn:hover { border-color: rgba(139,140,255,.6); }
+.new-btn .grow { flex: 1; text-align: left; }
+.menu {
+  position: absolute; left: 10px; right: 10px; top: 48px; z-index: 20;
+  background: var(--bg-2); border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 4px;
+  box-shadow: 0 16px 40px -8px rgba(0,0,0,.7);
+}
+.menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: var(--r-sm); text-align: left; }
+.menu button:hover { background: var(--bg-3); }
+.menu .sub { color: var(--fg-3); font-size: 11.5px; }
+.menu .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sec-label {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px 6px; font-size: 11px; color: var(--fg-3); letter-spacing: .06em; text-transform: uppercase;
+}
+.sessions { list-style: none; margin: 0; padding: 0 6px; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.sess {
+  position: relative; display: grid; grid-template-columns: 22px 1fr auto; gap: 2px 8px; align-items: center;
+  padding: 7px 8px; border-radius: var(--r-md); cursor: pointer; border: 1px solid transparent;
+}
+.sess:hover { background: var(--bg-2); }
+.sess.active {
+  background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
+  border-color: var(--line-2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+.sess.active::before {
+  content: ""; position: absolute; left: -6px; top: 9px; bottom: 9px; width: 2px; border-radius: 2px;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent);
+}
+.sess-ico { grid-row: span 2; width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: var(--bg-3); border: 1px solid var(--line); color: var(--fg-2); }
+.sess-ico svg { width: 12px; height: 12px; }
+.sess-name { font-weight: 500; }
+.sess-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--fg-3); grid-column: 2 / 4; min-width: 0; }
+.tag { font: 500 10px/1 var(--font-mono); padding: 2px 4px; border-radius: 3px; border: 1px solid var(--line-2); color: var(--fg-2); flex: none; }
+.tag.ssh { color: var(--st-agent); border-color: rgba(76,201,240,.3); }
+.sess .kbd { font-size: 10px; padding: 2px 4px; opacity: 0; }
+.sess:hover .kbd, .sess.active .kbd { opacity: 1; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500;
+  padding: 2px 7px 2px 6px; border-radius: 999px; border: 1px solid; white-space: nowrap; flex: none;
+}
+.badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
+.b-think { color: var(--st-think); border-color: rgba(245,184,74,.3); background: rgba(245,184,74,.08); }
+.b-wait  { color: var(--st-wait);  border-color: rgba(255,122,138,.35); background: rgba(255,122,138,.09); }
+.b-agent { color: var(--st-agent); border-color: rgba(76,201,240,.3); background: rgba(76,201,240,.08); }
+.b-done  { color: var(--st-done);  border-color: rgba(74,222,154,.28); background: rgba(74,222,154,.07); }
+.b-think i, .b-agent i { animation: pulse 1.4s ease-in-out infinite; }
+.b-wait i { animation: pulse .8s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+.side-foot { border-top: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.update {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-md);
+  border: 1px solid var(--line-2);
+  background: linear-gradient(135deg, rgba(139,140,255,.10), transparent 60%), var(--bg-2);
+}
+.update .grow { flex: 1; min-width: 0; }
+.update b { display: block; font-weight: 500; font-size: 12px; }
+.update small { color: var(--fg-3); font-size: 11px; }
+.update button { font-size: 11.5px; color: var(--accent); padding: 3px 8px; border-radius: var(--r-sm); border: 1px solid rgba(139,140,255,.35); }
+.foot-row { display: flex; align-items: center; justify-content: space-between; }
+.ghost { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm); color: var(--fg-2); }
+.ghost:hover { background: var(--bg-2); color: var(--fg); }
+.daemon { display: flex; align-items: center; gap: 6px; font: 11px var(--font-mono); color: var(--fg-3); padding-right: 6px; }
+.daemon i { width: 6px; height: 6px; border-radius: 50%; background: var(--st-done); box-shadow: 0 0 6px var(--st-done); }
+
+/* ===== 中间 ===== */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 10px; gap: 10px; background: var(--bg-1); }
+.card {
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-2);
+  display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
+}
+.card-head { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 14px; border-bottom: 1px solid var(--line); }
+.card-head .ttl { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.card-head h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
+.crumbs { display: flex; align-items: center; gap: 6px; font: 11.5px var(--font-mono); color: var(--fg-3); min-width: 0; }
+.crumbs svg { width: 12px; height: 12px; }
+.crumbs .sep { color: var(--line-2); }
+.head-actions { display: flex; align-items: center; gap: 4px; }
+.icon-btn { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--fg-3); }
+.icon-btn:hover { background: var(--bg-3); color: var(--fg); }
+.icon-btn svg { width: 14px; height: 14px; }
+
+.banner {
+  display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 14px; font-size: 12px;
+  border-bottom: 1px solid var(--line); color: var(--fg-2);
+  background: linear-gradient(90deg, rgba(245,184,74,.08), transparent 55%);
+}
+.banner svg { color: var(--st-think); }
+.banner .grow { flex: 1; min-width: 0; }
+.banner code { font-family: var(--font-mono); color: var(--fg); font-size: 11.5px; }
+.banner .link { color: var(--accent); }
+
+.term {
+  flex: 1; min-height: 0; overflow: auto; background: var(--bg-term);
+  padding: 12px 16px 16px; font: 12.5px/1.6 var(--font-mono); color: #c8ccd8;
+  white-space: pre; tab-size: 4;
+}
+.term .p-path { color: var(--t-blue); }
+.term .p-git { color: var(--t-mag); }
+.term .p-sym { color: var(--t-green); }
+.term .dim { color: var(--t-dim); }
+.term .g { color: var(--t-green); } .term .r { color: var(--t-red); } .term .y { color: var(--t-yellow); }
+.term .c { color: var(--t-cyan); } .term .m { color: var(--t-mag); } .term .b { color: var(--t-blue); }
+.term .w { color: var(--fg); font-weight: 500; }
+.term .orange { color: #e8956b; }
+.cc-box { display: inline-block; border: 1px solid #3a3550; border-radius: 6px; padding: 6px 12px; margin: 2px 0; white-space: pre; }
+.cc-ask { display: inline-block; border: 1px solid rgba(255,122,138,.45); border-radius: 6px; padding: 6px 12px; margin: 4px 0; background: rgba(255,122,138,.04); box-shadow: 0 0 24px -10px var(--st-wait); }
+.cursor { display: inline-block; width: 7px; height: 15px; vertical-align: -3px; background: var(--fg); animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.statusbar {
+  display: flex; align-items: center; gap: 14px; padding: 0 12px; height: 26px; flex: none;
+  border-top: 1px solid var(--line); background: var(--bg-2); font: 11px var(--font-mono); color: var(--fg-3);
+}
+.statusbar span { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.statusbar svg { width: 12px; height: 12px; }
+.statusbar .grow { flex: 1; }
+
+/* ===== 右侧 ===== */
+.right { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--bg-1); }
+.panel-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 6px 14px; }
+.panel-head h2 { margin: 0; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-3); flex: 1; }
+.pathbar {
+  margin: 0 10px 6px; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  font: 11.5px var(--font-mono); color: var(--fg-2);
+}
+.pathbar svg { width: 12px; height: 12px; color: var(--fg-3); }
+.tree { list-style: none; margin: 0; padding: 2px 6px 8px; overflow: auto; flex: 1; font-size: 12.5px; }
+.tree li > div {
+  display: flex; align-items: center; gap: 6px; height: 25px; border-radius: var(--r-sm); cursor: pointer;
+  padding-right: 8px; color: var(--fg-2);
+}
+.tree li > div:hover { background: var(--bg-2); color: var(--fg); }
+.tree li > div.sel { background: rgba(139,140,255,.10); color: var(--fg); box-shadow: inset 0 0 0 1px rgba(139,140,255,.25); }
+.tree svg { width: 14px; height: 14px; }
+.tree .chev { width: 12px; height: 12px; color: var(--fg-3); }
+.tree .f-dir { color: #8fa3c8; }
+.tree .f-ts { color: #5fa8ff; } .tree .f-rs { color: #e8956b; } .tree .f-md { color: var(--fg-3); } .tree .f-json { color: var(--t-yellow); }
+.tree .size { margin-left: auto; font: 10.5px var(--font-mono); color: var(--fg-3); }
+.tree .git-m { font: 600 10px var(--font-mono); color: var(--t-yellow); }
+.tree .git-u { font: 600 10px var(--font-mono); color: var(--t-green); }
+
+.xfer { margin: 0 10px 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); display: flex; flex-direction: column; gap: 6px; }
+.xfer-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.xfer-row svg { color: var(--accent); width: 13px; height: 13px; }
+.xfer-row .num { margin-left: auto; font: 11px var(--font-mono); color: var(--fg-3); font-variant-numeric: tabular-nums; flex: none; }
+.bar { height: 3px; border-radius: 2px; background: var(--bg-3); overflow: hidden; }
+.bar > i { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--accent-2), var(--accent)); box-shadow: 0 0 8px var(--accent); }
+
+.host { position: relative; border-top: 1px solid var(--line); flex: none; }
+.host-strip {
+  width: 100%; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  font: 11px var(--font-mono); color: var(--fg-2); font-variant-numeric: tabular-nums; text-align: left; white-space: nowrap;
+}
+.host-strip:hover, .host:focus-within .host-strip { background: var(--bg-2); color: var(--fg); }
+.host-strip .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; margin-right: -3px; }
+.host-strip .sep { color: var(--fg-3); }
+.host-pop {
+  position: absolute; right: 8px; bottom: calc(100% + 6px); width: 284px; z-index: 40;
+  padding: 10px 12px 12px; display: none; flex-direction: column; gap: 9px;
+  background: var(--bg-1); border: 1px solid var(--line-2); border-radius: var(--r-md);
+  box-shadow: 0 18px 50px -12px rgba(0,0,0,.75);
+}
+.host:hover .host-pop, .host:focus-within .host-pop { display: flex; }
+.host-top { display: flex; align-items: center; justify-content: space-between; }
+.host-top h2 { margin: 0; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-3); }
+.host-top .mono { font-size: 11px; color: var(--fg-2); }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.metric { border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 9px; background: var(--bg-2); display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.metric .lbl { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--fg-3); }
+.metric .val { font: 500 15px var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.metric .val small { font-size: 10.5px; color: var(--fg-3); font-weight: 400; margin-left: 2px; }
+.metric svg.spark { width: 100%; height: 18px; display: block; }
+.metric.sys { grid-column: span 2; flex-direction: row; align-items: center; gap: 10px; }
+.metric.sys .grow { flex: 1; min-width: 0; }
+.metric.sys .val { font-size: 12px; font-family: var(--font-ui); }
+
+/* ===== 浮层 ===== */
+.scrim { position: absolute; inset: 38px 0 0; z-index: 50; background: rgba(5,6,9,.62); backdrop-filter: blur(3px); display: grid; place-items: start center; padding-top: 90px; }
+.palette {
+  width: 600px; border-radius: 14px; overflow: hidden;
+  background: rgba(19,21,26,.96); border: 1px solid var(--line-2);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 30px 80px -10px rgba(0,0,0,.8), 0 0 60px -20px var(--accent-glow);
+}
+.pal-input { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.pal-input input { flex: 1; background: none; border: 0; outline: none; color: var(--fg); font: 15px var(--font-ui); }
+.pal-input input::placeholder { color: var(--fg-3); }
+.pal-list { padding: 6px; max-height: 360px; overflow: auto; }
+.pal-group { padding: 8px 10px 4px; font-size: 11px; color: var(--fg-3); }
+.pal-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-md); cursor: pointer; }
+.pal-item .grow { flex: 1; min-width: 0; }
+.pal-item .hint { color: var(--fg-3); font-size: 12px; }
+.pal-item.on { background: var(--bg-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pal-item.on > svg { color: var(--accent); }
+.pal-foot { display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--fg-3); }
+.pal-foot span { display: flex; align-items: center; gap: 5px; }
+
+.dialog {
+  width: 560px; border-radius: 14px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line-2);
+  box-shadow: 0 30px 80px -10px rgba(0,0,0,.8);
+}
+.dlg-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.dlg-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.dlg-body { display: grid; grid-template-columns: 140px 1fr; min-height: 320px; }
+.dlg-nav { border-right: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+.dlg-nav button { text-align: left; padding: 6px 8px; border-radius: var(--r-sm); color: var(--fg-2); display: flex; gap: 8px; align-items: center; }
+.dlg-nav button.on { background: var(--bg-3); color: var(--fg); }
+.dlg-main { padding: 6px 18px; display: flex; flex-direction: column; }
+.row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.row:last-child { border-bottom: 0; }
+.row .grow { flex: 1; min-width: 0; }
+.row b { display: block; font-weight: 500; }
+.row small { color: var(--fg-3); font-size: 11.5px; }
+select, .range-wrap { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--fg); font: 12px var(--font-ui); height: 28px; padding: 0 8px; }
+.range-wrap { display: flex; align-items: center; gap: 8px; width: 170px; }
+.range-wrap input { flex: 1; accent-color: var(--accent); min-width: 0; }
+.range-wrap output { font: 11px var(--font-mono); color: var(--fg-2); width: 30px; text-align: right; }
+.switch { width: 32px; height: 18px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--line-2); position: relative; transition: .15s; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--fg-3); transition: .15s; }
+.switch[aria-checked="true"] { background: var(--accent-2); border-color: var(--accent); box-shadow: 0 0 10px -2px var(--accent-glow); }
+.switch[aria-checked="true"]::after { left: 16px; background: #fff; }
+.btn { height: 28px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid var(--line-2); background: var(--bg-3); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover { border-color: var(--fg-3); }
+.btn.primary { background: linear-gradient(180deg, #7577ff, var(--accent-2)); border-color: rgba(139,140,255,.6); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 0 14px -4px var(--accent-glow); }
+.btn.ok { color: var(--st-done); border-color: rgba(74,222,154,.35); background: rgba(74,222,154,.08); }
+.dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bg-1); }
+
+.md-pane {
+  width: 720px; height: 620px; border-radius: 14px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line-2);
+  display: flex; flex-direction: column; box-shadow: 0 30px 80px -10px rgba(0,0,0,.8);
+}
+.md-body { flex: 1; overflow: auto; padding: 22px 32px 28px; font-size: 13.5px; line-height: 1.7; color: var(--fg-2); }
+.md-body h1 { font-size: 22px; color: var(--fg); margin: 0 0 6px; letter-spacing: -.02em; text-wrap: balance; }
+.md-body h2 { font-size: 15px; color: var(--fg); margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.md-body p { margin: 0 0 10px; max-width: 64ch; }
+.md-body code { font: 12px var(--font-mono); background: var(--bg-3); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; color: var(--fg); }
+.md-body pre { font: 12px/1.6 var(--font-mono); background: var(--bg-term); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; color: #c8ccd8; overflow-x: auto; }
+.md-body ul { padding-left: 20px; margin: 0 0 10px; }
+.md-body li::marker { color: var(--accent); }
+.md-body blockquote { margin: 0 0 10px; padding: 6px 12px; border-left: 2px solid var(--accent); background: rgba(139,140,255,.06); border-radius: 0 6px 6px 0; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="win" id="win">
+  <!-- 标题栏 -->
+  <header class="titlebar">
+    <div class="brand">
+      <span class="logo"><i data-lucide="link-2"></i></span>
+      Tether <span class="ver">v0.2.0</span>
+    </div>
+    <button class="cmd-trigger" id="openPalette" type="button">
+      <i data-lucide="search"></i><span class="grow">搜索会话、命令、文件…</span>
+      <span class="kbd">Ctrl</span><span class="kbd">K</span>
+    </button>
+    <div class="winctl">
+      <button type="button" aria-label="最小化"><i data-lucide="minus"></i></button>
+      <button type="button" aria-label="最大化"><i data-lucide="square"></i></button>
+      <button type="button" class="close" aria-label="关闭到后台"><i data-lucide="x"></i></button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- 左侧栏 -->
+    <aside class="side">
+      <div class="side-top">
+        <button class="new-btn" id="newBtn" type="button">
+          <i data-lucide="plus"></i><span class="grow">新建会话</span>
+          <span class="kbd">Ctrl</span><span class="kbd">T</span>
+        </button>
+        <div class="menu" id="newMenu" hidden>
+          <button type="button"><i data-lucide="folder-open"></i><span class="grow"><span>本地目录</span><span class="sub">在文件夹中打开 shell</span></span><span class="kbd">L</span></button>
+          <button type="button"><i data-lucide="server"></i><span class="grow"><span>SSH 主机</span><span class="sub">读取 ~/.ssh/config</span></span><span class="kbd">S</span></button>
+        </div>
+      </div>
+      <div class="sec-label"><span>会话 · 5</span><span class="mono" style="letter-spacing:0">后台持有</span></div>
+      <ul class="sessions" id="sessions">
+        <li class="sess active" data-name="tether" data-path="C:\workspace\tether" data-kind="本地" data-st="think">
+          <span class="sess-ico"><i data-lucide="terminal"></i></span>
+          <span class="sess-name ell">tether</span>
+          <span class="kbd">1</span>
+          <span class="sess-meta"><span class="tag">LOCAL</span><span class="badge b-think"><i></i>思考中</span></span>
+        </li>
+        <li class="sess" data-name="api-gateway" data-path="deploy@10.0.3.21:/srv/gateway" data-kind="SSH" data-st="wait">
+          <span class="sess-ico"><i data-lucide="server"></i></span>
+          <span class="sess-name ell">api-gateway</span>
+          <span class="kbd">2</span>
+          <span class="sess-meta"><span class="tag ssh">SSH</span><span class="badge b-wait"><i></i>等待确认</span></span>
+        </li>
+        <li class="sess" data-name="docs-site" data-path="D:\projects\docs-site" data-kind="本地" data-st="agent">
+          <span class="sess-ico"><i data-lucide="terminal"></i></span>
+          <span class="sess-name ell">docs-site</span>
+          <span class="kbd">3</span>
+          <span class="sess-meta"><span class="tag">LOCAL</span><span class="badge b-agent"><i></i>子代理运行中 ×2</span></span>
+        </li>
+        <li class="sess" data-name="gpu-box" data-path="tong@gpu-box:~/train" data-kind="SSH" data-st="done">
+          <span class="sess-ico"><i data-lucide="server"></i></span>
+          <span class="sess-name ell">gpu-box</span>
+          <span class="kbd">4</span>
+          <span class="sess-meta"><span class="tag ssh">SSH</span><span class="badge b-done"><i></i>已完成</span></span>
+        </li>
+        <li class="sess" data-name="scratch" data-path="C:\Users\dev" data-kind="本地" data-st="">
+          <span class="sess-ico"><i data-lucide="terminal"></i></span>
+          <span class="sess-name ell">scratch</span>
+          <span class="kbd">5</span>
+          <span class="sess-meta"><span class="tag">LOCAL</span><span class="ell">pwsh · 空闲 12 分钟</span></span>
+        </li>
+      </ul>
+      <div class="side-foot">
+        <div class="update">
+          <i data-lucide="arrow-up-circle" style="color:var(--accent)"></i>
+          <div class="grow"><b>0.2.1 可更新</b><small>重启界面即可，会话不中断</small></div>
+          <button type="button">更新</button>
+        </div>
+        <div class="foot-row">
+          <button class="ghost" id="openSettings" type="button"><i data-lucide="settings-2"></i>设置 <span class="kbd">Ctrl</span><span class="kbd">,</span></button>
+          <span class="daemon"><i></i>daemon</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中间 -->
+    <main class="main">
+      <section class="card">
+        <div class="card-head">
+          <div class="ttl">
+            <h1><span id="hName">tether</span><span class="badge b-think" id="hBadge"><i></i>思考中</span></h1>
+            <div class="crumbs"><i data-lucide="hard-drive" id="hIco"></i><span class="ell" id="hPath">C:\workspace\tether</span><span class="sep">/</span><i data-lucide="git-branch"></i><span>main</span><span class="sep">/</span><span id="hKind">本地 · pwsh 7.4.6</span></div>
+          </div>
+          <div class="head-actions">
+            <button class="icon-btn" id="openMd" type="button" title="预览 README.md"><i data-lucide="book-open"></i></button>
+            <button class="icon-btn" type="button" title="分屏"><i data-lucide="columns-2"></i></button>
+            <button class="icon-btn" type="button" title="清屏"><i data-lucide="eraser"></i></button>
+            <button class="icon-btn" type="button" title="更多"><i data-lucide="more-horizontal"></i></button>
+          </div>
+        </div>
+        <div class="banner" id="banner">
+          <i data-lucide="sparkles"></i>
+          <span class="grow ell">当前使用 Windows PowerShell 5.1，建议安装 <code>PowerShell 7</code>，启动更快且支持 UTF-8。</span>
+          <button class="link" type="button">一键安装</button>
+          <button class="icon-btn" type="button" id="closeBanner" aria-label="关闭提示" style="width:22px;height:22px"><i data-lucide="x"></i></button>
+        </div>
+<div class="term" id="term"><span class="dim">PowerShell 7.4.6 · 会话由 tether-daemon 持有 (pid 18324)</span>
+
+<span class="p-path">C:\workspace\tether</span> <span class="p-git">on main</span> <span class="p-sym">❯</span> git status
+On branch <span class="m">main</span>
+Your branch is up to date with '<span class="r">origin/main</span>'.
+
+Changes not staged for commit:
+  (use "git add &lt;file&gt;..." to update what will be committed)
+        <span class="r">modified:   src/styles.css</span>
+        <span class="r">modified:   src-tauri/src/session.rs</span>
+
+Untracked files:
+        <span class="r">docs/design/</span>
+
+<span class="p-path">C:\workspace\tether</span> <span class="p-git">on main [!2 ?1]</span> <span class="p-sym">❯</span> claude
+<span class="cc-box"><span class="orange">✻</span> <span class="w">Welcome to Claude Code</span>
+  <span class="dim">cwd: C:\workspace\tether</span></span>
+
+<span class="dim">&gt;</span> <span class="w">给文件树加上“复制相对路径”的右键菜单</span>
+
+<span class="g">●</span> 先看一下文件树的现有右键菜单实现。
+
+<span class="g">●</span> <span class="w">Read</span>(<span class="c">src/filetree.ts</span>)
+  <span class="dim">⎿  Read 214 lines</span>
+
+<span class="g">●</span> <span class="w">Update</span>(<span class="c">src/filetree.ts</span>)
+  <span class="dim">⎿  Updated src/filetree.ts with 9 additions</span>
+     <span class="dim">88</span>      menu.add(<span class="y">'复制文件名'</span>, () =&gt; copy(node.name));
+     <span class="dim">89</span> <span class="g">+    menu.add(<span class="y">'复制相对路径'</span>, () =&gt; copy(relPath(root, node)));</span>
+     <span class="dim">90</span>      menu.separator();
+
+<span class="y">✶</span> <span class="y">Thinking…</span> <span class="dim">(23s · ↓ 1.4k tokens · esc 中断)</span>
+
+<span class="dim">╭─────────────────────────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="dim">&gt;</span> <span class="cursor"></span>                                                         <span class="dim">│</span>
+<span class="dim">╰─────────────────────────────────────────────────────────────╯</span>
+  <span class="dim">⏵⏵ accept edits on (shift+tab 切换)</span></div>
+        <div class="statusbar">
+          <span><i data-lucide="cpu"></i>pwsh</span>
+          <span>UTF-8</span>
+          <span>148 × 42</span>
+          <span class="grow"></span>
+          <span><i data-lucide="bot" style="color:var(--st-think)"></i>Claude · opus · 23s</span>
+          <span><i data-lucide="clock"></i>运行 2h 14m</span>
+        </div>
+      </section>
+    </main>
+
+    <!-- 右侧 -->
+    <aside class="right">
+      <div class="panel-head">
+        <h2>文件</h2>
+        <button class="icon-btn" type="button" title="上级目录"><i data-lucide="arrow-up"></i></button>
+        <button class="icon-btn" type="button" title="刷新"><i data-lucide="rotate-cw"></i></button>
+        <button class="icon-btn" type="button" title="上传"><i data-lucide="upload"></i></button>
+      </div>
+      <div class="pathbar"><i data-lucide="folder"></i><span class="ell">C:\workspace\tether</span></div>
+      <ul class="tree" id="tree">
+        <li><div><i data-lucide="chevron-right" class="chev"></i><i data-lucide="folder" class="f-dir"></i>.github</div></li>
+        <li><div><i data-lucide="chevron-down" class="chev"></i><i data-lucide="folder-open" class="f-dir"></i>docs</div></li>
+        <li><div style="padding-left:18px"><i data-lucide="chevron-right" class="chev"></i><i data-lucide="folder" class="f-dir"></i>design <span class="git-u" style="margin-left:auto">U</span></div></li>
+        <li><div style="padding-left:18px"><span style="width:12px"></span><i data-lucide="file-text" class="f-md"></i>usage.md<span class="size">6.2 KB</span></div></li>
+        <li><div><i data-lucide="chevron-down" class="chev"></i><i data-lucide="folder-open" class="f-dir"></i>src</div></li>
+        <li><div style="padding-left:18px" class="sel"><span style="width:12px"></span><i data-lucide="file-code" class="f-ts"></i>filetree.ts<span class="git-m" style="margin-left:auto">M</span></div></li>
+        <li><div style="padding-left:18px"><span style="width:12px"></span><i data-lucide="file-code" class="f-ts"></i>main.ts<span class="size">18.4 KB</span></div></li>
+        <li><div style="padding-left:18px"><span style="width:12px"></span><i data-lucide="file-code" class="f-ts"></i>sessions.ts<span class="size">9.1 KB</span></div></li>
+        <li><div style="padding-left:18px"><span style="width:12px"></span><i data-lucide="hash" class="f-md"></i>styles.css<span class="git-m" style="margin-left:auto">M</span></div></li>
+        <li><div><i data-lucide="chevron-right" class="chev"></i><i data-lucide="folder" class="f-dir"></i>src-tauri</div></li>
+        <li><div><span style="width:12px"></span><i data-lucide="file-text" class="f-md"></i>CHANGELOG.md<span class="size">3.8 KB</span></div></li>
+        <li><div><span style="width:12px"></span><i data-lucide="file-code" class="f-ts"></i>index.html<span class="size">7.5 KB</span></div></li>
+        <li><div><span style="width:12px"></span><i data-lucide="braces" class="f-json"></i>package.json<span class="size">1.1 KB</span></div></li>
+        <li><div id="readmeRow"><span style="width:12px"></span><i data-lucide="book-open" class="f-md"></i>README.md<span class="size">4.6 KB</span></div></li>
+      </ul>
+      <div class="xfer">
+        <div class="xfer-row"><i data-lucide="arrow-down-to-line"></i><span class="ell">checkpoint-0420.pt</span><span class="num">412 / 690 MB</span></div>
+        <div class="bar"><i style="width:60%"></i></div>
+        <div class="xfer-row" style="color:var(--fg-3);font-size:11px"><span>来自 gpu-box</span><span class="num">18.2 MB/s · 剩 15s</span></div>
+      </div>
+      <div class="host">
+        <button class="host-strip" type="button" title="主机详情">
+          <i class="dot" style="background:var(--accent)"></i>CPU 23%<span class="sep">·</span>
+          <i class="dot" style="background:var(--accent)"></i>内存 58%<span class="sep">·</span>
+          <i class="dot" style="background:var(--st-think)"></i>磁盘 64%
+        </button>
+        <div class="host-pop" role="dialog" aria-label="主机详情">
+        <div class="host-top"><h2>主机</h2><span class="mono">DEV-WS-07</span></div>
+        <div class="metrics">
+          <div class="metric">
+            <div class="lbl"><span>CPU</span><span class="mono">16 核</span></div>
+            <div class="val">23<small>%</small></div>
+            <svg class="spark" viewBox="0 0 100 18" preserveAspectRatio="none"><path d="M0 14 L10 12 L20 13 L30 9 L40 11 L50 6 L60 10 L70 8 L80 12 L90 9 L100 11 L100 18 L0 18Z" fill="rgba(139,140,255,.15)"/><path d="M0 14 L10 12 L20 13 L30 9 L40 11 L50 6 L60 10 L70 8 L80 12 L90 9 L100 11" fill="none" stroke="var(--accent)" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>
+          </div>
+          <div class="metric">
+            <div class="lbl"><span>内存</span><span class="mono">32 GB</span></div>
+            <div class="val">18.6<small>GB</small></div>
+            <div class="bar" style="margin-top:7px"><i style="width:58%"></i></div>
+          </div>
+          <div class="metric">
+            <div class="lbl"><span>磁盘 C:</span><span class="mono">1 TB</span></div>
+            <div class="val">612<small>GB</small></div>
+            <div class="bar" style="margin-top:7px"><i style="width:64%;background:var(--st-think);box-shadow:0 0 8px var(--st-think)"></i></div>
+          </div>
+          <div class="metric">
+            <div class="lbl"><span>运行</span><span class="mono">uptime</span></div>
+            <div class="val">3<small>天</small> 6<small>时</small></div>
+            <div class="lbl" style="margin-top:2px"><span>负载 低</span></div>
+          </div>
+          <div class="metric sys">
+            <i data-lucide="monitor" style="color:var(--fg-3)"></i>
+            <div class="grow"><div class="val ell">Windows 11 Pro 24H2</div><div class="lbl"><span class="mono">build 26200 · x64</span></div></div>
+          </div>
+        </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 命令面板 -->
+  <div class="scrim" id="palette" hidden>
+    <div class="palette" role="dialog" aria-label="命令面板">
+      <div class="pal-input"><i data-lucide="search" style="color:var(--fg-3)"></i><input id="palInput" placeholder="输入命令或会话名…" autocomplete="off"><span class="kbd">Esc</span></div>
+      <div class="pal-list" id="palList">
+        <div class="pal-group">会话</div>
+        <div class="pal-item on"><i data-lucide="server"></i><span class="grow">切换到 api-gateway</span><span class="badge b-wait"><i></i>等待确认</span><span class="kbd">Ctrl 2</span></div>
+        <div class="pal-item"><i data-lucide="terminal"></i><span class="grow">切换到 docs-site</span><span class="badge b-agent"><i></i>子代理</span><span class="kbd">Ctrl 3</span></div>
+        <div class="pal-group">命令</div>
+        <div class="pal-item"><i data-lucide="folder-plus"></i><span class="grow">新建本地会话…</span><span class="kbd">Ctrl T</span></div>
+        <div class="pal-item"><i data-lucide="plug"></i><span class="grow">连接 SSH 主机… <span class="hint">读取 ~/.ssh/config</span></span><span class="kbd">Ctrl Shift T</span></div>
+        <div class="pal-item"><i data-lucide="panel-right"></i><span class="grow">显示 / 隐藏文件树</span><span class="kbd">Ctrl B</span></div>
+        <div class="pal-item"><i data-lucide="settings-2"></i><span class="grow">打开设置</span><span class="kbd">Ctrl ,</span></div>
+      </div>
+      <div class="pal-foot"><span><span class="kbd">↑</span><span class="kbd">↓</span> 选择</span><span><span class="kbd">Enter</span> 执行</span><span><span class="kbd">Esc</span> 关闭</span></div>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div class="scrim" id="settings" hidden>
+    <div class="dialog" role="dialog" aria-label="设置">
+      <div class="dlg-head"><h3>设置</h3><button class="icon-btn" type="button" data-close aria-label="关闭"><i data-lucide="x"></i></button></div>
+      <div class="dlg-body">
+        <nav class="dlg-nav">
+          <button class="on" type="button"><i data-lucide="sliders-horizontal"></i>通用</button>
+          <button type="button"><i data-lucide="bot"></i>Claude Code</button>
+          <button type="button"><i data-lucide="keyboard"></i>快捷键</button>
+          <button type="button"><i data-lucide="info"></i>关于</button>
+        </nav>
+        <div class="dlg-main">
+          <div class="row"><div class="grow"><b>默认 shell</b><small>新建本地会话时使用</small></div>
+            <select id="shellSel"><option>PowerShell 7 (pwsh)</option><option>Windows PowerShell 5.1</option><option>命令提示符 (cmd)</option><option>Git Bash</option></select></div>
+          <div class="row"><div class="grow"><b>窗口透明度</b><small>只影响窗口背景，不影响文字</small></div>
+            <label class="range-wrap"><input type="range" id="opacity" min="60" max="100" value="94"><output id="opOut">94%</output></label></div>
+          <div class="row"><div class="grow"><b>提示音</b><small>Claude 等待确认或完成时提醒</small></div>
+            <button class="switch" type="button" role="switch" aria-checked="true" id="sw1" aria-label="提示音"></button></div>
+          <div class="row"><div class="grow"><b>Claude Code 集成</b><small>写入 hooks，侧栏实时显示会话状态</small></div>
+            <button class="btn ok" type="button" id="ccBtn"><i data-lucide="check"></i>已启用</button></div>
+        </div>
+      </div>
+      <div class="dlg-foot"><button class="btn" type="button" data-close>取消</button><button class="btn primary" type="button" data-close>保存</button></div>
+    </div>
+  </div>
+
+  <!-- Markdown 预览 -->
+  <div class="scrim" id="mdPreview" hidden style="padding-top:40px">
+    <div class="md-pane" role="dialog" aria-label="Markdown 预览">
+      <div class="dlg-head"><h3 style="display:flex;align-items:center;gap:8px"><i data-lucide="book-open" style="color:var(--fg-3)"></i>README.md <span class="mono" style="font-size:11px;color:var(--fg-3);font-weight:400">预览</span></h3><button class="icon-btn" type="button" data-close aria-label="关闭"><i data-lucide="x"></i></button></div>
+      <div class="md-body">
+        <h1>Tether</h1>
+        <p>Windows 上的轻量多会话终端。会话由后台进程持有，关掉窗口也不会中断。</p>
+        <blockquote>在会话里运行 Claude Code，侧栏会实时显示它在思考、等待确认，还是已经完成。</blockquote>
+        <h2>特性</h2>
+        <ul>
+          <li>多会话：本地目录与 SSH 主机并列管理</li>
+          <li>后台持有：<code>tether-daemon</code> 保活，重开窗口自动恢复</li>
+          <li>文件树：浏览、上传下载、复制文件名</li>
+          <li>自动更新：更新只重启界面，不打断会话</li>
+        </ul>
+        <h2>安装</h2>
+<pre><span style="color:var(--t-dim)"># 从 GitHub Release 下载安装包</span>
+<span style="color:var(--t-green)">winget</span> install tether
+<span style="color:var(--t-dim)"># 或从源码构建</span>
+<span style="color:var(--t-green)">pnpm</span> install &amp;&amp; <span style="color:var(--t-green)">pnpm</span> tauri build</pre>
+        <h2>许可证</h2>
+        <p>Apache-2.0</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script>
+(function () {
+  if (window.lucide) lucide.createIcons();
+  const term = document.getElementById("term"); term.scrollTop = term.scrollHeight;
+  const $ = (s) => document.querySelector(s);
+  const ST = { think: ['b-think', '思考中'], wait: ['b-wait', '等待确认'], agent: ['b-agent', '子代理运行中'], done: ['b-done', '已完成'] };
+
+  // 会话切换
+  const items = document.querySelectorAll('.sess');
+  function select(li) {
+    items.forEach((x) => x.classList.toggle('active', x === li));
+    $('#hName').textContent = li.dataset.name;
+    $('#hPath').textContent = li.dataset.path;
+    $('#hKind').textContent = li.dataset.kind === 'SSH' ? 'SSH · bash 5.2' : '本地 · pwsh 7.4.6';
+    const b = $('#hBadge'), st = ST[li.dataset.st];
+    b.hidden = !st;
+    if (st) { b.className = 'badge ' + st[0]; b.innerHTML = '<i></i>' + st[1]; }
+  }
+  items.forEach((li) => li.addEventListener('click', () => select(li)));
+
+  // 新建菜单
+  $('#newBtn').addEventListener('click', (e) => { e.stopPropagation(); $('#newMenu').hidden = !$('#newMenu').hidden; });
+  document.addEventListener('click', () => { $('#newMenu').hidden = true; });
+
+  // 浮层
+  const layers = ['#palette', '#settings', '#mdPreview'];
+  function open(id) { layers.forEach((l) => ($(l).hidden = l !== id)); if (id === '#palette') $('#palInput').focus(); }
+  function closeAll() { layers.forEach((l) => ($(l).hidden = true)); }
+  $('#openPalette').addEventListener('click', () => open('#palette'));
+  $('#openSettings').addEventListener('click', () => open('#settings'));
+  $('#openMd').addEventListener('click', () => open('#mdPreview'));
+  $('#readmeRow').addEventListener('dblclick', () => open('#mdPreview'));
+  layers.forEach((l) => $(l).addEventListener('click', (e) => { if (e.target === $(l) || e.target.closest('[data-close]')) closeAll(); }));
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#palette').hidden ? open('#palette') : closeAll(); }
+    else if (e.ctrlKey && e.key === ',') { e.preventDefault(); open('#settings'); }
+    else if (e.ctrlKey && /^[1-5]$/.test(e.key)) { e.preventDefault(); select(items[+e.key - 1]); }
+    else if (e.key === 'Escape') closeAll();
+    else if (!$('#palette').hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      const ps = [...document.querySelectorAll('.pal-item')];
+      const i = ps.findIndex((p) => p.classList.contains('on'));
+      const n = (i + (e.key === 'ArrowDown' ? 1 : -1) + ps.length) % ps.length;
+      ps.forEach((p, k) => p.classList.toggle('on', k === n));
+    }
+  });
+  document.querySelectorAll('.pal-item').forEach((p) => p.addEventListener('mouseenter', () => {
+    document.querySelectorAll('.pal-item').forEach((q) => q.classList.toggle('on', q === p));
+  }));
+
+  // 设置控件
+  $('#opacity').addEventListener('input', (e) => { $('#opOut').textContent = e.target.value + '%'; });
+  $('#sw1').addEventListener('click', (e) => { const t = e.currentTarget; t.setAttribute('aria-checked', t.getAttribute('aria-checked') !== 'true'); });
+  $('#closeBanner').addEventListener('click', () => { $('#banner').hidden = true; });
+
+  // 文件树选中
+  document.querySelectorAll('.tree li > div').forEach((d) => d.addEventListener('click', () => {
+    document.querySelectorAll('.tree li > div').forEach((x) => x.classList.toggle('sel', x === d));
+  }));
+})();
+</script>
+</body>
+</html>

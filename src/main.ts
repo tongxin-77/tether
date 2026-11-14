@@ -1,4 +1,12 @@
 import "@xterm/xterm/css/xterm.css";
+// 界面字体随包打包（离线可用），只引入用到的字重的 latin 子集；中文回退到微软雅黑
+import "@fontsource/nunito/latin-500.css";
+import "@fontsource/nunito/latin-600.css";
+import "@fontsource/nunito/latin-700.css";
+import "@fontsource/nunito/latin-800.css";
+import "@fontsource/jetbrains-mono/latin-400.css";
+import "@fontsource/jetbrains-mono/latin-500.css";
+import "@fontsource/jetbrains-mono/latin-700.css";
 import "./styles.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -16,6 +24,8 @@ import { closePreview, initPreview } from "./preview";
 import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
 import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostStats, showHostInfo } from "./host-info";
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
+import { icon } from "./icons";
+import { applyTheme, currentTheme, getThemes, nextTheme, registerTerminal, setTransparent, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
 type Status = "running" | "waiting" | "exited";
@@ -243,10 +253,12 @@ document.getElementById("new-btn")!.addEventListener("click", (ev) => {
     newMenu.hidden = true;
     return;
   }
-  const item = (text: string, sub: string, action: () => void) => {
+  const item = (ico: "folder-open" | "server", text: string, sub: string, action: () => void) => {
     const b = document.createElement("button");
-    b.append(text);
-    if (sub) b.appendChild(document.createElement("small")).textContent = sub;
+    b.innerHTML = `<span class="mi-ico">${icon(ico)}</span><span class="mi-text"></span>`;
+    const t = b.querySelector(".mi-text")!;
+    t.append(text);
+    if (sub) t.appendChild(document.createElement("small")).textContent = sub;
     b.addEventListener("click", () => {
       newMenu.hidden = true;
       action();
@@ -254,12 +266,29 @@ document.getElementById("new-btn")!.addEventListener("click", (ev) => {
     return b;
   };
   newMenu.replaceChildren(
-    item("本地", "", createSession),
-    ...hosts.map((h) => item(h.name, `${h.user}@${h.host}`, () => createRemote(h))),
+    item("folder-open", "本地目录", "选择一个文件夹打开", createSession),
+    ...hosts.map((h) => item("server", h.name, `${h.user}@${h.host}`, () => createRemote(h))),
   );
   newMenu.hidden = false;
 });
 document.addEventListener("click", () => (newMenu.hidden = true));
+
+// 主题：设置面板下拉框从注册表生成，侧栏按钮轮换；切换立即生效并记在本机（不随设置“取消”回退）
+const themeSelect = $<HTMLSelectElement>("theme-select");
+themeSelect.replaceChildren(...getThemes().map((t) => new Option(t.label, t.id)));
+const syncThemeUi = () => {
+  themeSelect.value = currentTheme().id;
+  $("theme-btn").title = `切换主题（当前：${currentTheme().label}）`;
+};
+themeSelect.addEventListener("change", () => {
+  applyTheme(themeSelect.value);
+  syncThemeUi();
+});
+$("theme-btn").addEventListener("click", () => {
+  nextTheme();
+  syncThemeUi();
+});
+syncThemeUi();
 
 // 设置对话框：打开时向 daemon 取最新配置，收到 config 消息时回填
 document.getElementById("settings-btn")!.addEventListener("click", () => {
@@ -398,8 +427,27 @@ listen("gui-focus", () => {
   if (!document.hasFocus()) clearTimeout(blurTimer);
 });
 if (detachedId !== undefined) document.body.classList.add("detached");
+initTitlebar();
 
 init();
+
+/** 自定义标题栏的窗口按钮；拖动与双击最大化由 data-tauri-drag-region 处理。最大化状态变化（含双击、Win+↑）时切换图标 */
+function initTitlebar() {
+  const win = getCurrentWindow();
+  const maxBtn = $("win-max");
+  $("win-min").innerHTML = icon("minus");
+  $("win-close").innerHTML = icon("x");
+  $("win-min").addEventListener("click", () => win.minimize());
+  maxBtn.addEventListener("click", () => win.toggleMaximize());
+  $("win-close").addEventListener("click", () => win.close());
+  const sync = async () => {
+    const max = await win.isMaximized();
+    maxBtn.innerHTML = icon(max ? "copy" : "square");
+    maxBtn.title = max ? "还原" : "最大化";
+  };
+  sync();
+  win.onResized(sync);
+}
 
 // 用 daemon 探测到的 shell 填充下拉框；当前配置不在列表中（手改过 config.json）时额外列出并选中，保证不丢失
 function fillShells(current: string, shells: ShellOption[]) {
@@ -410,6 +458,8 @@ function fillShells(current: string, shells: ShellOption[]) {
 }
 
 async function init() {
+  // xterm 打开时按当前字体测量字符格，先等打包的等宽字体就绪（失败则用回退字体）
+  await Promise.all(["400", "700"].map((w) => document.fonts.load(`${w} 14px "JetBrains Mono"`))).catch(() => {});
   // 先注册监听再连接，避免丢失早到的消息
   await listen<ServerMsg>("daemon", ({ payload: m }) => {
     if (detachedId !== undefined) return onDetachedMsg(m);
@@ -571,8 +621,7 @@ function applyAppearance(a: Appearance) {
   shownAlpha = Math.min(100, Math.max(30, a.opacity)) / 100;
   root.style.setProperty("--alpha", String(shownAlpha));
   root.style.setProperty("--alpha-strong", String(Math.max(shownAlpha, 0.88)));
-  // 整体替换 theme 才会生效，保留滚动条等其它字段
-  for (const v of views.values()) v.term.options.theme = { ...v.term.options.theme, background: xtermBackground() };
+  setTransparent(shownAlpha < 1);
 }
 
 /** PowerShell 7 安装提示条与设置面板中的提示：未检测到且未点过“不再提示”时显示 */
@@ -602,11 +651,6 @@ function previewAppearance() {
   applyAppearance(a);
   opacityRange.value = String(a.opacity);
   $("opacity-val").textContent = `${a.opacity}%`;
-}
-
-/** 半透明时 xterm 背景全透明，由终端卡片 #terminals 的半透明底色提供（避免两层叠加使不透明度偏离设置）；不透明时与原先一致 */
-function xtermBackground() {
-  return shownAlpha < 1 ? "rgba(13, 13, 13, 0)" : "#0d0d0d";
 }
 
 /** 本地会话：先选目录再创建，取消则不创建 */
@@ -779,15 +823,21 @@ function renderCardHead() {
   const s = activeView()?.info;
   $("ch-name").textContent = s?.name ?? "Tether";
   $("ch-meta").textContent = s ? shellLabel(s) : "";
+  $("ch-ico").innerHTML = icon(s?.host ? "server" : "terminal");
+  const cwd = $("ch-cwd");
+  cwd.innerHTML = s ? icon(s.host ? "globe" : "folder") : "";
+  if (s) cwd.append(s.host ? `${s.host}:${s.cwd}` : s.cwd);
+  cwd.title = s?.cwd ?? "";
   renderClaude($("ch-claude"), s?.claude);
 }
 
-/** Claude 状态标记：✳ + 状态文字，等待确认时悬停显示消息；无状态时隐藏 */
+/** Claude 状态胶囊：圆点 + 状态文字（思考中圆点呼吸），等待确认时悬停显示消息；无状态时隐藏 */
 function renderClaude(el: HTMLElement, c: ClaudeState | undefined) {
   el.hidden = !c;
   if (!c) return;
   el.className = `cc ${c.state}`;
-  el.textContent = `✳ ${CLAUDE_LABELS[c.state]}${c.state === "background" && c.count ? ` ×${c.count}` : ""}`;
+  el.innerHTML = "<i></i>";
+  el.append(`${CLAUDE_LABELS[c.state]}${c.state === "background" && c.count ? ` ×${c.count}` : ""}`);
   el.title = c.message ?? "Claude Code";
 }
 
@@ -866,6 +916,7 @@ function clipboardKey(term: Terminal, ev: KeyboardEvent, sendImagePaste: () => v
 
 /** 无会话时在终端区显示“最近关闭”：点击行新建该目录的会话，× 删除该条；远程主机已不存在的置灰不可点 */
 function renderEmpty() {
+  $("session-count").textContent = views.size ? String(views.size) : "";
   emptyPanel.hidden = !sessionsLoaded || views.size > 0;
   if (emptyPanel.hidden) return;
   $("recent-head").hidden = !recent.length;
@@ -924,25 +975,16 @@ function relativeTime(ms: number) {
 
 function addView(info: SessionInfo): View {
   const term = new Terminal({
-    fontFamily: '"Cascadia Mono", Consolas, monospace',
+    fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace',
     fontSize: 14,
     cursorBlink: true,
     // 窗口半透明时终端背景透明，由终端卡片提供半透明底色
     allowTransparency: true,
     wordSeparator: WORD_SEPARATOR,
-    theme: {
-      background: xtermBackground(),
-      foreground: "#e6e6e6",
-      // 块光标下的字符颜色，默认取 background；背景透明时显式给出，避免字符看不见
-      cursorAccent: "#0d0d0d",
-      // 与 Lobe 暗色主题的选区色一致
-      selectionBackground: "rgba(255, 255, 255, 0.18)",
-      // 与 styles.css 的 --sb-* 滚动条颜色一致
-      scrollbarSliderBackground: "rgba(255, 255, 255, 0.12)",
-      scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.24)",
-      scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.4)",
-    },
+    // 配色来自 themes.ts 的当前主题（cursorAccent 显式给出，背景透明时块光标下的字符仍可见）
+    theme: xtermTheme(),
   });
+  registerTerminal(term);
   const fit = new FitAddon();
   term.loadAddon(fit);
   const box = document.createElement("div");
@@ -990,7 +1032,7 @@ function addView(info: SessionInfo): View {
   });
 
   const item = document.createElement("li");
-  item.innerHTML = `<div class="row"><span class="dot"></span><span class="host" hidden></span><span class="name"></span><span class="close" title="关闭">×</span></div><div class="sub"><span class="cc" hidden></span><span class="cwd"></span></div>`;
+  item.innerHTML = `<span class="ico">${icon(info.host ? "server" : "terminal")}<span class="dot"></span></span><div class="row"><span class="name"></span><span class="close" title="关闭">${icon("x")}</span></div><div class="sub"><span class="host" hidden></span><span class="cc" hidden></span><span class="cwd"></span></div>`;
   const nameEl = item.querySelector(".name") as HTMLSpanElement;
   const hostEl = item.querySelector(".host") as HTMLSpanElement;
   const cwdEl = item.querySelector(".cwd") as HTMLSpanElement;
@@ -1045,6 +1087,7 @@ function addView(info: SessionInfo): View {
 
 function removeView(id: number) {
   const v = views.get(id)!;
+  unregisterTerminal(v.term);
   v.term.dispose();
   v.box.remove();
   v.item.remove();
@@ -1117,6 +1160,7 @@ function detach(id: number, x: number, y: number) {
     width: Math.max(480, terminals.clientWidth),
     height: Math.max(320, terminals.clientHeight),
     transparent: true,
+    decorations: false,
   });
   const back = () => {
     detached.delete(id);

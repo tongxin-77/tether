@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tether 奶油风</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* 布局：1440×900 桌面窗口，奶白画布上三块“软垫”——左会话栏 / 中终端卡 / 右文件栏，彼此以留白分隔，不用硬分割线 */
+:root {
+  --glow: rgba(255,255,255,.4);
+  --canvas: #efe6d8;      /* 窗外桌面：燕麦 */
+  --cream: #fbf6ee;       /* 窗体：奶白 */
+  --pad: #f4ecdf;         /* 软垫面板 */
+  --pad-2: #ece1d0;       /* 悬停/凹陷 */
+  --line: #e2d4bf;        /* 低对比描边 */
+  --ink: #4a3a2e;         /* 正文：奶咖深 */
+  --ink-2: #7d6a5a;       /* 次要文字 */
+  --ink-3: #a8957f;       /* 弱化文字 */
+  --caramel: #c68a4e;     /* 主强调：浅焦糖 */
+  --caramel-deep: #a86f37;
+  --caramel-soft: #f3dfc6;
+  --latte: #d9b99a;
+  --sage: #8fa477;  --sage-soft: #e3e9d5;
+  --honey: #d9a441; --honey-soft: #f6e6c1;
+  --rose: #c97b6b;  --rose-soft: #f3d9d1;
+  --plum: #9a7a9c;  --plum-soft: #ebdeea;
+  /* 终端：暖棕深底 */
+  --t-bg: #2f241d; --t-bg-2: #3a2d24; --t-fg: #efe2cf; --t-dim: #9c8670;
+  --t-caramel: #e3a867; --t-sage: #b4c58f; --t-honey: #f0c66b; --t-rose: #e59a86; --t-sky: #a9c2c9; --t-plum: #cfa7cf;
+  --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 10px 30px -12px rgba(120,84,48,.25), 0 2px 6px -2px rgba(120,84,48,.12);
+  --shadow-soft: 0 6px 18px -10px rgba(120,84,48,.28);
+  --r-xl: 22px; --r-lg: 16px; --r-md: 12px; --r-sm: 9px;
+  --f-ui: "Nunito", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei Mono", monospace;
+  color-scheme: light;
+}
+/* 奶油风默认浅色；“奶咖夜”只通过标题栏按钮切换 */
+:root[data-theme="dark"] {
+  --glow: rgba(224,164,102,.06);
+  --canvas: #1f1813; --cream: #2a211b; --pad: #33291f; --pad-2: #3e3227; --line: #4a3c30;
+  --ink: #f1e4d2; --ink-2: #c9b49d; --ink-3: #8f7b67;
+  --caramel: #e0a466; --caramel-deep: #f0bb80; --caramel-soft: #4a3624; --latte: #8c6c50;
+  --sage-soft: #36402b; --honey-soft: #4a3b1e; --rose-soft: #4a2c26; --plum-soft: #3f3040;
+  --t-bg: #241b15; --t-bg-2: #2e231b;
+  --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 12px 30px -12px rgba(0,0,0,.6);
+  --shadow-soft: 0 6px 18px -10px rgba(0,0,0,.6);
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  background: var(--canvas);
+  background-image: radial-gradient(circle at 15% 10%, var(--glow), transparent 40%),
+                    radial-gradient(circle at 85% 90%, rgba(198,138,78,.10), transparent 45%);
+  color: var(--ink); font-family: var(--f-ui); font-size: 13px;
+  min-height: 100vh; display: grid; place-items: center; padding: 32px 16px;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--caramel); outline-offset: 2px; }
+svg.lucide { width: 16px; height: 16px; stroke-width: 2; flex: none; }
+
+/* ===== 窗口 ===== */
+.window {
+  width: 1440px; height: 900px; flex: none;
+  background: var(--cream); border-radius: 26px; overflow: hidden;
+  box-shadow: 0 40px 80px -30px rgba(90,60,30,.45), 0 0 0 1px var(--line);
+  display: grid; grid-template-rows: 40px 1fr;
+}
+.titlebar { display: flex; align-items: center; padding: 0 8px 0 20px; gap: 10px; color: var(--ink-3); font-size: 12px; font-weight: 600; }
+.titlebar .grow { flex: 1; }
+.titlebar .wc { width: 40px; height: 28px; border-radius: 10px; display: grid; place-items: center; color: var(--ink-2); }
+.titlebar .wc:hover { background: var(--pad-2); }
+.titlebar .wc.close:hover { background: var(--rose-soft); color: var(--rose); }
+.titlebar .wc svg { width: 14px; height: 14px; }
+.body { display: grid; grid-template-columns: 252px minmax(0,1fr) 248px; gap: 12px; padding: 0 12px 12px; min-height: 0; }
+
+/* ===== 左侧栏 ===== */
+.sidebar { display: flex; flex-direction: column; min-height: 0; padding: 6px 4px 0 6px; gap: 14px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px; }
+.brand-mark {
+  width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center;
+  background: linear-gradient(145deg, var(--latte), var(--caramel)); color: #fffaf2;
+  box-shadow: var(--shadow-soft), 0 1px 0 rgba(255,255,255,.5) inset;
+}
+.brand-mark svg { width: 18px; height: 18px; }
+.brand-name { font-size: 19px; font-weight: 800; letter-spacing: -.01em; }
+.brand-ver { margin-left: auto; font-size: 11px; color: var(--ink-3); background: var(--pad); padding: 2px 8px; border-radius: 99px; }
+
+.new-wrap { position: relative; }
+.new-btn {
+  width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+  height: 42px; border-radius: 14px; font-weight: 700; font-size: 14px;
+  background: var(--caramel); color: #fffaf2;
+  box-shadow: 0 1px 0 rgba(255,255,255,.35) inset, 0 8px 18px -8px rgba(168,111,55,.7);
+  transition: transform .15s, background .15s;
+}
+.new-btn:hover { background: var(--caramel-deep); }
+.new-btn:active { transform: translateY(1px); }
+.new-btn .chev { margin-left: 2px; opacity: .8; width: 14px; height: 14px; }
+.new-menu {
+  position: absolute; top: 48px; left: 0; right: 0; z-index: 20;
+  background: var(--cream); border-radius: var(--r-lg); padding: 6px; box-shadow: var(--shadow), 0 0 0 1px var(--line);
+}
+.new-menu button { width: 100%; display: flex; gap: 10px; align-items: center; padding: 9px 10px; border-radius: 10px; text-align: left; }
+.new-menu button:hover { background: var(--pad); }
+.new-menu small { display: block; color: var(--ink-3); font-size: 11px; }
+.mi-ico { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: var(--caramel-soft); color: var(--caramel-deep); }
+
+.sec-label { font-size: 11px; font-weight: 700; color: var(--ink-3); letter-spacing: .08em; padding: 0 10px; display: flex; justify-content: space-between; }
+.sessions { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; flex: 1; padding: 2px; }
+.sess {
+  display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 4px 10px; align-items: center;
+  padding: 10px; border-radius: 14px; text-align: left; transition: background .15s, box-shadow .15s;
+}
+.sess:hover { background: var(--pad); }
+.sess.active { background: var(--cream); box-shadow: var(--shadow), 0 0 0 1px var(--line); }
+.sess .ico { grid-row: span 2; width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: var(--pad-2); color: var(--ink-2); }
+.sess.active .ico { background: var(--caramel-soft); color: var(--caramel-deep); }
+.sess .ico svg { width: 15px; height: 15px; }
+.sess .name { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess .sub { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.tag { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--pad-2); color: var(--ink-2); white-space: nowrap; }
+.tag.ssh { background: var(--plum-soft); color: var(--plum); }
+
+.st { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 1px 8px 1px 6px; border-radius: 99px; white-space: nowrap; }
+.st i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.st.think { background: var(--honey-soft); color: #a77a1f; }
+.st.think i { animation: pulse 1.4s ease-in-out infinite; }
+.st.ask { background: var(--rose-soft); color: var(--rose); }
+.st.sub { background: var(--plum-soft); color: var(--plum); }
+.st.done { background: var(--sage-soft); color: #6d8456; }
+:root[data-theme="dark"] .st.think, :root[data-theme="dark"] .st.done { filter: brightness(1.4); }
+@keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
+
+.side-foot { display: flex; flex-direction: column; gap: 8px; padding-bottom: 6px; }
+.update {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px;
+  background: var(--honey-soft); color: var(--ink);
+}
+.update b { font-weight: 800; }
+.update small { display: block; color: var(--ink-2); font-size: 11px; }
+.update .go { margin-left: auto; font-size: 11.5px; font-weight: 800; color: var(--caramel-deep); padding: 4px 10px; border-radius: 99px; background: var(--cream); }
+.foot-row { display: flex; gap: 6px; }
+.ghost { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px; color: var(--ink-2); font-weight: 700; }
+.ghost:hover { background: var(--pad); color: var(--ink); }
+.foot-row .ghost:first-child { flex: 1; }
+
+/* ===== 中间 ===== */
+.main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.card-head {
+  display: flex; align-items: center; gap: 14px; padding: 14px 18px;
+  background: var(--pad); border-radius: var(--r-xl);
+}
+.ch-ico { width: 40px; height: 40px; border-radius: 14px; display: grid; place-items: center; background: var(--cream); color: var(--caramel-deep); box-shadow: var(--shadow-soft); }
+.ch-ico svg { width: 20px; height: 20px; }
+.ch-text { min-width: 0; flex: 1; }
+.ch-name { font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
+.ch-meta { display: flex; gap: 12px; color: var(--ink-2); font-size: 12px; margin-top: 2px; font-family: var(--f-mono); }
+.ch-meta span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch-meta svg { width: 13px; height: 13px; }
+.ch-claude { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 12px; border-radius: 14px; background: var(--cream); box-shadow: var(--shadow-soft); }
+.ch-claude .lbl { font-size: 11px; color: var(--ink-3); font-weight: 700; }
+.ch-claude .st { font-size: 12px; padding: 3px 10px 3px 8px; }
+.icon-btn { width: 32px; height: 32px; border-radius: 11px; display: grid; place-items: center; color: var(--ink-2); }
+.icon-btn:hover { background: var(--pad-2); color: var(--ink); }
+
+.banner {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 14px; border-radius: 16px;
+  background: var(--caramel-soft); color: var(--ink);
+}
+.banner .b-ico { width: 28px; height: 28px; border-radius: 10px; background: var(--cream); color: var(--caramel-deep); display: grid; place-items: center; }
+.banner p { margin: 0; flex: 1; min-width: 0; }
+.banner p small { color: var(--ink-2); margin-left: 6px; }
+.pill-btn { font-weight: 800; font-size: 12px; padding: 6px 14px; border-radius: 99px; background: var(--caramel); color: #fffaf2; }
+.pill-btn:hover { background: var(--caramel-deep); }
+
+.term {
+  flex: 1; min-height: 0; border-radius: var(--r-xl); background: var(--t-bg); color: var(--t-fg);
+  box-shadow: 0 20px 40px -24px rgba(60,35,15,.7), 0 0 0 1px rgba(0,0,0,.08);
+  display: flex; flex-direction: column; overflow: hidden; position: relative;
+}
+.term-tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 0; }
+.ttab { font-family: var(--f-mono); font-size: 11.5px; color: var(--t-dim); padding: 6px 12px; border-radius: 10px 10px 0 0; display: flex; gap: 6px; align-items: center; }
+.ttab.on { background: var(--t-bg-2); color: var(--t-fg); }
+.ttab svg { width: 13px; height: 13px; }
+.term-tabs .sp { flex: 1; }
+.term-tabs .hint { font-family: var(--f-mono); font-size: 11px; color: var(--t-dim); }
+.term-body {
+  flex: 1; min-height: 0; overflow: auto; margin: 0 8px 8px; padding: 16px 18px; border-radius: 16px;
+  background: var(--t-bg-2); font-family: var(--f-mono); font-size: 13px; line-height: 1.62; white-space: pre-wrap; word-break: break-word;
+}
+.term-body::-webkit-scrollbar { width: 10px; }
+.term-body::-webkit-scrollbar-thumb { background: rgba(239,226,207,.15); border-radius: 99px; border: 3px solid var(--t-bg-2); }
+.c-dim { color: var(--t-dim); } .c-car { color: var(--t-caramel); } .c-sage { color: var(--t-sage); }
+.c-honey { color: var(--t-honey); } .c-rose { color: var(--t-rose); } .c-sky { color: var(--t-sky); } .c-plum { color: var(--t-plum); }
+.b { font-weight: 700; }
+.ps { color: var(--t-caramel); font-weight: 700; }
+.cc-box { display: block; border: 1px solid rgba(227,168,103,.45); border-radius: 12px; padding: 8px 14px; margin: 4px 0; }
+.cc-tool { display: block; padding-left: 2px; }
+.cursor { display: inline-block; width: 8px; height: 16px; background: var(--t-caramel); vertical-align: -3px; border-radius: 2px; animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.ask-box { display: block; background: rgba(229,154,134,.10); border: 1px solid rgba(229,154,134,.4); border-radius: 12px; padding: 8px 14px; margin-top: 4px; }
+
+/* ===== 右侧 ===== */
+.files { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.panel { background: var(--pad); border-radius: var(--r-xl); padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.panel.tree-panel { flex: 1; }
+.p-head { display: flex; align-items: center; gap: 4px; }
+.p-head h3 { margin: 0; font-size: 14px; font-weight: 800; flex: 1; display: flex; align-items: center; gap: 8px; }
+.p-head h3 svg { color: var(--caramel); }
+.path { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-2); background: var(--cream); border-radius: 10px; padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; flex: 1; font-size: 13px; }
+.tree li { display: flex; align-items: center; gap: 7px; padding: 5px 8px; border-radius: 9px; cursor: default; white-space: nowrap; }
+.tree li span.n { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.tree li:hover { background: var(--pad-2); }
+.tree li.sel { background: var(--cream); box-shadow: var(--shadow-soft); font-weight: 700; }
+.tree li svg { width: 15px; height: 15px; }
+.tree .dir svg.f { color: var(--caramel); }
+.tree .file svg.f { color: var(--ink-3); }
+.tree .md svg.f { color: var(--plum); }
+.tree .tw { width: 12px; height: 12px; color: var(--ink-3); }
+.tree .meta { color: var(--ink-3); font-size: 11px; font-family: var(--f-mono); }
+.tree .git { font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; width: 14px; text-align: center; }
+.git.m { color: var(--honey); } .git.a { color: var(--sage); }
+
+.xfer { background: var(--cream); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.xfer-top { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.xfer-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.xfer-top span { font-family: var(--f-mono); font-size: 11px; color: var(--ink-2); }
+.bar { height: 8px; border-radius: 99px; background: var(--pad-2); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--latte), var(--caramel)); }
+
+.host-bar { position: relative; flex: none; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--pad); border-radius: 12px; font-size: 11.5px; color: var(--ink-2); cursor: default; outline: none; }
+.host-bar > svg { width: 13px; height: 13px; color: var(--caramel); }
+.host-bar .hb { display: flex; align-items: center; gap: 5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.host-bar .hb b { font-family: var(--f-mono); font-weight: 700; color: var(--ink); }
+.host-bar .hb .dot { width: 6px; height: 6px; border-radius: 50%; }
+.host-bar .hb .sep { color: var(--ink-3); }
+.host-bar:hover, .host-bar.open { background: var(--pad-2); }
+.host-pop { display: none; position: absolute; right: 0; bottom: calc(100% + 8px); width: 300px; z-index: 30; box-shadow: 0 18px 40px -16px rgba(70,45,20,.45), 0 0 0 1px var(--line); }
+.host-pop::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 8px; }
+.host-bar:hover .host-pop, .host-bar.open .host-pop { display: flex; }
+.host { gap: 12px; }
+.host .p-head h3 small { font-weight: 600; color: var(--ink-3); font-size: 11px; }
+.gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.gauge { background: var(--cream); border-radius: 14px; padding: 10px 8px 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gauge svg.ring { width: 54px; height: 54px; }
+.ring .trk { fill: none; stroke: var(--pad-2); stroke-width: 6; }
+.ring .val { fill: none; stroke-width: 6; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
+.ring text { font-family: var(--f-mono); font-size: 12px; font-weight: 700; fill: var(--ink); }
+.gauge .gl { font-size: 11px; font-weight: 700; color: var(--ink-2); }
+.gauge .gs { font-family: var(--f-mono); font-size: 10px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.sysline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); background: var(--cream); padding: 8px 10px; border-radius: 12px; }
+.sysline b { color: var(--ink); font-weight: 700; }
+.sysline .sp { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--ink-3); }
+
+/* ===== 浮层 ===== */
+.scrim { position: absolute; inset: 40px 0 0; background: rgba(74,58,46,.28); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 50; }
+.window { position: relative; }
+.modal { width: 520px; background: var(--cream); border-radius: 26px; box-shadow: 0 30px 60px -20px rgba(70,45,20,.5), 0 0 0 1px var(--line); padding: 22px; display: flex; flex-direction: column; gap: 16px; animation: pop .22s ease-out; }
+@keyframes pop { from { transform: translateY(8px) scale(.98); opacity: .4; } }
+.m-head { display: flex; align-items: center; gap: 12px; }
+.m-head h2 { margin: 0; font-size: 18px; font-weight: 800; flex: 1; }
+.m-head .ch-ico { width: 36px; height: 36px; }
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; align-items: center; gap: 14px; background: var(--pad); border-radius: 16px; padding: 12px 14px; }
+.row .rt { flex: 1; min-width: 0; }
+.row .rt b { display: block; font-weight: 700; font-size: 13.5px; }
+.row .rt small { color: var(--ink-2); font-size: 12px; }
+select.sel { font: inherit; font-weight: 700; color: var(--ink); background: var(--cream); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; }
+.range { display: flex; align-items: center; gap: 10px; }
+.range input { accent-color: var(--caramel); width: 150px; }
+.range output { font-family: var(--f-mono); font-size: 12px; width: 38px; text-align: right; color: var(--ink-2); }
+.switch { width: 44px; height: 26px; border-radius: 99px; background: var(--pad-2); position: relative; transition: background .2s; flex: none; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--cream); box-shadow: 0 2px 4px rgba(90,60,30,.25); transition: transform .2s; }
+.switch[aria-checked="true"] { background: var(--caramel); }
+.switch[aria-checked="true"]::after { transform: translateX(18px); }
+.cc-row { background: linear-gradient(135deg, var(--caramel-soft), var(--honey-soft)); }
+.m-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.btn-2 { font-weight: 800; padding: 9px 18px; border-radius: 99px; background: var(--pad); }
+.btn-2:hover { background: var(--pad-2); }
+
+.preview { width: 680px; height: 640px; padding: 0; gap: 0; overflow: hidden; }
+.preview .m-head { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.preview .m-head h2 { font-family: var(--f-mono); font-size: 14px; }
+.doc { padding: 22px 34px 30px; overflow-y: auto; line-height: 1.75; font-size: 14px; }
+.doc h1 { font-size: 24px; margin: 0 0 6px; font-weight: 800; }
+.doc h2 { font-size: 16px; margin: 20px 0 6px; font-weight: 800; color: var(--caramel-deep); }
+.doc p { margin: 6px 0; max-width: 62ch; color: var(--ink); }
+.doc code { font-family: var(--f-mono); font-size: 12.5px; background: var(--pad); padding: 1px 6px; border-radius: 6px; }
+.doc pre { font-family: var(--f-mono); font-size: 12.5px; background: var(--t-bg); color: var(--t-fg); padding: 12px 16px; border-radius: 14px; overflow-x: auto; }
+.doc ul { padding-left: 20px; margin: 6px 0; }
+.doc blockquote { margin: 10px 0; padding: 8px 14px; border-radius: 12px; background: var(--honey-soft); color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) { *, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="window" id="win">
+  <div class="titlebar">
+    <span>Tether — 本地终端 · 4 个会话</span>
+    <span class="grow"></span>
+    <button class="wc" id="theme-btn" title="切换明暗"><i data-lucide="sun-moon"></i></button>
+    <button class="wc" title="最小化"><i data-lucide="minus"></i></button>
+    <button class="wc" title="最大化"><i data-lucide="square"></i></button>
+    <button class="wc close" title="关闭（会话继续在后台运行）"><i data-lucide="x"></i></button>
+  </div>
+
+  <div class="body">
+    <!-- 左侧栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><i data-lucide="link-2"></i></div>
+        <span class="brand-name">Tether</span>
+        <span class="brand-ver">0.2.0</span>
+      </div>
+
+      <div class="new-wrap">
+        <button class="new-btn" id="new-btn"><i data-lucide="plus"></i>新建会话<i data-lucide="chevron-down" class="chev"></i></button>
+        <div class="new-menu" id="new-menu" hidden>
+          <button><span class="mi-ico"><i data-lucide="folder-open"></i></span><span>本地目录<small>在某个文件夹打开 PowerShell</small></span></button>
+          <button><span class="mi-ico"><i data-lucide="server"></i></span><span>SSH 主机<small>从 ~/.ssh/config 选择</small></span></button>
+        </div>
+      </div>
+
+      <div class="sec-label"><span>会话</span><span>4</span></div>
+      <div class="sessions" id="sessions">
+        <button class="sess active" data-name="tether" data-meta="C:\workspace\tether" data-kind="local" data-st="think">
+          <span class="ico"><i data-lucide="terminal"></i></span>
+          <span class="name">tether</span>
+          <span class="sub"><span class="tag">本地</span><span class="st think"><i></i>思考中</span></span>
+        </button>
+        <button class="sess" data-name="blog-site" data-meta="D:\code\blog-site" data-kind="local" data-st="ask">
+          <span class="ico"><i data-lucide="terminal"></i></span>
+          <span class="name">blog-site</span>
+          <span class="sub"><span class="tag">本地</span><span class="st ask"><i></i>等待确认</span></span>
+        </button>
+        <button class="sess" data-name="api-gateway" data-meta="deploy@10.0.3.21:/srv/api" data-kind="ssh" data-st="sub">
+          <span class="ico"><i data-lucide="server"></i></span>
+          <span class="name">api-gateway</span>
+          <span class="sub"><span class="tag ssh">SSH</span><span class="st sub"><i></i>子代理运行中</span></span>
+        </button>
+        <button class="sess" data-name="家用 NAS" data-meta="admin@nas.local:/volume1" data-kind="ssh" data-st="done">
+          <span class="ico"><i data-lucide="server"></i></span>
+          <span class="name">家用 NAS</span>
+          <span class="sub"><span class="tag ssh">SSH</span><span class="st done"><i></i>已完成</span></span>
+        </button>
+      </div>
+
+      <div class="side-foot">
+        <div class="update">
+          <i data-lucide="gift"></i>
+          <span><b>0.2.1 可更新</b><small>不打断正在运行的会话</small></span>
+          <button class="go">更新</button>
+        </div>
+        <div class="foot-row">
+          <button class="ghost" id="settings-btn"><i data-lucide="settings-2"></i>设置</button>
+          <button class="ghost" title="快捷键"><i data-lucide="keyboard"></i></button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中间 -->
+    <main class="main">
+      <div class="card-head">
+        <div class="ch-ico" id="ch-ico"><i data-lucide="terminal"></i></div>
+        <div class="ch-text">
+          <div class="ch-name" id="ch-name">tether</div>
+          <div class="ch-meta">
+            <span id="ch-meta"><i data-lucide="folder"></i>C:\workspace\tether</span>
+            <span><i data-lucide="git-branch"></i>main</span>
+            <span><i data-lucide="clock"></i>已运行 2 小时 14 分</span>
+          </div>
+        </div>
+        <div class="ch-claude">
+          <span class="lbl">Claude Code</span>
+          <span class="st think" id="ch-st"><i></i>思考中</span>
+        </div>
+        <button class="icon-btn" title="复制路径"><i data-lucide="copy"></i></button>
+      </div>
+
+      <div class="banner" id="banner">
+        <span class="b-ico"><i data-lucide="sparkles"></i></span>
+        <p><b>建议安装 PowerShell 7</b><small>中文显示和补全更顺手，安装后新会话自动使用</small></p>
+        <button class="pill-btn">一键安装</button>
+        <button class="icon-btn" id="banner-x" title="不再提示"><i data-lucide="x"></i></button>
+      </div>
+
+      <section class="term">
+        <div class="term-tabs">
+          <span class="ttab on"><i data-lucide="chevron-right"></i>pwsh 7.4.6</span>
+          <span class="sp"></span>
+          <span class="hint">UTF-8 · 132×38</span>
+        </div>
+        <div class="term-body" id="term"><span class="c-dim">PowerShell 7.4.6</span>
+<span class="ps">PS C:\workspace\tether&gt;</span> <span class="c-honey">git</span> status
+On branch <span class="c-sage b">main</span>
+Your branch is up to date with <span class="c-sky">'origin/main'</span>.
+
+Changes not staged for commit:
+  <span class="c-rose">modified:   src/sidebar.ts</span>
+  <span class="c-rose">modified:   src/styles.css</span>
+Untracked files:
+  <span class="c-rose">docs/design/</span>
+
+<span class="ps">PS C:\workspace\tether&gt;</span> <span class="c-honey">claude</span>
+<span class="cc-box"><span class="c-car b">✻ Welcome to Claude Code</span>
+  <span class="c-dim">cwd: C:\workspace\tether</span></span>
+<span class="c-dim">&gt;</span> 侧栏的状态徽标在会话切换时偶尔闪一下，帮我查一下原因
+
+<span class="c-car">●</span> 我先看看侧栏是怎么订阅状态事件的。
+<span class="cc-tool"><span class="c-sage">●</span> <span class="b">Read</span><span class="c-dim">(src/sidebar.ts)</span>
+  <span class="c-dim">⎿  Read 214 lines</span></span>
+<span class="cc-tool"><span class="c-sage">●</span> <span class="b">Grep</span><span class="c-dim">("claude-status", path: src)</span>
+  <span class="c-dim">⎿  Found 3 files</span></span>
+<span class="c-car">●</span> 找到了：<span class="c-sky">renderList()</span> 每次切换都会整列表重建，徽标的
+  CSS 动画因此重新开始。改成只更新变化的那一项即可。
+<span class="cc-tool"><span class="c-plum">●</span> <span class="b">Update</span><span class="c-dim">(src/sidebar.ts)</span>
+  <span class="c-dim">⎿</span>  <span class="c-sage">+ 12</span> <span class="c-rose">- 5</span></span>
+<span class="c-honey">✶ Pondering… </span><span class="c-dim">(18s · ↓ 1.2k tokens · esc 中断)</span>
+<span class="cursor"></span></div>
+      </section>
+    </main>
+
+    <!-- 右侧 -->
+    <aside class="files">
+      <section class="panel tree-panel">
+        <div class="p-head">
+          <h3><i data-lucide="folder-tree"></i>文件</h3>
+          <button class="icon-btn" title="上级目录"><i data-lucide="arrow-up"></i></button>
+          <button class="icon-btn" title="刷新"><i data-lucide="rotate-cw"></i></button>
+        </div>
+        <div class="path" title="C:\workspace\tether">C:\workspace\tether</div>
+        <ul class="tree" id="tree">
+          <li class="dir"><i data-lucide="chevron-right" class="tw"></i><i data-lucide="folder" class="f"></i><span class="n">.github</span></li>
+          <li class="dir"><i data-lucide="chevron-down" class="tw"></i><i data-lucide="folder-open" class="f"></i><span class="n">docs</span><span class="git a">A</span></li>
+          <li class="dir" style="padding-left:26px"><i data-lucide="chevron-right" class="tw"></i><i data-lucide="folder" class="f"></i><span class="n">design</span><span class="git a">A</span></li>
+          <li class="md" style="padding-left:26px" data-md><i class="tw"></i><i data-lucide="file-text" class="f"></i><span class="n">usage.md</span><span class="meta">6 KB</span></li>
+          <li class="md" style="padding-left:26px" data-md><i class="tw"></i><i data-lucide="file-text" class="f"></i><span class="n">development.md</span><span class="meta">9 KB</span></li>
+          <li class="dir"><i data-lucide="chevron-down" class="tw"></i><i data-lucide="folder-open" class="f"></i><span class="n">src</span><span class="git m">M</span></li>
+          <li class="file sel" style="padding-left:26px"><i class="tw"></i><i data-lucide="file-code-2" class="f"></i><span class="n">sidebar.ts</span><span class="git m">M</span></li>
+          <li class="file" style="padding-left:26px"><i class="tw"></i><i data-lucide="file-code-2" class="f"></i><span class="n">styles.css</span><span class="git m">M</span></li>
+          <li class="file" style="padding-left:26px"><i class="tw"></i><i data-lucide="file-code-2" class="f"></i><span class="n">main.ts</span><span class="meta">18 KB</span></li>
+          <li class="dir"><i data-lucide="chevron-right" class="tw"></i><i data-lucide="folder" class="f"></i><span class="n">src-tauri</span></li>
+          <li class="file"><i class="tw"></i><i data-lucide="file-code-2" class="f"></i><span class="n">index.html</span><span class="meta">7 KB</span></li>
+          <li class="file"><i class="tw"></i><i data-lucide="file-json" class="f"></i><span class="n">package.json</span><span class="meta">1 KB</span></li>
+          <li class="md" data-md><i class="tw"></i><i data-lucide="file-text" class="f"></i><span class="n">README.md</span><span class="meta">4 KB</span></li>
+          <li class="md" data-md><i class="tw"></i><i data-lucide="file-text" class="f"></i><span class="n">CHANGELOG.md</span><span class="meta">3 KB</span></li>
+        </ul>
+        <div class="xfer">
+          <div class="xfer-top"><i data-lucide="upload"></i><b>release-0.2.0.zip → api-gateway</b><span>68%</span></div>
+          <div class="bar"><i style="width:68%"></i></div>
+          <div class="xfer-top"><span>12.4 / 18.2 MB · 3.1 MB/s</span></div>
+        </div>
+      </section>
+
+      <section class="host-bar" id="host-bar" tabindex="0">
+        <i data-lucide="cpu"></i>
+        <span class="hb"><i class="dot" style="background:var(--caramel)"></i>CPU <b>28%</b><span class="sep">·</span><i class="dot" style="background:var(--honey)"></i>内存 <b>62%</b><span class="sep">·</span><i class="dot" style="background:var(--sage)"></i>磁盘 <b>55%</b></span>
+          <div class="panel host host-pop" role="dialog" aria-label="主机详情">
+            <div class="p-head"><h3><i data-lucide="cpu"></i>主机 <small>DESKTOP-7Q2K</small></h3></div>
+            <div class="gauges">
+              <div class="gauge">
+                <svg class="ring" viewBox="0 0 54 54"><circle class="trk" cx="27" cy="27" r="22"/><circle class="val" cx="27" cy="27" r="22" stroke="var(--caramel)" stroke-dasharray="138.2" stroke-dashoffset="99.5"/><text x="27" y="31" text-anchor="middle">28%</text></svg>
+                <span class="gl">CPU</span><span class="gs">16 线程</span>
+              </div>
+              <div class="gauge">
+                <svg class="ring" viewBox="0 0 54 54"><circle class="trk" cx="27" cy="27" r="22"/><circle class="val" cx="27" cy="27" r="22" stroke="var(--honey)" stroke-dasharray="138.2" stroke-dashoffset="52.5"/><text x="27" y="31" text-anchor="middle">62%</text></svg>
+                <span class="gl">内存</span><span class="gs">19.8/32 GB</span>
+              </div>
+              <div class="gauge">
+                <svg class="ring" viewBox="0 0 54 54"><circle class="trk" cx="27" cy="27" r="22"/><circle class="val" cx="27" cy="27" r="22" stroke="var(--sage)" stroke-dasharray="138.2" stroke-dashoffset="62.2"/><text x="27" y="31" text-anchor="middle">55%</text></svg>
+                <span class="gl">磁盘 C:</span><span class="gs">512/931 GB</span>
+              </div>
+            </div>
+            <div class="sysline"><i data-lucide="monitor"></i><b>Windows 11 专业版</b><span class="sp">26200</span></div>
+          </div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="scrim" id="settings" hidden>
+    <div class="modal" role="dialog" aria-label="设置">
+      <div class="m-head">
+        <div class="ch-ico"><i data-lucide="settings-2"></i></div>
+        <h2>设置</h2>
+        <button class="icon-btn" data-close title="关闭"><i data-lucide="x"></i></button>
+      </div>
+      <div class="rows">
+        <div class="row">
+          <div class="rt"><b>默认 Shell</b><small>新建本地会话时使用</small></div>
+          <select class="sel" id="shell-select"><option>PowerShell 7</option><option>Windows PowerShell</option><option>命令提示符</option><option>Git Bash</option></select>
+        </div>
+        <div class="row">
+          <div class="rt"><b>窗口透明度</b><small>只影响窗口背景，文字保持清晰</small></div>
+          <div class="range"><input type="range" id="opacity" min="60" max="100" value="94"><output id="opacity-val">94%</output></div>
+        </div>
+        <div class="row">
+          <div class="rt"><b>提示音</b><small>Claude 等待确认或完成时轻响一声</small></div>
+          <button class="switch" id="sound-switch" role="switch" aria-checked="true" aria-label="提示音"></button>
+        </div>
+        <div class="row cc-row">
+          <div class="rt"><b>Claude Code 集成</b><small>写入 hooks，让侧栏实时显示 Claude 的状态</small></div>
+          <button class="pill-btn" id="cc-btn">启用</button>
+        </div>
+      </div>
+      <div class="m-foot"><button class="btn-2" data-close>完成</button></div>
+    </div>
+  </div>
+
+  <!-- Markdown 预览 -->
+  <div class="scrim" id="preview" hidden>
+    <div class="modal preview" role="dialog" aria-label="预览">
+      <div class="m-head">
+        <i data-lucide="file-text"></i>
+        <h2 id="pv-name">README.md</h2>
+        <button class="btn-2">在编辑器中打开</button>
+        <button class="icon-btn" data-close title="关闭"><i data-lucide="x"></i></button>
+      </div>
+      <div class="doc">
+        <h1>Tether</h1>
+        <p>Windows 上的轻量多会话终端。会话由后台进程持有，关掉窗口也不会中断；重新打开，一切都在原处。</p>
+        <blockquote>在会话里运行 Claude Code，侧栏会实时显示它在思考、等待确认，还是已经完成。</blockquote>
+        <h2>快速开始</h2>
+        <pre>winget install Tether
+tether .        # 在当前目录新建会话</pre>
+        <h2>特性</h2>
+        <ul>
+          <li>本地目录与 SSH 主机会话并排管理</li>
+          <li>右侧文件树支持拖拽上传、下载与 Markdown 预览</li>
+          <li>自动更新，更新时不打断正在运行的会话</li>
+        </ul>
+        <p>更多用法见 <code>docs/usage.md</code>。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script>
+(function () {
+  if (window.lucide) lucide.createIcons();
+  const $ = (s) => document.querySelector(s);
+  const term = document.getElementById('term'); term.scrollTop = term.scrollHeight;
+  const ST = { think: '思考中', ask: '等待确认', sub: '子代理运行中', done: '已完成' };
+
+  // 新建会话下拉
+  const menu = $('#new-menu');
+  $('#new-btn').addEventListener('click', (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; });
+  document.addEventListener('click', () => { menu.hidden = true; });
+
+  // 会话切换
+  document.querySelectorAll('.sess').forEach((el) => el.addEventListener('click', () => {
+    document.querySelectorAll('.sess').forEach((s) => s.classList.remove('active'));
+    el.classList.add('active');
+    $('#ch-name').textContent = el.dataset.name;
+    $('#ch-meta').innerHTML = '<i data-lucide="' + (el.dataset.kind === 'ssh' ? 'globe' : 'folder') + '"></i>' + el.dataset.meta;
+    $('#ch-ico').innerHTML = '<i data-lucide="' + (el.dataset.kind === 'ssh' ? 'server' : 'terminal') + '"></i>';
+    const st = $('#ch-st');
+    st.className = 'st ' + el.dataset.st;
+    st.innerHTML = '<i></i>' + ST[el.dataset.st];
+    if (window.lucide) lucide.createIcons();
+  }));
+
+  // 主机状态条：悬停或点击弹出详情
+  const hostBar = $('#host-bar');
+  hostBar.addEventListener('click', (e) => { e.stopPropagation(); hostBar.classList.toggle('open'); });
+  document.addEventListener('click', () => { hostBar.classList.remove('open'); });
+
+  // 横幅关闭
+  $('#banner-x').addEventListener('click', () => { $('#banner').hidden = true; });
+
+  // 浮层
+  const open = (id) => { $(id).hidden = false; };
+  $('#settings-btn').addEventListener('click', () => open('#settings'));
+  document.querySelectorAll('[data-md]').forEach((li) => li.addEventListener('click', () => {
+    document.querySelectorAll('.tree li').forEach((x) => x.classList.remove('sel'));
+    li.classList.add('sel');
+    $('#pv-name').textContent = li.querySelector('.n').textContent; open('#preview');
+  }));
+  document.querySelectorAll('.scrim').forEach((sc) => sc.addEventListener('click', (e) => {
+    if (e.target === sc || e.target.closest('[data-close]')) sc.hidden = true;
+  }));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelectorAll('.scrim').forEach((s) => s.hidden = true); });
+
+  // 设置控件
+  $('#opacity').addEventListener('input', (e) => { $('#opacity-val').textContent = e.target.value + '%'; });
+  $('#sound-switch').addEventListener('click', (e) => {
+    const b = e.currentTarget; b.setAttribute('aria-checked', b.getAttribute('aria-checked') !== 'true');
+  });
+  $('#cc-btn').addEventListener('click', (e) => { e.currentTarget.textContent = '已启用 ✓'; });
+
+  // 明暗切换
+  $('#theme-btn').addEventListener('click', () => {
+    const r = document.documentElement;
+    const dark = r.dataset.theme === 'dark';
+    r.dataset.theme = dark ? 'light' : 'dark';
+  });
+})();
+</script>
+</body>
+</html>

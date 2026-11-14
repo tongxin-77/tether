@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tether 毛玻璃</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+:root {
+  /* 壁纸：黄昏湖面 */
+  --wall-sky: #8fb3d9;
+  --wall-rose: #e9b7c6;
+  --wall-amber: #f3d2a2;
+  --wall-deep: #2b3a55;
+  /* 文字与强调 */
+  --ink: #1c2333;
+  --ink-2: #4a5468;
+  --ink-3: #7c8598;
+  --lake: #1f6f8b;
+  --lake-soft: rgba(31, 111, 139, 0.14);
+  /* 玻璃：--a 由设置里的透明度滑条驱动（0.15–0.95） */
+  --a: 0.55;
+  --glass: rgba(250, 251, 255, var(--a));
+  --glass-hi: rgba(255, 255, 255, calc(var(--a) + 0.18));
+  --glass-lo: rgba(250, 251, 255, calc(var(--a) * 0.55));
+  --smoke: rgba(20, 26, 40, calc(0.35 + var(--a) * 0.5));
+  --edge: rgba(255, 255, 255, 0.62);
+  --edge-dim: rgba(255, 255, 255, 0.32);
+  --hair: rgba(28, 35, 51, 0.08);
+  --blur: 28px;
+  /* Claude 状态 */
+  --st-think: #6b5cd6;
+  --st-wait: #c9821e;
+  --st-sub: #178a86;
+  --st-done: #3b9a57;
+  --font: "Segoe UI Variable Text", "Noto Sans SC", "Microsoft YaHei UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--wall-deep);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; border-radius: 6px; }
+svg.lucide { width: 16px; height: 16px; stroke-width: 1.75; flex: none; }
+
+/* —— 壁纸 —— */
+.wallpaper {
+  position: fixed; inset: 0; z-index: 0;
+  background:
+    radial-gradient(60% 55% at 18% 22%, var(--wall-sky) 0%, transparent 70%),
+    radial-gradient(50% 50% at 82% 30%, var(--wall-rose) 0%, transparent 72%),
+    radial-gradient(70% 55% at 60% 95%, var(--wall-amber) 0%, transparent 70%),
+    linear-gradient(160deg, #6f8fbf 0%, #b49bc0 45%, #e5b8a0 100%);
+}
+.wallpaper::before, .wallpaper::after {
+  content: ""; position: absolute; border-radius: 50%; filter: blur(60px);
+}
+.wallpaper::before { width: 520px; height: 520px; left: 8%; bottom: -120px; background: rgba(43, 58, 85, 0.45); }
+.wallpaper::after { width: 420px; height: 420px; right: 10%; top: 6%; background: rgba(255, 236, 214, 0.7); }
+
+/* —— 窗口（Mica 底层） —— */
+.window {
+  position: relative; z-index: 1;
+  width: min(1440px, calc(100vw - 32px));
+  height: min(900px, calc(100vh - 32px));
+  border-radius: 12px;
+  background: rgba(240, 243, 250, calc(var(--a) * 0.45));
+  backdrop-filter: blur(60px) saturate(1.5);
+  -webkit-backdrop-filter: blur(60px) saturate(1.5);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.35), inset 0 1px 0 rgba(255,255,255,0.7), 0 30px 80px rgba(20, 26, 40, 0.35), 0 8px 24px rgba(20, 26, 40, 0.2);
+  display: grid;
+  grid-template-rows: 36px 1fr;
+  overflow: hidden;
+}
+.titlebar { display: flex; align-items: center; padding-left: 14px; -webkit-user-select: none; user-select: none; }
+.titlebar .app { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.titlebar .app i { display: inline-block; width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, var(--lake), #5aa7c0); box-shadow: inset 0 1px 0 rgba(255,255,255,.5); }
+.caption { margin-left: auto; display: flex; height: 100%; }
+.caption button { width: 46px; display: grid; place-items: center; color: var(--ink-2); }
+.caption button:hover { background: rgba(255,255,255,0.35); }
+.caption button.close:hover { background: #c42b1c; color: #fff; }
+.caption svg.lucide { width: 14px; height: 14px; }
+
+.body { display: grid; grid-template-columns: 248px minmax(0, 1fr) 240px; gap: 8px; padding: 0 8px 8px; min-height: 0; }
+
+/* —— 通用玻璃面板 —— */
+.pane {
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 var(--edge), inset 0 0 0 1px var(--edge-dim), 0 1px 2px rgba(20,26,40,0.06);
+  min-height: 0;
+  transition: background .12s;
+}
+
+/* —— 左侧栏 —— */
+.sidebar { display: flex; flex-direction: column; padding: 14px 10px 10px; }
+.brand { display: flex; align-items: baseline; gap: 8px; padding: 0 8px 14px; }
+.brand b { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.brand span { font-size: 12px; color: var(--ink-3); }
+.new-wrap { position: relative; padding: 0 2px 12px; }
+.new-btn {
+  width: 100%; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  border-radius: 8px; font-weight: 500;
+  background: linear-gradient(180deg, rgba(31,111,139,0.95), rgba(24,92,117,0.95));
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.28), 0 2px 8px rgba(31,111,139,0.3);
+}
+.new-btn .chev { margin-left: auto; opacity: .8; transition: transform .15s; }
+.new-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.menu {
+  position: absolute; left: 2px; right: 2px; top: 42px; z-index: 20; padding: 4px;
+  border-radius: 10px;
+  background: rgba(252, 252, 255, 0.82);
+  backdrop-filter: blur(30px) saturate(1.5); -webkit-backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.7), 0 12px 32px rgba(20,26,40,.22);
+  transform-origin: top; animation: drop .14s ease-out;
+}
+.menu[hidden] { display: none; }
+@keyframes drop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.menu button { width: 100%; display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 8px 10px; border-radius: 6px; }
+.menu button:hover { background: var(--lake-soft); }
+.menu small { display: block; color: var(--ink-3); font-size: 12px; }
+
+.group-label { padding: 4px 10px 6px; font-size: 12px; color: var(--ink-3); }
+.sessions { list-style: none; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.session {
+  position: relative; display: grid; grid-template-columns: 22px minmax(0,1fr); column-gap: 8px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+}
+.session:hover { background: rgba(255,255,255,0.35); }
+.session.active { background: var(--glass-hi); box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 1px 4px rgba(20,26,40,.08); }
+.session.active::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--lake); }
+.session .ico { grid-row: span 2; width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: rgba(255,255,255,.5); color: var(--ink-2); margin-top: 1px; }
+.session .ico svg.lucide { width: 13px; height: 13px; }
+.session .name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session .sub { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--ink-3); }
+.session .sub .where { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.kind { flex: none; font-size: 11px; padding: 0 5px; border-radius: 4px; background: rgba(28,35,51,.06); color: var(--ink-2); }
+.kind.ssh { background: rgba(23,138,134,.12); color: #0f6d6a; }
+
+/* Claude 状态徽标 */
+.badge { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 11px; font-weight: 500; padding: 1px 7px 1px 6px; border-radius: 999px; white-space: nowrap; }
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.think { color: var(--st-think); background: rgba(107,92,214,.12); }
+.badge.think::before { animation: breathe 1.6s ease-in-out infinite; }
+.badge.wait { color: var(--st-wait); background: rgba(201,130,30,.14); }
+.badge.sub { color: var(--st-sub); background: rgba(23,138,134,.12); }
+.badge.sub::before { animation: breathe 1.1s ease-in-out infinite; }
+.badge.done { color: var(--st-done); background: rgba(59,154,87,.12); }
+@keyframes breathe { 50% { opacity: .25; transform: scale(.7); } }
+
+.side-foot { padding-top: 10px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--hair); margin-top: 8px; }
+.update {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; text-align: left;
+  background: rgba(243, 210, 162, 0.45); box-shadow: inset 0 0 0 1px rgba(255,255,255,.5);
+}
+.update b { font-weight: 600; }
+.update small { display: block; color: var(--ink-2); font-size: 12px; }
+.foot-btn { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 8px; color: var(--ink-2); }
+.foot-btn:hover { background: rgba(255,255,255,.4); color: var(--ink); }
+
+/* —— 中间 —— */
+.center { display: flex; flex-direction: column; overflow: hidden; }
+.card-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--hair); min-width: 0; }
+.card-head .title { min-width: 0; flex: 1; }
+.card-head h1 { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-head .meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); min-width: 0; }
+.card-head .meta span.path { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-head .badge { font-size: 12px; padding: 3px 10px 3px 8px; }
+.icon-btn { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: var(--ink-2); flex: none; }
+.icon-btn:hover { background: rgba(255,255,255,.45); color: var(--ink); }
+
+.banner {
+  display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 8px 10px 8px 12px; border-radius: 8px;
+  background: rgba(255, 244, 222, 0.6); box-shadow: inset 0 0 0 1px rgba(255,255,255,.6);
+  font-size: 12.5px;
+}
+.banner[hidden] { display: none; }
+.banner svg.lucide { color: var(--st-wait); }
+.banner .txt { flex: 1; min-width: 0; }
+.btn { height: 28px; padding: 0 12px; border-radius: 6px; font-size: 12.5px; font-weight: 500; background: rgba(255,255,255,.7); box-shadow: inset 0 0 0 1px rgba(28,35,51,.1); }
+.btn:hover { background: #fff; }
+.btn.primary { background: var(--lake); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+.btn.primary:hover { background: #185c75; }
+.btn.ghost { background: none; box-shadow: none; color: var(--ink-2); }
+.btn.ghost:hover { background: rgba(255,255,255,.5); }
+
+/* 终端：烟色玻璃，壁纸仍隐约透出 */
+.term {
+  flex: 1; min-height: 0; margin: 10px 12px 12px; border-radius: 8px; overflow: auto;
+  background: var(--smoke);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12), inset 0 0 0 1px rgba(255,255,255,.06);
+  padding: 14px 16px; color: #d8dee9;
+  font-family: var(--mono); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  transition: background .12s;
+}
+.term::-webkit-scrollbar { width: 8px; }
+.term::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 4px; }
+.t-ps { color: #7fb4ca; }
+.t-cmd { color: #f2f4f8; font-weight: 500; }
+.t-dim { color: #8a93a6; }
+.t-red { color: #ff8a8a; }
+.t-grn { color: #9fd89a; }
+.t-yel { color: #f2cc8f; }
+.t-vio { color: #b8a9ff; }
+.t-cy { color: #7fd1c7; }
+.t-box { color: #c9a7e8; }
+.cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: -0.2em; background: #d8dee9; animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* —— 右侧 —— */
+.right { display: flex; flex-direction: column; gap: 8px; min-height: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.files { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.files-head { display: flex; align-items: center; gap: 2px; padding: 10px 8px 6px 14px; }
+.files-head h2 { font-size: 13px; font-weight: 600; flex: 1; }
+.crumb { margin: 0 10px 6px; padding: 5px 8px; border-radius: 6px; background: rgba(255,255,255,.4); font-family: var(--mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree { list-style: none; flex: 1; overflow-y: auto; padding: 2px 6px 8px; }
+.tree li { display: flex; align-items: center; gap: 6px; height: 26px; padding-right: 8px; border-radius: 6px; cursor: default; white-space: nowrap; min-width: 0; }
+.tree li:hover { background: rgba(255,255,255,.45); }
+.tree li .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tree li .sz { margin-left: auto; font-size: 11px; color: var(--ink-3); flex: none; padding-left: 6px; }
+.tree li svg.lucide { width: 15px; height: 15px; color: var(--ink-3); }
+.tree li.dir svg.lucide.f { color: #c99a3c; }
+.tree li.open-md { cursor: pointer; }
+.tree li.new .nm { color: var(--st-done); }
+.transfer { margin: 0 10px 10px; padding: 9px 10px; border-radius: 8px; background: rgba(255,255,255,.45); box-shadow: inset 0 0 0 1px rgba(255,255,255,.5); font-size: 12px; }
+.transfer .row { display: flex; align-items: center; gap: 6px; }
+.transfer .row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transfer .row .pct { color: var(--ink-3); flex: none; }
+.bar { height: 4px; border-radius: 4px; background: rgba(28,35,51,.08); margin-top: 6px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--lake), #5aa7c0); }
+
+.host-wrap { position: relative; flex: none; }
+.host { width: 100%; height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.host i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.host .sep { color: var(--ink-3); }
+.host-pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 10; display: none; padding: 12px 14px 14px;
+  background: rgba(250, 251, 255, calc(var(--a) * 0.5 + 0.45));
+  backdrop-filter: blur(40px) saturate(1.6); -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85), inset 0 0 0 1px rgba(255,255,255,.5), 0 12px 32px rgba(20,26,40,.22); }
+.host-pop::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 8px; }
+.host-wrap:hover .host-pop, .host-wrap.open .host-pop { display: block; }
+.host-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.host-head b { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.host-head small { color: var(--ink-3); font-size: 12px; flex: none; }
+.metric { display: grid; grid-template-columns: 36px minmax(0,1fr) 72px; align-items: center; gap: 8px; height: 22px; font-size: 12px; }
+.metric span:first-child { color: var(--ink-2); }
+.metric .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+.metric .bar { margin: 0; }
+.metric.cpu .bar i { background: linear-gradient(90deg, #6b5cd6, #9c8ff0); }
+.metric.mem .bar i { background: linear-gradient(90deg, var(--lake), #5aa7c0); }
+.metric.disk .bar i { background: linear-gradient(90deg, #c9821e, #e9b56b); }
+.os { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--hair); font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+.os span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* —— 浮层 —— */
+.scrim { position: absolute; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(28, 35, 51, 0.18); }
+.scrim[hidden] { display: none; }
+.dialog {
+  width: 460px; max-height: calc(100% - 80px); overflow: auto; border-radius: 12px; padding: 22px 24px 18px;
+  background: rgba(250, 251, 255, calc(var(--a) * 0.5 + 0.45));
+  backdrop-filter: blur(40px) saturate(1.6); -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85), inset 0 0 0 1px rgba(255,255,255,.5), 0 24px 64px rgba(20,26,40,.3);
+  animation: pop .16s ease-out;
+}
+@keyframes pop { from { opacity: 0; transform: scale(.97); } }
+.dialog h3 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.dialog .lead { color: var(--ink-3); font-size: 12.5px; margin-bottom: 16px; }
+.field { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; padding: 12px 0; border-top: 1px solid var(--hair); }
+.field label, .field .lbl { font-weight: 500; }
+.field small { display: block; color: var(--ink-3); font-size: 12px; font-weight: 400; }
+.select { height: 32px; padding: 0 30px 0 10px; border-radius: 6px; border: 0; font: inherit; color: var(--ink); background: rgba(255,255,255,.75) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234a5468' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center; -webkit-appearance: none; appearance: none; box-shadow: inset 0 0 0 1px rgba(28,35,51,.1); }
+.range-row { grid-template-columns: 1fr; gap: 8px; }
+.range-top { display: flex; justify-content: space-between; align-items: baseline; }
+.range-top output { font-variant-numeric: tabular-nums; color: var(--lake); font-weight: 600; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 4px; background: linear-gradient(90deg, var(--lake) var(--p, 50%), rgba(28,35,51,.12) var(--p, 50%)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(28,35,51,.15), 0 2px 6px rgba(20,26,40,.2), inset 0 0 0 4px var(--lake); cursor: pointer; }
+input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 4px solid var(--lake); }
+.switch { position: relative; width: 40px; height: 22px; flex: none; }
+.switch input { position: absolute; opacity: 0; inset: 0; cursor: pointer; margin: 0; z-index: 1; }
+.switch i { position: absolute; inset: 0; border-radius: 999px; background: rgba(28,35,51,.16); transition: background .15s; }
+.switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .15s; }
+.switch input:checked + i { background: var(--lake); }
+.switch input:checked + i::after { transform: translateX(18px); }
+.switch input:focus-visible + i { outline: 2px solid var(--lake); outline-offset: 2px; }
+.dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+.md { width: 640px; }
+.md-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.md-head b { flex: 1; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
+.md article { max-width: 64ch; }
+.md article h1 { font-size: 22px; margin-bottom: 8px; letter-spacing: -0.01em; }
+.md article h2 { font-size: 15px; margin: 18px 0 6px; }
+.md article p, .md article li { font-size: 13.5px; line-height: 1.75; color: var(--ink-2); }
+.md article ul { padding-left: 20px; }
+.md article code { font-family: var(--mono); font-size: 12px; padding: 1px 5px; border-radius: 4px; background: rgba(28,35,51,.07); color: var(--ink); }
+.md article pre { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: var(--smoke); color: #d8dee9; font-family: var(--mono); font-size: 12.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="wallpaper" aria-hidden="true"></div>
+
+<div class="window" id="win">
+  <header class="titlebar">
+    <div class="app"><i></i>Tether</div>
+    <div class="caption" aria-hidden="true">
+      <button tabindex="-1"><i data-lucide="minus"></i></button>
+      <button tabindex="-1"><i data-lucide="square"></i></button>
+      <button tabindex="-1" class="close"><i data-lucide="x"></i></button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- 左侧栏 -->
+    <aside class="pane sidebar">
+      <div class="brand"><b>Tether</b><span>4 个会话在后台运行</span></div>
+      <div class="new-wrap">
+        <button class="new-btn" id="new-btn" aria-expanded="false" aria-haspopup="menu">
+          <i data-lucide="plus"></i>新建会话<i data-lucide="chevron-down" class="chev"></i>
+        </button>
+        <div class="menu" id="new-menu" role="menu" hidden>
+          <button role="menuitem"><i data-lucide="folder-open"></i><span>本地目录<small>在选定文件夹中打开 shell</small></span></button>
+          <button role="menuitem"><i data-lucide="server"></i><span>SSH 主机<small>从 ~/.ssh/config 选择或手动填写</small></span></button>
+        </div>
+      </div>
+      <div class="group-label">会话</div>
+      <ul class="sessions" id="sessions"></ul>
+      <div class="side-foot">
+        <button class="update"><i data-lucide="download"></i><span><b>0.2.1 可更新</b><small>安装时不会中断会话</small></span></button>
+        <button class="foot-btn" id="open-settings"><i data-lucide="settings"></i>设置</button>
+      </div>
+    </aside>
+
+    <!-- 中间 -->
+    <main class="pane center">
+      <div class="card-head">
+        <div class="title">
+          <h1 id="ch-name">tether</h1>
+          <div class="meta"><span class="kind" id="ch-kind">本地</span><span class="path" id="ch-path">C:\workspace\tether</span></div>
+        </div>
+        <span class="badge think" id="ch-badge">思考中</span>
+        <button class="icon-btn" title="复制全部输出"><i data-lucide="copy"></i></button>
+        <button class="icon-btn" title="关闭会话"><i data-lucide="x"></i></button>
+      </div>
+      <div class="banner" id="banner">
+        <i data-lucide="info"></i>
+        <span class="txt">建议安装 PowerShell 7：未检测到 pwsh，新建会话将使用 Windows PowerShell</span>
+        <button class="btn primary">安装</button>
+        <button class="btn ghost" id="banner-x">不再提示</button>
+      </div>
+      <div class="term" id="term" role="log" aria-label="终端输出"></div>
+    </main>
+
+    <!-- 右侧 -->
+    <aside class="pane right">
+      <section class="pane files">
+        <div class="files-head">
+          <h2>文件</h2>
+          <button class="icon-btn" title="上级目录"><i data-lucide="arrow-up"></i></button>
+          <button class="icon-btn" title="刷新"><i data-lucide="refresh-cw"></i></button>
+        </div>
+        <div class="crumb" id="crumb">C:\workspace\tether</div>
+        <ul class="tree" id="tree">
+          <li class="dir"><i data-lucide="chevron-right"></i><i data-lucide="folder" class="f"></i><span class="nm">.github</span></li>
+          <li class="dir"><i data-lucide="chevron-down"></i><i data-lucide="folder-open" class="f"></i><span class="nm">docs</span></li>
+          <li class="dir new" style="padding-left:20px"><i data-lucide="chevron-right"></i><i data-lucide="folder" class="f"></i><span class="nm">design</span><span class="sz">未跟踪</span></li>
+          <li class="open-md" style="padding-left:42px" data-md><i data-lucide="file-text"></i><span class="nm">usage.md</span><span class="sz">6.2 KB</span></li>
+          <li class="dir"><i data-lucide="chevron-right"></i><i data-lucide="folder" class="f"></i><span class="nm">src</span></li>
+          <li class="dir"><i data-lucide="chevron-right"></i><i data-lucide="folder" class="f"></i><span class="nm">src-tauri</span></li>
+          <li style="padding-left:20px"><i data-lucide="file-code"></i><span class="nm">index.html</span><span class="sz">5.8 KB</span></li>
+          <li style="padding-left:20px"><i data-lucide="file-json"></i><span class="nm">package.json</span><span class="sz">1.1 KB</span></li>
+          <li class="open-md" style="padding-left:20px" data-md><i data-lucide="file-text"></i><span class="nm">README.md</span><span class="sz">3.4 KB</span></li>
+          <li style="padding-left:20px"><i data-lucide="file-text"></i><span class="nm">CHANGELOG.md</span><span class="sz">2.7 KB</span></li>
+          <li style="padding-left:20px"><i data-lucide="scale"></i><span class="nm">LICENSE</span><span class="sz">11 KB</span></li>
+          <li style="padding-left:20px"><i data-lucide="file-code"></i><span class="nm">vite.config.ts</span><span class="sz">0.6 KB</span></li>
+        </ul>
+        <div class="transfer">
+          <div class="row"><i data-lucide="upload"></i><span class="nm">上传 tether_0.2.0_x64-setup.exe</span><span class="pct">62%</span></div>
+          <div class="bar"><i style="width:62%"></i></div>
+        </div>
+      </section>
+      <div class="host-wrap" id="host-wrap">
+        <button class="pane host" id="host-btn" aria-expanded="false" aria-controls="host-pop"><i style="background:#6b5cd6"></i>CPU <span id="cpu-mini">23%</span><span class="sep">·</span><i style="background:var(--lake)"></i>内存 58%<span class="sep">·</span><i style="background:#c9821e"></i>磁盘 71%</button>
+        <section class="pane host-pop" id="host-pop">
+          <div class="host-head"><i data-lucide="monitor"></i><b id="host-name">DESKTOP-TX01</b><small id="host-up">运行 3 天</small></div>
+          <div class="metric cpu"><span>CPU</span><div class="bar"><i id="cpu-bar" style="width:23%"></i></div><span class="val" id="cpu-val">23%</span></div>
+          <div class="metric mem"><span>内存</span><div class="bar"><i style="width:58%"></i></div><span class="val">18.6 / 32 G</span></div>
+          <div class="metric disk"><span>磁盘</span><div class="bar"><i style="width:71%"></i></div><span class="val">676 / 954 G</span></div>
+          <div class="os"><span>系统</span><span id="host-os">Windows 11 专业版 26200</span></div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 设置浮层 -->
+  <div class="scrim" id="settings" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="st-title">
+      <h3 id="st-title">设置</h3>
+      <p class="lead">修改即时生效，已打开的会话不受影响</p>
+      <div class="field">
+        <label for="shell">默认 shell<small>新建本地会话时使用</small></label>
+        <select class="select" id="shell">
+          <option>PowerShell 7</option>
+          <option selected>Windows PowerShell</option>
+          <option>命令提示符</option>
+          <option>Git Bash</option>
+        </select>
+      </div>
+      <div class="field range-row">
+        <div class="range-top"><label for="alpha">窗口背景透明度</label><output id="alpha-out">55%</output></div>
+        <input type="range" id="alpha" min="15" max="95" value="55" />
+        <small style="color:var(--ink-3);font-size:12px">数值越低，桌面壁纸透出越多</small>
+      </div>
+      <div class="field">
+        <div class="lbl">提示音<small>Claude 等待确认或完成时播放</small></div>
+        <span class="switch"><input type="checkbox" checked aria-label="提示音" /><i></i></span>
+      </div>
+      <div class="field">
+        <div class="lbl">Claude Code 集成<small>在侧栏显示每个会话里 Claude 的状态</small></div>
+        <span class="switch"><input type="checkbox" checked aria-label="Claude Code 集成" /><i></i></span>
+      </div>
+      <div class="actions"><button class="btn primary" data-close>完成</button></div>
+    </div>
+  </div>
+
+  <!-- Markdown 预览 -->
+  <div class="scrim" id="mdview" hidden>
+    <div class="dialog md" role="dialog" aria-modal="true" aria-label="Markdown 预览">
+      <div class="md-head"><i data-lucide="file-text"></i><b id="md-file">README.md</b><button class="icon-btn" data-close title="关闭"><i data-lucide="x"></i></button></div>
+      <article>
+        <h1>Tether</h1>
+        <p>Windows 上的轻量多会话终端。会话由后台进程持有，关掉窗口也不会中断；重新打开，输出原样还在。</p>
+        <h2>主要功能</h2>
+        <ul>
+          <li>本地目录与 SSH 主机会话并排管理</li>
+          <li>侧栏实时显示 Claude Code 的状态：思考中、等待确认、子代理运行中、已完成</li>
+          <li>右侧文件树支持上传、下载与复制文件名</li>
+          <li>窗口背景透明度可调</li>
+        </ul>
+        <h2>安装</h2>
+        <pre>winget install Tether</pre>
+        <p>也可以从 Releases 下载 <code>tether_0.2.0_x64-setup.exe</code>，之后的版本会自动更新。</p>
+      </article>
+    </div>
+  </div>
+</div>
+
+<script>
+const sessions = [
+  { name: "tether", kind: "local", path: "C:\\workspace\\tether", st: "think", term: "claude" },
+  { name: "api-gateway 重构", kind: "local", path: "D:\\code\\api-gateway", st: "wait", term: "wait" },
+  { name: "prod-web-01", kind: "ssh", path: "deploy@10.0.8.21", st: "sub", term: "ssh", host: { name: "prod-web-01", up: "运行 41 天", os: "Ubuntu 24.04 LTS", cpu: 61 } },
+  { name: "博客草稿", kind: "local", path: "C:\\Users\\tx\\notes\\blog", st: "done", term: "done" },
+  { name: "nas", kind: "ssh", path: "admin@nas.local", st: null, term: "plain", host: { name: "nas", up: "运行 12 天", os: "Debian 12", cpu: 7 } }
+];
+const label = { think: "思考中", wait: "等待确认", sub: "子代理运行中", done: "已完成" };
+
+const P = p => `<span class="t-ps">PS ${p}&gt;</span> `;
+const terms = {
+  claude: p => `<span class="t-dim">Windows PowerShell
+版权所有（C） Microsoft Corporation。保留所有权利。</span>
+
+${P(p)}<span class="t-cmd">git status</span>
+On branch <span class="t-cy">main</span>
+Your branch is up to date with '<span class="t-cy">origin/main</span>'.
+
+Untracked files:
+  (use "git add &lt;file&gt;..." to include in what will be committed)
+        <span class="t-red">docs/design/</span>
+
+nothing added to commit but untracked files present (use "git add" to track)
+${P(p)}<span class="t-cmd">claude</span>
+<span class="t-box">╭──────────────────────────────────────────────╮
+│</span> <span class="t-vio">✻</span> Welcome to <b>Claude Code</b>                        <span class="t-box">│
+│</span>   <span class="t-dim">cwd: C:\\workspace\\tether</span>                     <span class="t-box">│
+╰──────────────────────────────────────────────╯</span>
+
+<span class="t-cmd">&gt; 给右侧主机信息卡加上网络上下行速率</span>
+
+<span class="t-grn">●</span> <b>Read</b>(src/host-card.ts)
+  <span class="t-dim">⎿  读取 142 行</span>
+
+<span class="t-grn">●</span> <b>Search</b>(pattern: "sysinfo", path: "src-tauri")
+  <span class="t-dim">⎿  找到 3 个文件</span>
+
+<span class="t-grn">●</span> <b>Update</b>(src-tauri/src/host.rs)
+  <span class="t-dim">⎿  更新 1 处，新增 18 行</span>
+     <span class="t-dim">41</span>  <span class="t-grn">+    let net = sys.networks();</span>
+     <span class="t-dim">42</span>  <span class="t-grn">+    let (rx, tx) = net.iter().fold((0, 0), |a, (_, n)| {</span>
+     <span class="t-dim">43</span>  <span class="t-grn">+        (a.0 + n.received(), a.1 + n.transmitted())</span>
+     <span class="t-dim">44</span>  <span class="t-grn">+    });</span>
+
+<span class="t-vio">✻ 思考中…</span> <span class="t-dim">(12s · ↓ 1.8k tokens · esc 中断)</span>
+
+<span class="t-dim">────────────────────────────────────────────────</span>
+<span class="t-cmd">&gt;</span> <span class="cursor"></span>`,
+  wait: p => `${P(p)}<span class="t-cmd">claude</span>
+
+<span class="t-cmd">&gt; 把 routes/ 下的旧中间件全部迁移到新的 pipeline</span>
+
+<span class="t-grn">●</span> <b>Bash</b>(npm test -- --filter middleware)
+  <span class="t-dim">⎿  </span><span class="t-grn">✓ 38 passed</span>  <span class="t-red">✗ 2 failed</span>
+
+<span class="t-yel">╭─ 需要确认 ───────────────────────────────────╮</span>
+<span class="t-yel">│</span> 删除 4 个文件：routes/legacy/*.js              <span class="t-yel">│</span>
+<span class="t-yel">│</span>                                                <span class="t-yel">│</span>
+<span class="t-yel">│</span>  <span class="t-cmd">❯ 1. 是</span>                                       <span class="t-yel">│</span>
+<span class="t-yel">│</span>    2. 是，本次会话不再询问                     <span class="t-yel">│</span>
+<span class="t-yel">│</span>    3. 否，告诉 Claude 换个做法                 <span class="t-yel">│</span>
+<span class="t-yel">╰────────────────────────────────────────────────╯</span>
+<span class="cursor"></span>`,
+  ssh: p => `<span class="t-dim">Welcome to Ubuntu 24.04 LTS (GNU/Linux 6.8.0-45-generic x86_64)
+Last login: Sat Nov 14 09:12:44 2026 from 10.0.8.3</span>
+<span class="t-grn">deploy@prod-web-01</span>:<span class="t-ps">~/app</span>$ <span class="t-cmd">claude "排查最近 1 小时 nginx 502 的原因"</span>
+
+<span class="t-grn">●</span> <b>Task</b>(分析 nginx 错误日志)
+  <span class="t-cy">⎿  子代理运行中… 读取 /var/log/nginx/error.log</span>
+<span class="t-grn">●</span> <b>Task</b>(检查 upstream 进程状态)
+  <span class="t-cy">⎿  子代理运行中… systemctl status app@*</span>
+
+<span class="t-dim">  2 个子代理并行运行 · 已用 47s</span>
+<span class="cursor"></span>`,
+  done: p => `${P(p)}<span class="t-cmd">claude</span>
+
+<span class="t-cmd">&gt; 把这篇草稿的标题改得更具体，并检查错别字</span>
+
+<span class="t-grn">●</span> <b>Update</b>(drafts/2026-11-终端会话.md)
+  <span class="t-dim">⎿  修改标题，修正 3 处错别字</span>
+
+<span class="t-grn">✓ 已完成。</span>新标题：《关掉窗口，会话还在：我的终端工作流》
+<span class="t-dim">  用时 1m 06s</span>
+
+<span class="t-cmd">&gt;</span> <span class="cursor"></span>`,
+  plain: p => `<span class="t-grn">admin@nas</span>:<span class="t-ps">~</span>$ <span class="t-cmd">df -h /srv</span>
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md0        7.3T  4.1T  3.2T  57% /srv
+<span class="t-grn">admin@nas</span>:<span class="t-ps">~</span>$ <span class="cursor"></span>`
+};
+
+const $ = s => document.querySelector(s);
+const list = $("#sessions");
+const localHost = { name: "DESKTOP-TX01", up: "运行 3 天", os: "Windows 11 专业版 26200", cpu: 23 };
+let current = 0;
+
+function render() {
+  list.innerHTML = sessions.map((s, i) => `
+    <li class="session${i === current ? " active" : ""}" data-i="${i}" tabindex="0" role="button" aria-current="${i === current}">
+      <span class="ico"><i data-lucide="${s.kind === "ssh" ? "server" : "terminal"}"></i></span>
+      <span class="name">${s.name}</span>
+      <span class="sub"><span class="kind ${s.kind}">${s.kind === "ssh" ? "SSH" : "本地"}</span>${s.st ? `<span class="badge ${s.st}">${label[s.st]}</span>` : `<span class="where">${s.path}</span>`}</span>
+    </li>`).join("");
+  const s = sessions[current];
+  $("#ch-name").textContent = s.name;
+  $("#ch-path").textContent = s.path;
+  const k = $("#ch-kind");
+  k.textContent = s.kind === "ssh" ? "SSH" : "本地";
+  k.className = "kind " + s.kind;
+  const b = $("#ch-badge");
+  b.hidden = !s.st;
+  if (s.st) { b.className = "badge " + s.st; b.textContent = "Claude " + label[s.st]; }
+  $("#term").innerHTML = terms[s.term](s.path);
+  $("#crumb").textContent = s.kind === "ssh" ? s.path.split("@")[1] + ":~" : s.path;
+  const h = s.host || localHost;
+  $("#host-name").textContent = h.name;
+  $("#host-up").textContent = h.up;
+  $("#host-os").textContent = h.os;
+  $("#cpu-bar").style.width = h.cpu + "%";
+  $("#cpu-val").textContent = h.cpu + "%";
+  $("#cpu-mini").textContent = h.cpu + "%";
+  lucide.createIcons();
+}
+
+list.addEventListener("click", e => {
+  const li = e.target.closest(".session");
+  if (li) { current = +li.dataset.i; render(); }
+});
+list.addEventListener("keydown", e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches(".session")) {
+    e.preventDefault(); current = +e.target.dataset.i; render(); list.querySelector(".active").focus();
+  }
+});
+
+// 新建会话下拉
+const nb = $("#new-btn"), menu = $("#new-menu");
+nb.addEventListener("click", e => {
+  e.stopPropagation();
+  menu.hidden = !menu.hidden;
+  nb.setAttribute("aria-expanded", String(!menu.hidden));
+});
+document.addEventListener("click", e => {
+  if (!menu.hidden && !menu.contains(e.target)) { menu.hidden = true; nb.setAttribute("aria-expanded", "false"); }
+});
+
+// 主机状态条：悬停或点击弹出详情
+const hw = $("#host-wrap"), hb = $("#host-btn");
+hb.addEventListener("click", e => {
+  e.stopPropagation();
+  hw.classList.toggle("open");
+  hb.setAttribute("aria-expanded", String(hw.classList.contains("open")));
+});
+document.addEventListener("click", e => {
+  if (!hw.contains(e.target)) { hw.classList.remove("open"); hb.setAttribute("aria-expanded", "false"); }
+});
+
+// 横幅
+$("#banner-x").addEventListener("click", () => { $("#banner").hidden = true; });
+
+// 浮层
+function openLayer(id) { $(id).hidden = false; $(id).querySelector("button, input, select").focus(); }
+function closeLayers() { document.querySelectorAll(".scrim").forEach(s => s.hidden = true); }
+$("#open-settings").addEventListener("click", () => openLayer("#settings"));
+document.querySelectorAll("[data-md]").forEach(li => li.addEventListener("click", () => {
+  $("#md-file").textContent = li.querySelector(".nm").textContent;
+  openLayer("#mdview");
+}));
+document.querySelectorAll(".scrim").forEach(s => s.addEventListener("click", e => {
+  if (e.target === s || e.target.closest("[data-close]")) closeLayers();
+}));
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeLayers(); });
+
+// 透明度滑条：实时改变面板透明度
+const alpha = $("#alpha"), out = $("#alpha-out");
+function applyAlpha() {
+  const v = +alpha.value;
+  document.documentElement.style.setProperty("--a", (v / 100).toFixed(2));
+  out.textContent = v + "%";
+  alpha.style.setProperty("--p", ((v - 15) / 80 * 100) + "%");
+}
+alpha.addEventListener("input", applyAlpha);
+applyAlpha();
+
+render();
+</script>
+</body>
+</html>

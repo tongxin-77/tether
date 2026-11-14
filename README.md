@@ -78,6 +78,7 @@ dev 构建与安装版的管道、配置、日志完全隔离，可同时运行�
 - [使用说明](docs/usage.md) —— 设置、外观、复制粘贴、通知、Claude Code 集成、SSH、文件树等
 - [开发与构建](docs/development.md) —— 架构、开发运行、dev / 安装版隔离、打包、登录自启
 - [需求文档](docs/README.md) —— 前端 / 后台服务 / 管理服务器 hub
+- 第三方字体：界面字体 Nunito 与 JetBrains Mono 以 SIL Open Font License 1.1 授权（经 @fontsource 打包），许可全文见 [docs/licenses](docs/licenses/)
 - [更新日志](CHANGELOG.md)
 
 ## 📄 许可证
