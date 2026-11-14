@@ -4,6 +4,19 @@
 
 ## [未发布]
 
+## [0.3.0] - 2026-11-14
+
+### 新增
+
+- 新增"奶咖夜"暗色主题，可在侧栏底部或设置中切换，已打开的终端同步换色，拖出的独立窗口一并跟随。
+- 自定义标题栏：隐藏系统标题栏，窗口按钮（最小化 / 最大化 / 关闭）移入应用内，标题栏与品牌区可拖动窗口、双击最大化。
+
+### 变更
+
+- 界面整体改版为奶油风：暖色调、大圆角软垫面板、Claude 状态胶囊（思考中带呼吸动画），终端改为暖棕配色。
+- 界面字体改为 Nunito，终端字体改为 JetBrains Mono，均随应用打包，离线可用。
+- 主机信息由卡片改为文件栏底部的单行状态条，悬停或点击展开详情；文件栏收窄，终端区域更大。
+
 ## [0.2.0] - 2026-11-14
 
 ### 新增
@@ -49,7 +62,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.2.0...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tongxin-77/tether/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tongxin-77/tether/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tongxin-77/tether/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tongxin-77/tether/releases/tag/v0.1.0
