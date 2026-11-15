@@ -65,6 +65,8 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
             conn += 1;
             let (tx, n) = (tx.clone(), conn);
             tokio::spawn(async move {
+                // 返回类型由 tungstenite 的握手回调签名决定，无法缩小 Err
+                #[allow(clippy::result_large_err)]
                 let check = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
                     let ok = req.uri().path() == "/agent"
                         && req.headers().get("authorization").and_then(|v| v.to_str().ok()) == Some(&format!("Bearer {TOKEN}"));
@@ -158,10 +160,12 @@ fn session(id: u32, name: &str) -> SessionInfo {
     }
 }
 
+type HubStates = Arc<Mutex<Vec<(HubState, Option<String>)>>>;
+
 struct Harness {
     list: Arc<Mutex<Vec<SessionInfo>>>,
     changed: Arc<Notify>,
-    states: Arc<Mutex<Vec<(HubState, Option<String>)>>>,
+    states: HubStates,
     /// conn 回调：Some(是否带发送端)
     conns: mpsc::UnboundedReceiver<Option<mpsc::UnboundedSender<link::Up>>>,
     downs: mpsc::UnboundedReceiver<link::Down>,

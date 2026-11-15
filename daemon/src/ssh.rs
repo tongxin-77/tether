@@ -171,7 +171,7 @@ async fn open_shell(state: &Shared, host: &Host, cwd: Option<String>, cols: u16,
     let (rd, wr) = ch.split();
     let (tx, rx) = mpsc::unbounded_channel();
     let name = match &cwd {
-        Some(d) => d.split('/').filter(|s| !s.is_empty()).last().unwrap_or(d).to_string(),
+        Some(d) => d.split('/').rfind(|s| !s.is_empty()).unwrap_or(d).to_string(),
         None => "~".into(),
     };
     let root = resolve_cwd(&conn, cwd.as_deref()).await;
@@ -394,10 +394,10 @@ async fn verify_host_key(state: &Shared, host: &str, port: u16, label: &str, key
 async fn auth_key(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str) -> Result<(), String> {
     let mut notes = Vec::new();
     let explicit = host.key_path.as_deref().map(config::expand_tilde);
-    if let Some(p) = &explicit {
-        if try_key_file(state, h, &host.user, Path::new(p), label, &mut notes).await {
-            return Ok(());
-        }
+    if let Some(p) = &explicit
+        && try_key_file(state, h, &host.user, Path::new(p), label, &mut notes).await
+    {
+        return Ok(());
     }
     if try_agent(h, &host.user, &mut notes).await {
         return Ok(());
@@ -489,10 +489,10 @@ async fn try_agent(h: &mut client::Handle<Client>, user: &str, notes: &mut Vec<S
     let hash = h.best_supported_rsa_hash().await.ok().flatten().flatten();
     for id in identities {
         let AgentIdentity::PublicKey { key, .. } = id else { continue };
-        if let Ok(r) = h.authenticate_publickey_with(user, key, hash, &mut agent).await {
-            if r.success() {
-                return true;
-            }
+        if let Ok(r) = h.authenticate_publickey_with(user, key, hash, &mut agent).await
+            && r.success()
+        {
+            return true;
         }
     }
     false
@@ -589,14 +589,14 @@ pub fn migrate_credentials(store: &impl CredStore, old: &[Host], new: &[Host]) {
             continue;
         }
         let Some(password) = store.get(&from) else { continue };
-        if let Some(to) = &to {
-            if store.get(to).is_none() {
-                if let Err(e) = store.set(to, &password) {
-                    log!("迁移保存的密码失败（{from} → {to}）：{e}");
-                    continue;
-                }
-                log!("保存的密码已迁移：{from} → {to}");
+        if let Some(to) = &to
+            && store.get(to).is_none()
+        {
+            if let Err(e) = store.set(to, &password) {
+                log!("迁移保存的密码失败（{from} → {to}）：{e}");
+                continue;
             }
+            log!("保存的密码已迁移：{from} → {to}");
         }
         if new.iter().any(|n| label(n) == from) {
             continue;
