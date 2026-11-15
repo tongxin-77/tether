@@ -21,6 +21,15 @@ russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa
 russh-sftp = "3.0.1"
 # 保存 SSH 密码到 Windows 凭据管理器（v1 特性在 Windows 上只启用 windows-native 后端）
 keyring = "4.2.0"
+# 管理服务器（hub）客户端：WebSocket 只用握手 / 帧编解码（不启用自带的 connect 与 TLS 集成），TCP / TLS 由 hub 模块自己建立，
+# 以便按 DNS / TCP / TLS / 握手分阶段报错。TLS 用 rustls + ring（同 russh，避开 aws-lc-rs），根证书取 Windows 证书库
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8.5"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# hub 协议的 machine-id（UUID v4）
+uuid = { version = "1.29.2", features = ["v4"] }
 # 保持进程 MTA（CoIncrementMTAUsage，见 notify.rs）、播放提示音（PlaySoundW）与崩溃日志（SetUnhandledExceptionFilter，见 crash.rs）；
 # 主机信息卡片的本机采样（GetSystemTimes / GlobalMemoryStatusEx / GetIfTable2 / PDH，见 stats.rs）
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Performance", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis"] }

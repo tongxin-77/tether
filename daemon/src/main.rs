@@ -25,6 +25,7 @@ mod claude;
 mod config;
 mod crash;
 mod fs;
+mod hub;
 mod notify;
 mod recent;
 mod saved;
@@ -106,6 +107,8 @@ async fn serve(state: Shared) {
     remove_old_exes();
     // 确认是唯一的 daemon 后再恢复上次未关闭的会话
     session::restore(&state);
+    // hub 默认关闭；启用时在后台任务中连接，不阻塞管道服务
+    hub::restart(&state, &mut state.lock().unwrap());
     let mut conn = 0u64;
     loop {
         let connected = server.connect().await;

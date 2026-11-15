@@ -715,6 +715,26 @@ dialog #h-test { margin-right: auto; }
 #h-test-result.ok { color: var(--success-text); background: var(--success-soft); }
 #h-test-result.fail { color: var(--danger); background: var(--danger-soft); }
 
+/* 管理服务器：表单块沿用软垫行，内部纵向排列；结果条与主机测试连接一致 */
+.rows > #hub-fields { flex-direction: column; align-items: stretch; gap: 10px; }
+#hub-fields.off { opacity: 0.55; }
+#hub-fields input:not([type="checkbox"]) { font-family: var(--f-mono); font-weight: 500; }
+#hub-fields .check { margin-top: 0; }
+#hub-token-state { display: flex; align-items: center; gap: 8px; margin-top: -4px; }
+#hub-token-status { flex: 1; font-size: 12.5px; font-weight: 600; color: var(--text-3); }
+#hub-token-status.on { color: var(--status-done); }
+.rows > .row #hub-token-clear { height: 28px; padding: 0 12px; color: var(--danger); background: var(--danger-soft); }
+.rows > .row #hub-token-clear:hover { color: var(--on-accent); background: var(--danger); }
+#hub-test-result { margin: 0; padding: 8px 12px; font-size: 12.5px; font-weight: 600; line-height: 1.6; word-break: break-all; border-radius: var(--r-md); }
+#hub-test-result.ok { color: var(--success-text); background: var(--success-soft); }
+#hub-test-result.fail { color: var(--danger); background: var(--danger-soft); }
+#hub-state { color: var(--text-3); }
+#hub-state[data-state="connected"] { color: var(--status-done); }
+#hub-state[data-state="connecting"] { color: var(--status-thinking); }
+#hub-state[data-state="failed"] { color: var(--danger); }
+#hub-state-detail:empty { display: none; }
+#hub-state-detail { word-break: break-all; }
+
 /* 交互提示：密码 / 口令 / 主机指纹 */
 #p-host { font-family: var(--f-mono); font-size: 13px; color: var(--text-2); }
 #p-message { margin: 8px 0; line-height: 1.6; }

@@ -24,6 +24,7 @@ import { closePreview, initPreview } from "./preview";
 import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
 import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostStats, showHostInfo } from "./host-info";
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
+import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
 import { applyTheme, currentTheme, getThemes, nextTheme, registerTerminal, setTransparent, unregisterTerminal, xtermTheme } from "./themes";
 
@@ -91,13 +92,14 @@ type ServerMsg =
   | { type: "notify"; id: number; message: string }
   | { type: "activate"; id: number }
   | { type: "error"; message: string }
-  | { type: "config"; config: Config; shells: ShellOption[]; hosts: Host[]; sshHosts: Host[]; passwordSaved: string[] }
+  | { type: "config"; config: Config; shells: ShellOption[]; hosts: Host[]; sshHosts: Host[]; passwordSaved: string[]; hubTokenSaved?: boolean }
   | { type: "recent"; items: RecentItem[] }
   | { type: "hello"; version: string; proto: number }
   | { type: "claudeHooks"; path: string; enabled: boolean; outdated: boolean; error: string | null }
   | PromptMsg
   | FsServerMsg
   | HostStatsServerMsg
+  | HubServerMsg
   | { type: "testHost"; reqId: number; elapsedMs: number | null; error: string | null };
 
 interface ShellOption {
@@ -114,6 +116,8 @@ interface Config {
   sound: boolean;
   /** 用户自定义联想命令 */
   completions: CompletionItem[];
+  /** 管理服务器设置（旧 daemon 无此字段） */
+  hub?: HubConfig;
 }
 
 interface CompletionItem {
@@ -146,6 +150,7 @@ type ClientMsg =
   | { type: "playSound" }
   | FsClientMsg
   | HostStatsClientMsg
+  | HubClientMsg
   | { type: "testHost"; reqId: number; host: Host; password: string | null; useSaved: boolean };
 
 /** 每个会话一个 xterm，切换时只隐藏不销毁 */
@@ -310,10 +315,12 @@ settings.addEventListener("close", () => {
   const shell = shellSelect.value;
   const save = settings.returnValue === "save" && !!shell;
   if (save) {
-    send({ type: "setConfig", config: { shell, hosts: draftHosts, appearance: draftAppearance, sound: soundCheck.checked, completions: draftCompletions.filter((c) => c.text.trim()) } });
+    send({ type: "setConfig", config: { shell, hosts: draftHosts, appearance: draftAppearance, sound: soundCheck.checked, completions: draftCompletions.filter((c) => c.text.trim()), hub: draftHub() } });
     // daemon 按顺序处理：先保存配置（账户变化时迁移已保存密码），再按主机 id 写入 / 清除密码
     for (const [hostId, password] of pendingPasswords) send({ type: "setHostPassword", hostId, password });
   } else applyAppearance(savedAppearance);
+  // hub token 改动同样在 setConfig 之后提交
+  closeHub(save);
   pendingPasswords.clear();
   activeView()?.term.focus();
 });
@@ -393,6 +400,7 @@ promptDialog.addEventListener("close", () => {
 
 initFiles({ send, active: () => activeView()?.info, newSession: createAt });
 initHostInfo({ send, active: () => activeView()?.info });
+initHub({ send });
 initPreview({
   openUrl: (url) => send({ type: "openUrl", url }),
   onClose: () => {
@@ -490,6 +498,7 @@ async function init() {
         sshHosts = m.sshHosts;
         draftHosts = m.config.hosts.map((h) => ({ ...h }));
         savedPasswords = new Set(m.passwordSaved);
+        fillHub(m.config.hub, m.hubTokenSaved);
         hostsLoaded = true;
         renderEmpty();
         return renderHosts();
@@ -521,6 +530,9 @@ async function init() {
         return onHostStats(m);
       case "testHost":
         return onTestHost(m.reqId, m.elapsedMs, m.error);
+      case "hubStatus":
+      case "testHub":
+        return onHubMessage(m);
     }
   });
   // 独立窗口：daemon 断开后会话已不存在，直接关闭；连接由主窗口建立，这里只取状态

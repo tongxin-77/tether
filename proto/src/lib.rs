@@ -110,6 +110,35 @@ pub struct Config {
     /// 用户自定义联想命令（GUI 终端输入时弹出）；旧配置无此字段时为空
     #[serde(default)]
     pub completions: Vec<CompletionItem>,
+    /// 管理服务器（hub）连接设置；旧配置无此字段时为未启用。token 不在这里，存 Windows 凭据管理器
+    #[serde(default)]
+    pub hub: HubConfig,
+}
+
+/// 管理服务器（hub）连接设置
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HubConfig {
+    /// 是否启用；默认关闭，关闭时 daemon 不发起任何 hub 连接
+    pub enabled: bool,
+    /// 服务器地址：`host[:port]` 或 `ws(s)://host[:port]`，未写协议默认 wss
+    pub address: String,
+    /// 允许 `ws://` 明文连接（仅限局域网调试）
+    pub allow_insecure: bool,
+}
+
+/// daemon 与 hub 的连接状态
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HubState {
+    /// 未启用
+    #[default]
+    Disabled,
+    /// 连接中 / 退避等待重连中
+    Connecting,
+    Connected,
+    /// 失败且不再自动重连（未配置、认证失败、协议不兼容等），等用户修改设置
+    Failed,
 }
 
 /// 自定义联想命令：完整命令文本 + 说明
@@ -133,7 +162,14 @@ fn auto_shell() -> String {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { shell: auto_shell(), hosts: Vec::new(), appearance: Appearance::default(), sound: true, completions: Vec::new() }
+        Self {
+            shell: auto_shell(),
+            hosts: Vec::new(),
+            appearance: Appearance::default(),
+            sound: true,
+            completions: Vec::new(),
+            hub: HubConfig::default(),
+        }
     }
 }
 
@@ -444,6 +480,22 @@ pub enum ClientMsg {
         #[serde(default)]
         use_saved: bool,
     },
+    /// 设置（Some）/ 清除（None）hub token：存入 Windows 凭据管理器，不进 config.json；hub 已启用时按新 token 重连；
+    /// daemon 回 Config（其中 hubTokenSaved 反映结果）
+    SetHubToken { token: Option<Secret> },
+    /// 设置面板“测试连接”：用面板当前填写的地址 / 明文开关 / token（未保存）新建一条独立连接，握手 → hello → 等 welcome
+    /// 后立即关闭，不影响常驻连接。token 为 None 且 use_saved 时用凭据管理器中已保存的 token。
+    /// daemon 以同一 req_id 回 TestHub（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
+    TestHub {
+        req_id: u64,
+        address: String,
+        #[serde(default)]
+        allow_insecure: bool,
+        #[serde(default)]
+        token: Option<Secret>,
+        #[serde(default)]
+        use_saved: bool,
+    },
 }
 
 /// daemon → GUI
@@ -469,6 +521,9 @@ pub enum ServerMsg {
         ssh_hosts: Vec<Host>,
         #[serde(default)]
         password_saved: Vec<String>,
+        /// 凭据管理器中是否有已保存的 hub token（不含 token 本身）；旧 daemon 无此字段
+        #[serde(default)]
+        hub_token_saved: bool,
     },
     /// 连接远程主机时需要用户输入；GUI 用 PromptReply 回复，超时视为取消
     Prompt {
@@ -506,6 +561,11 @@ pub enum ServerMsg {
     HostStats { req_id: u64, stats: Option<HostStats>, error: Option<String> },
     /// TestHost 的结果：成功时 elapsed_ms 为耗时（毫秒），失败时 error 为按阶段区分的原因
     TestHost { req_id: u64, elapsed_ms: Option<u64>, error: Option<String> },
+    /// hub 连接状态：GUI 请求配置时随 Config 推送，之后状态或原因变化时推送。
+    /// error 为失败原因（failed），或退避等待中上一次失败的原因（connecting）
+    HubStatus { state: HubState, error: Option<String> },
+    /// TestHub 的结果：成功时 elapsed_ms 为耗时（毫秒）、hub_version 为 hub 版本；失败时 error 为按阶段区分的原因
+    TestHub { req_id: u64, elapsed_ms: Option<u64>, hub_version: Option<String>, error: Option<String> },
 }
 
 #[cfg(test)]
@@ -589,6 +649,43 @@ mod tests {
         assert_eq!(new.appearance.opacity, 60);
         let none: super::Config = serde_json::from_str(r#"{"shell":"auto"}"#).unwrap();
         assert_eq!(none.appearance.opacity, 100);
+    }
+
+    #[test]
+    fn hub_config_defaults_off() {
+        let old: super::Config = serde_json::from_str(r#"{"shell":"auto"}"#).unwrap();
+        assert_eq!(old.hub, super::HubConfig::default());
+        assert!(!old.hub.enabled);
+        let v = serde_json::to_value(super::Config::default()).unwrap();
+        assert_eq!(v["hub"], serde_json::json!({ "enabled": false, "address": "", "allowInsecure": false }));
+        let partial: super::Config = serde_json::from_str(r#"{"hub":{"enabled":true,"address":"h:1"}}"#).unwrap();
+        assert_eq!((partial.hub.enabled, partial.hub.address.as_str(), partial.hub.allow_insecure), (true, "h:1", false));
+    }
+
+    #[test]
+    fn hub_messages_json() {
+        let json = r#"{"type":"setHubToken","token":"tok-123"}"#;
+        let msg: super::ClientMsg = serde_json::from_str(json).unwrap();
+        assert!(!format!("{msg:?}").contains("tok-123"));
+        assert_eq!(serde_json::to_string(&msg).unwrap(), json);
+        let clear: super::ClientMsg = serde_json::from_str(r#"{"type":"setHubToken","token":null}"#).unwrap();
+        assert!(matches!(clear, super::ClientMsg::SetHubToken { token: None }));
+
+        let json = r#"{"type":"testHub","reqId":3,"address":"wss://h","allowInsecure":true,"token":"tok-123","useSaved":false}"#;
+        let msg: super::ClientMsg = serde_json::from_str(json).unwrap();
+        assert!(!format!("{msg:?}").contains("tok-123"));
+        let super::ClientMsg::TestHub { req_id: 3, allow_insecure: true, token: Some(t), use_saved: false, .. } = msg else { panic!() };
+        assert_eq!(t.0, "tok-123");
+        let saved: super::ClientMsg = serde_json::from_str(r#"{"type":"testHub","reqId":1,"address":"h","useSaved":true}"#).unwrap();
+        assert!(matches!(saved, super::ClientMsg::TestHub { token: None, use_saved: true, allow_insecure: false, .. }));
+
+        let ok = super::ServerMsg::TestHub { req_id: 3, elapsed_ms: Some(42), hub_version: Some("0.1.0".into()), error: None };
+        assert_eq!(serde_json::to_string(&ok).unwrap(), r#"{"type":"testHub","reqId":3,"elapsedMs":42,"hubVersion":"0.1.0","error":null}"#);
+        let st = super::ServerMsg::HubStatus { state: super::HubState::Failed, error: Some("认证失败".into()) };
+        assert_eq!(serde_json::to_string(&st).unwrap(), r#"{"type":"hubStatus","state":"failed","error":"认证失败"}"#);
+        // 旧 daemon 的 Config 没有 hubTokenSaved
+        let cfg: super::ServerMsg = serde_json::from_str(r#"{"type":"config","config":{},"shells":[],"hosts":[],"sshHosts":[]}"#).unwrap();
+        assert!(matches!(cfg, super::ServerMsg::Config { hub_token_saved: false, .. }));
     }
 
     #[test]

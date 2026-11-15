@@ -169,6 +169,25 @@
             <button type="button" id="cc-remove">移除</button>
           </div>
         </div>
+        <div class="section-head">管理服务器</div>
+        <!-- 连接自托管的 Tether hub（由 daemon 出站连接）；默认关闭，关闭时不发起任何连接 -->
+        <div class="rows" id="hub-rows">
+          <label class="row">
+            <span class="rt"><b>连接管理服务器</b><small>在 hub 网页中汇总本机的会话列表（不上传终端内容）；关闭时不发起任何连接</small></span>
+            <input type="checkbox" class="switch" id="hub-enabled" aria-label="连接管理服务器" />
+          </label>
+          <div class="row" id="hub-fields">
+            <label>服务器地址<input id="hub-address" autocomplete="off" spellcheck="false" placeholder="192.168.1.10:8443 或 wss://hub.example.com" /></label>
+            <label>token（保存到 Windows 凭据管理器）<input id="hub-token" type="password" autocomplete="off" spellcheck="false" /></label>
+            <div id="hub-token-state"><span id="hub-token-status"></span><button type="button" id="hub-token-clear" class="danger">清除 token</button></div>
+            <label class="check"><input type="checkbox" id="hub-insecure" />允许明文连接（仅限局域网调试）</label>
+            <p id="hub-test-result" role="status" hidden></p>
+          </div>
+          <div class="row">
+            <span class="rt"><b>连接状态 · <span id="hub-state">未启用</span></b><small id="hub-state-detail"></small></span>
+            <button type="button" id="hub-test">测试连接</button>
+          </div>
+        </div>
         <div class="section-head">关于与更新</div>
         <div class="rows">
           <div class="row" id="update-row">
@@ -188,10 +207,10 @@
         <div class="actions">
           <!-- 保存在前：回车提交时取首个按钮；视觉顺序由 CSS row-reverse 调换 -->
           <button value="save">保存</button>
-          <button value="cancel">取消</button>
+          <button value="cancel" formnovalidate>取消</button>
         </div>
         <!-- 右上角关闭（放在表单末尾，不影响回车默认提交“保存”） -->
-        <button value="cancel" class="m-x" title="关闭"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        <button value="cancel" class="m-x" title="关闭" formnovalidate><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </form>
     </dialog>
     <dialog id="host-dialog">

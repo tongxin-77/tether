@@ -14,7 +14,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use proto::{ClaudeState, ClaudeStatus, ClientMsg, Config, FsSource, HostSource, RecentItem, ServerMsg, SessionInfo, Status, Target};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-use crate::{claude, config, fs, notify, now_ms, recent, saved, ssh, stats};
+use crate::{claude, config, fs, hub, notify, now_ms, recent, saved, ssh, stats};
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -44,6 +44,8 @@ pub struct State {
     prompts: HashMap<u64, oneshot::Sender<PromptAnswer>>,
     /// 等待恢复的远程会话（连接可能需要交互认证，等 GUI 首次接入时再连）
     pending: Vec<saved::Saved>,
+    /// 管理服务器（hub）客户端
+    pub hub: hub::Hub,
 }
 
 pub struct Gui {
@@ -186,6 +188,8 @@ impl State {
     pub fn push_sessions(&self) {
         let sessions = self.sessions.values().map(|s| s.info.clone()).collect();
         self.send(&ServerMsg::Sessions { sessions });
+        // hub 常驻连接据此防抖上报（未启用时无人等待，只留一个许可）
+        self.hub.changed.notify_one();
     }
 
     pub fn push_recent(&self) {
@@ -239,7 +243,9 @@ impl State {
             hosts,
             ssh_hosts,
             password_saved,
+            hub_token_saved: hub::token_saved(),
         });
+        self.send(&self.hub.status_msg());
     }
 }
 
@@ -364,7 +370,12 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                     // 主机账户变化 / 删除时同步凭据管理器中保存的密码
                     let old = config::all_hosts_with(&st.config, ssh.clone());
                     ssh::migrate_credentials(&ssh::Keyring, &old, &config::all_hosts_with(&config, ssh));
+                    // hub 设置变化，或已停在 failed（401 / 被替换等）时，保存即按新设置重连
+                    let hub_changed = st.config.hub != config.hub || matches!(st.hub.status_msg(), ServerMsg::HubStatus { state: proto::HubState::Failed, .. });
                     st.config = config;
+                    if hub_changed {
+                        hub::restart(state, st);
+                    }
                     st.send_config();
                 }
                 Err(e) => {
@@ -464,6 +475,27 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 None => None,
             };
             drop(tokio::spawn(ssh::test(state.clone(), req_id, host, password)));
+        }
+        ClientMsg::SetHubToken { token } => {
+            match hub::set_token(token.as_ref().map(|t| t.0.as_str())) {
+                Ok(()) => log!("hub token 已{}", if token.is_some() { "保存" } else { "清除" }),
+                Err(e) => {
+                    log!("保存 hub token 失败：{e}");
+                    st.send(&ServerMsg::Error { message: format!("保存 hub token 失败：{e}") });
+                }
+            }
+            if st.config.hub.enabled {
+                hub::restart(state, st);
+            }
+            st.send_config();
+        }
+        ClientMsg::TestHub { req_id, address, allow_insecure, token, use_saved } => {
+            let token = match token {
+                Some(t) if !t.0.trim().is_empty() => Some(t.0.trim().to_string()),
+                _ if use_saved => hub::saved_token(),
+                _ => None,
+            };
+            drop(tokio::spawn(hub::test(state.clone(), req_id, address, allow_insecure, token)));
         }
         // 先落盘会话列表再退出：GUI 重连时拉起（可能是更新后的）tetherd.exe，按 sessions.json 恢复会话
         ClientMsg::Shutdown => {
