@@ -659,7 +659,7 @@ pub fn restore(state: &Shared) {
                     s.info.name = item.name;
                     s.resume = item.claude.clone();
                 }
-                if let Some(cmd) = item.claude.and_then(|c| saved::resume_command(&c.id)) {
+                if let Some(cmd) = item.claude.as_ref().and_then(saved::resume_command) {
                     type_when_ready(state, id, cmd);
                 }
             }
@@ -843,16 +843,24 @@ pub fn claude_event(state: &Shared, ev: ClientMsg) {
 }
 
 /// 由 hook 事件更新会话的 Claude 对话：session_id 变化（新对话 / /clear / /resume）时记录，连同当时目录（缺失时用会话目录）；
-/// SessionEnd 时清除，但 reason 为 other（多为进程被结束，如关机）时保留以便恢复
+/// SessionEnd 时清除，但 reason 为 other（多为进程被结束，如关机）时保留以便恢复。
+/// 事件带 permission_mode 时记为最近模式；出现过 bypassPermissions 则本对话内一直记着（新对话重置）
 fn next_resume(cur: Option<&saved::Resume>, session_cwd: &str, ev: &ClientMsg) -> Option<saved::Resume> {
-    let ClientMsg::ClaudeEvent { event, claude_session, cwd, reason, .. } = ev else { return cur.cloned() };
-    match claude_session {
-        _ if event == "SessionEnd" && reason.as_deref() != Some("other") => None,
-        Some(id) if cur.is_none_or(|c| &c.id != id) => {
-            Some(saved::Resume { id: id.clone(), cwd: cwd.clone().unwrap_or_else(|| session_cwd.into()) })
-        }
-        _ => cur.cloned(),
+    let ClientMsg::ClaudeEvent { event, claude_session, cwd, reason, permission_mode, .. } = ev else { return cur.cloned() };
+    let mut next = match claude_session {
+        _ if event == "SessionEnd" && reason.as_deref() != Some("other") => return None,
+        Some(id) if cur.is_none_or(|c| &c.id != id) => saved::Resume {
+            id: id.clone(),
+            cwd: cwd.clone().unwrap_or_else(|| session_cwd.into()),
+            ..Default::default()
+        },
+        _ => cur.cloned()?,
+    };
+    if let Some(mode) = permission_mode {
+        next.bypass |= mode == "bypassPermissions";
+        next.permission_mode = Some(mode.clone());
     }
+    Some(next)
 }
 
 fn claude_state(state: ClaudeStatus, message: Option<String>, count: Option<u32>) -> ClaudeState {
@@ -980,6 +988,7 @@ mod tests {
                 claude_session: None,
                 cwd: None,
                 reason: None,
+                permission_mode: None,
             };
             if let Some(step) = step(self.state, &mut self.agents, &ev) {
                 self.state = step.next;
@@ -1077,6 +1086,7 @@ mod tests {
             claude_session: None,
             cwd: None,
             reason: None,
+            permission_mode: None,
         };
         assert_eq!(step(s.state, &mut s.agents, &idle), None);
     }
@@ -1117,6 +1127,10 @@ mod tests {
     }
 
     fn ev(event: &str, sid: Option<&str>, cwd: Option<&str>, reason: Option<&str>) -> ClientMsg {
+        ev_mode(event, sid, cwd, reason, None)
+    }
+
+    fn ev_mode(event: &str, sid: Option<&str>, cwd: Option<&str>, reason: Option<&str>, mode: Option<&str>) -> ClientMsg {
         ClientMsg::ClaudeEvent {
             session: 1,
             event: event.into(),
@@ -1128,6 +1142,7 @@ mod tests {
             claude_session: sid.map(Into::into),
             cwd: cwd.map(Into::into),
             reason: reason.map(Into::into),
+            permission_mode: mode.map(Into::into),
         }
     }
 
@@ -1145,6 +1160,32 @@ mod tests {
         // 正常退出清除；进程被结束（other）保留
         assert_eq!(next_resume(Some(&b), "", &ev("SessionEnd", Some("b"), None, Some("prompt_input_exit"))), None);
         assert_eq!(next_resume(Some(&b), "", &ev("SessionEnd", Some("b"), None, Some("other"))).as_ref(), Some(&b));
+    }
+
+    #[test]
+    fn resume_permission_mode() {
+        let next = |cur: Option<&saved::Resume>, sid: Option<&str>, m: Option<&str>| {
+            next_resume(cur, r"C:\s", &ev_mode("Stop", sid, None, None, m)).unwrap()
+        };
+        // 以 --dangerously-skip-permissions 启动
+        let r = next(None, Some("a"), Some("bypassPermissions"));
+        assert_eq!((r.permission_mode.as_deref(), r.bypass), (Some("bypassPermissions"), true));
+        // Shift+Tab 切到别的模式：记录最近模式，bypass 粘滞
+        let r = next(Some(&r), Some("a"), Some("acceptEdits"));
+        assert_eq!((r.permission_mode.as_deref(), r.bypass), (Some("acceptEdits"), true));
+        // 不带 permission_mode 的事件不改变记录
+        assert_eq!(next(Some(&r), Some("a"), None), r);
+        assert_eq!(next(Some(&r), None, None), r);
+        // 不带 session_id 但带模式的事件也更新
+        let r = next(Some(&r), None, Some("plan"));
+        assert_eq!((r.permission_mode.as_deref(), r.bypass), (Some("plan"), true));
+        // 新对话重置
+        let b = next(Some(&r), Some("b"), None);
+        assert_eq!((b.permission_mode, b.bypass), (None, false));
+        let b = next(Some(&r), Some("b"), Some("default"));
+        assert_eq!((b.permission_mode.as_deref(), b.bypass), (Some("default"), false));
+        // 尚无对话记录时，不带 session_id 的事件不建立记录
+        assert_eq!(next_resume(None, "", &ev_mode("Stop", None, None, None, Some("plan"))), None);
     }
 
     #[test]

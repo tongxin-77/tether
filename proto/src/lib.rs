@@ -461,6 +461,10 @@ pub enum ClientMsg {
         /// SessionEnd 的 reason（clear / logout / prompt_input_exit / other 等）
         #[serde(default)]
         reason: Option<String>,
+        /// hook JSON 的 permission_mode（default / plan / acceptEdits / auto / dontAsk / bypassPermissions），
+        /// 恢复时据此带上权限参数；部分事件不带
+        #[serde(default)]
+        permission_mode: Option<String>,
     },
     /// 查询 Claude Code 集成状态，daemon 回 ClaudeHooks
     GetClaudeHooks,

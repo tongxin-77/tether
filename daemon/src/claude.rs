@@ -65,6 +65,7 @@ fn event_msg(session: u32, stdin: &str, arg: Option<String>) -> Option<ClientMsg
         claude_session: text("session_id"),
         cwd: text("cwd"),
         reason: text("reason"),
+        permission_mode: text("permission_mode"),
     })
 }
 
@@ -384,16 +385,17 @@ mod tests {
 
     #[test]
     fn hook_session_id_parsing() {
-        let start = r#"{"hook_event_name":"SessionStart","session_id":"abc-123","cwd":"C:\\work\\p","source":"startup"}"#;
-        let ClientMsg::ClaudeEvent { claude_session, cwd, reason, .. } = event_msg(1, start, None).unwrap() else { panic!() };
+        let start = r#"{"hook_event_name":"SessionStart","session_id":"abc-123","cwd":"C:\\work\\p","source":"startup","permission_mode":"bypassPermissions"}"#;
+        let ClientMsg::ClaudeEvent { claude_session, cwd, reason, permission_mode, .. } = event_msg(1, start, None).unwrap() else { panic!() };
         assert_eq!((claude_session.as_deref(), cwd.as_deref(), reason), (Some("abc-123"), Some(r"C:\work\p"), None));
+        assert_eq!(permission_mode.as_deref(), Some("bypassPermissions"));
         let end = r#"{"hook_event_name":"SessionEnd","session_id":"abc-123","reason":"prompt_input_exit"}"#;
-        let ClientMsg::ClaudeEvent { reason, .. } = event_msg(1, end, None).unwrap() else { panic!() };
-        assert_eq!(reason.as_deref(), Some("prompt_input_exit"));
+        let ClientMsg::ClaudeEvent { reason, permission_mode, .. } = event_msg(1, end, None).unwrap() else { panic!() };
+        assert_eq!((reason.as_deref(), permission_mode), (Some("prompt_input_exit"), None));
         // 旧版 daemon / hook 不带这些字段时反序列化为 None
         let old: ClientMsg = serde_json::from_str(r#"{"type":"claudeEvent","session":1,"event":"Stop"}"#).unwrap();
-        let ClientMsg::ClaudeEvent { claude_session, .. } = old else { panic!() };
-        assert_eq!(claude_session, None);
+        let ClientMsg::ClaudeEvent { claude_session, permission_mode, .. } = old else { panic!() };
+        assert_eq!((claude_session, permission_mode), (None, None));
     }
 
     #[test]

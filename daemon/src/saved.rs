@@ -20,11 +20,18 @@ pub struct Saved {
     pub claude: Option<Resume>,
 }
 
-/// Claude Code 的 session_id 与其启动目录（`--resume` 按项目目录查找对话）
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Claude Code 的 session_id 与其启动目录（`--resume` 按项目目录查找对话），以及恢复时要带上的权限模式
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Resume {
     pub id: String,
     pub cwd: String,
+    /// 最近一次 hook 上报的 permission_mode
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// 本对话中出现过 bypassPermissions（以 --dangerously-skip-permissions 启动）：切到别的模式后恢复时仍需带上，才能再切回去
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass: bool,
 }
 
 fn path() -> Option<PathBuf> {
@@ -54,9 +61,20 @@ pub fn save(items: &[Saved]) {
     }
 }
 
-/// 恢复时输入 shell 的命令；session_id 含意外字符（文件被改动）时不输入
-pub fn resume_command(id: &str) -> Option<String> {
-    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then(|| format!("claude --resume {id}\r"))
+/// 恢复时输入 shell 的命令，带上原来的权限模式；session_id 含意外字符（文件被改动）时不输入，权限模式只认白名单
+pub fn resume_command(r: &Resume) -> Option<String> {
+    let id = &r.id;
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let mut cmd = format!("claude --resume {id}");
+    if r.bypass || r.permission_mode.as_deref() == Some("bypassPermissions") {
+        cmd += " --dangerously-skip-permissions";
+    }
+    if let Some(m @ ("plan" | "acceptEdits" | "auto" | "dontAsk")) = r.permission_mode.as_deref() {
+        cmd += &format!(" --permission-mode {m}");
+    }
+    Some(cmd + "\r")
 }
 
 #[cfg(test)]
@@ -71,7 +89,12 @@ mod tests {
                 cwd: r"C:\work\proj".into(),
                 command: "pwsh.exe".into(),
                 host_id: None,
-                claude: Some(Resume { id: "0b1c-22".into(), cwd: r"C:\work\proj".into() }),
+                claude: Some(Resume {
+                    id: "0b1c-22".into(),
+                    cwd: r"C:\work\proj".into(),
+                    permission_mode: Some("plan".into()),
+                    bypass: true,
+                }),
             },
             Saved { name: "~".into(), cwd: "/home/u".into(), command: "ssh u@h:22".into(), host_id: Some("h1".into()), claude: None },
         ];
@@ -81,12 +104,40 @@ mod tests {
         // 可选字段缺失时为 None
         let min: Vec<Saved> = serde_json::from_str(r#"[{"name":"a","cwd":"C:\\","command":"cmd.exe"}]"#).unwrap();
         assert_eq!((min[0].host_id.clone(), min[0].claude.clone()), (None, None));
+        // 旧文件的 claude 不带权限字段
+        let old: Resume = serde_json::from_str(r#"{"id":"a","cwd":"C:\\"}"#).unwrap();
+        assert_eq!((old.permission_mode, old.bypass), (None, false));
     }
 
     #[test]
     fn resume_command_rejects_unsafe_ids() {
-        assert_eq!(resume_command("6f1e-ab").as_deref(), Some("claude --resume 6f1e-ab\r"));
-        assert_eq!(resume_command(""), None);
-        assert_eq!(resume_command("x; rm -rf /"), None);
+        let id = |id: &str| resume_command(&Resume { id: id.into(), ..Default::default() });
+        assert_eq!(id("6f1e-ab").as_deref(), Some("claude --resume 6f1e-ab\r"));
+        assert_eq!(id(""), None);
+        assert_eq!(id("x; rm -rf /"), None);
+    }
+
+    #[test]
+    fn resume_command_permission_mode() {
+        let cmd = |mode: Option<&str>, bypass: bool| {
+            let r = Resume { id: "a1".into(), cwd: String::new(), permission_mode: mode.map(Into::into), bypass };
+            resume_command(&r).unwrap()
+        };
+        assert_eq!(cmd(None, false), "claude --resume a1\r");
+        assert_eq!(cmd(Some("default"), false), "claude --resume a1\r");
+        assert_eq!(cmd(Some("plan"), false), "claude --resume a1 --permission-mode plan\r");
+        assert_eq!(cmd(Some("acceptEdits"), false), "claude --resume a1 --permission-mode acceptEdits\r");
+        assert_eq!(cmd(Some("auto"), false), "claude --resume a1 --permission-mode auto\r");
+        assert_eq!(cmd(Some("dontAsk"), false), "claude --resume a1 --permission-mode dontAsk\r");
+        assert_eq!(cmd(Some("bypassPermissions"), true), "claude --resume a1 --dangerously-skip-permissions\r");
+        // 粘滞的 bypass 与当前模式同时带上
+        assert_eq!(cmd(Some("default"), true), "claude --resume a1 --dangerously-skip-permissions\r");
+        assert_eq!(
+            cmd(Some("acceptEdits"), true),
+            "claude --resume a1 --dangerously-skip-permissions --permission-mode acceptEdits\r"
+        );
+        // 白名单外的值（文件被改动）忽略
+        assert_eq!(cmd(Some("plan; rm -rf /"), false), "claude --resume a1\r");
+        assert_eq!(cmd(Some("Plan"), false), "claude --resume a1\r");
     }
 }
