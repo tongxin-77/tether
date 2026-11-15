@@ -561,7 +561,7 @@ fn spawn(state: &Shared, shell: &str, cwd: String, cols: u16, rows: u16) -> Resu
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
 
-    let name = cwd.split(['\\', '/']).filter(|s| !s.is_empty()).last().unwrap_or(cwd.as_str()).to_string();
+    let name = cwd.split(['\\', '/']).rfind(|s| !s.is_empty()).unwrap_or(cwd.as_str()).to_string();
     let info = new_info(name, cwd, shell.into(), None);
     register_with_id(state, id, info, Backend::Local { master: pair.master, writer, killer }, fs::Backend::Local, cols, rows);
 
@@ -715,10 +715,10 @@ pub fn on_output(state: &Shared, id: u32, data: &[u8]) -> bool {
     if sig.fired {
         signal(state, s, sig.msg);
     }
-    if let Some(g) = &st.gui {
-        if g.attached.contains(&id) {
-            g.send(&ServerMsg::Output { id, data: B64.encode(data) });
-        }
+    if let Some(g) = &st.gui
+        && g.attached.contains(&id)
+    {
+        g.send(&ServerMsg::Output { id, data: B64.encode(data) });
     }
     if taken {
         st.hub.output(id, data);
@@ -730,16 +730,16 @@ pub fn on_output(state: &Shared, id: u32, data: &[u8]) -> bool {
 pub fn on_exit(state: &Shared, id: u32) {
     let mut guard = state.lock().unwrap();
     let st = &mut *guard;
-    if let Some(s) = st.sessions.get_mut(&id) {
-        if s.info.status != Status::Exited {
-            s.info.status = Status::Exited;
-            s.info.claude = None;
-            s.agents = Agents::default();
-            if std::mem::take(&mut s.info.taken_over) {
-                st.hub.detached(id, "exited");
-            }
-            st.push_sessions();
+    if let Some(s) = st.sessions.get_mut(&id)
+        && s.info.status != Status::Exited
+    {
+        s.info.status = Status::Exited;
+        s.info.claude = None;
+        s.agents = Agents::default();
+        if std::mem::take(&mut s.info.taken_over) {
+            st.hub.detached(id, "exited");
         }
+        st.push_sessions();
     }
 }
 
