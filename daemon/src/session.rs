@@ -844,16 +844,22 @@ pub fn claude_event(state: &Shared, ev: ClientMsg) {
 
 /// 由 hook 事件更新会话的 Claude 对话：session_id 变化（新对话 / /clear / /resume）时记录，连同当时目录（缺失时用会话目录）；
 /// SessionEnd 时清除，但 reason 为 other（多为进程被结束，如关机）时保留以便恢复。
-/// 事件带 permission_mode 时记为最近模式；出现过 bypassPermissions 则本对话内一直记着（新对话重置）
+/// 事件带 permission_mode 时记为最近模式；出现过 bypassPermissions 则一直记着，直到新的 claude 进程：
+/// session_id 变化时，SessionStart 的 source 为 clear / resume / compact（同一进程内换对话）沿用上一条的权限记录，其它情况重置
 fn next_resume(cur: Option<&saved::Resume>, session_cwd: &str, ev: &ClientMsg) -> Option<saved::Resume> {
-    let ClientMsg::ClaudeEvent { event, claude_session, cwd, reason, permission_mode, .. } = ev else { return cur.cloned() };
+    let ClientMsg::ClaudeEvent { event, claude_session, cwd, reason, permission_mode, source, .. } = ev else {
+        return cur.cloned();
+    };
     let mut next = match claude_session {
         _ if event == "SessionEnd" && reason.as_deref() != Some("other") => return None,
-        Some(id) if cur.is_none_or(|c| &c.id != id) => saved::Resume {
-            id: id.clone(),
-            cwd: cwd.clone().unwrap_or_else(|| session_cwd.into()),
-            ..Default::default()
-        },
+        Some(id) if cur.is_none_or(|c| &c.id != id) => {
+            let same_process = event == "SessionStart" && matches!(source.as_deref(), Some("clear" | "resume" | "compact"));
+            let (permission_mode, bypass) = match cur {
+                Some(c) if same_process => (c.permission_mode.clone(), c.bypass),
+                _ => (None, false),
+            };
+            saved::Resume { id: id.clone(), cwd: cwd.clone().unwrap_or_else(|| session_cwd.into()), permission_mode, bypass }
+        }
         _ => cur.cloned()?,
     };
     if let Some(mode) = permission_mode {
@@ -989,6 +995,7 @@ mod tests {
                 cwd: None,
                 reason: None,
                 permission_mode: None,
+                source: None,
             };
             if let Some(step) = step(self.state, &mut self.agents, &ev) {
                 self.state = step.next;
@@ -1087,6 +1094,7 @@ mod tests {
             cwd: None,
             reason: None,
             permission_mode: None,
+            source: None,
         };
         assert_eq!(step(s.state, &mut s.agents, &idle), None);
     }
@@ -1143,6 +1151,7 @@ mod tests {
             cwd: cwd.map(Into::into),
             reason: reason.map(Into::into),
             permission_mode: mode.map(Into::into),
+            source: None,
         }
     }
 
@@ -1186,6 +1195,37 @@ mod tests {
         assert_eq!((b.permission_mode.as_deref(), b.bypass), (Some("default"), false));
         // 尚无对话记录时，不带 session_id 的事件不建立记录
         assert_eq!(next_resume(None, "", &ev_mode("Stop", None, None, None, Some("plan"))), None);
+    }
+
+    #[test]
+    fn resume_permission_across_conversations() {
+        let start = |cur: &saved::Resume, sid: &str, source: Option<&str>| {
+            let mut e = ev("SessionStart", Some(sid), None, None);
+            if let ClientMsg::ClaudeEvent { source: s, .. } = &mut e {
+                *s = source.map(Into::into);
+            }
+            next_resume(Some(cur), r"C:\s", &e).unwrap()
+        };
+        // 以 skip 启动后切到 acceptEdits
+        let r = saved::Resume {
+            id: "a".into(),
+            cwd: r"C:\p".into(),
+            permission_mode: Some("acceptEdits".into()),
+            bypass: true,
+        };
+        // 同一进程内换对话：沿用权限记录
+        for source in ["clear", "resume", "compact"] {
+            let b = start(&r, "b", Some(source));
+            assert_eq!((b.id.as_str(), b.permission_mode.as_deref(), b.bypass), ("b", Some("acceptEdits"), true), "{source}");
+        }
+        // 新进程或 source 缺失：重置
+        for source in [Some("startup"), None] {
+            let b = start(&r, "b", source);
+            assert_eq!((b.permission_mode, b.bypass), (None, false), "{source:?}");
+        }
+        // 非 SessionStart 事件带来新 session_id：重置
+        let b = next_resume(Some(&r), "", &ev("Stop", Some("b"), None, None)).unwrap();
+        assert_eq!((b.permission_mode, b.bypass), (None, false));
     }
 
     #[test]

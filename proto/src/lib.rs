@@ -465,6 +465,9 @@ pub enum ClientMsg {
         /// 恢复时据此带上权限参数；部分事件不带
         #[serde(default)]
         permission_mode: Option<String>,
+        /// SessionStart 的 source（startup / resume / clear / compact）
+        #[serde(default)]
+        source: Option<String>,
     },
     /// 查询 Claude Code 集成状态，daemon 回 ClaudeHooks
     GetClaudeHooks,
