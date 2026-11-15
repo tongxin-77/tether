@@ -999,8 +999,10 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
         "Notification" => {
             let message = message.clone().filter(|m| !m.trim().is_empty());
             match notification_type.as_deref() {
-                // 空闲提醒（回复完成后一段时间）：已完成时 Stop 已通知过，后台运行中也不是在等用户，均不通知
+                // 空闲提醒（回复完成后一段时间）：已完成时 Stop 已通知过，后台运行中也不是在等用户，均保持不变
                 Some("idle_prompt") if matches!(prev, Some(ClaudeStatus::Done | ClaudeStatus::Background)) => None,
+                // 其余情况（Esc 中断后没有 Stop、刚启动未提问等）只是空闲，不算等待确认，也不通知
+                Some("idle_prompt") => set(Some(ClaudeStatus::Idle)),
                 // 不需要用户输入的通知类型
                 Some("auth_success" | "elicitation_complete" | "elicitation_response") => None,
                 // 含后台子代理的权限请求（显示在主会话中）
@@ -1143,6 +1145,34 @@ mod tests {
             source: None,
         };
         assert_eq!(step(s.state, &mut s.agents, &idle), None);
+    }
+
+    #[test]
+    fn idle_prompt_means_idle_not_waiting() {
+        let idle = ClientMsg::ClaudeEvent {
+            session: 1,
+            event: "Notification".into(),
+            message: Some("Claude is waiting for your input".into()),
+            notification_type: Some("idle_prompt".into()),
+            agent_id: None,
+            agent_type: None,
+            background: None,
+            claude_session: None,
+            cwd: None,
+            reason: None,
+            permission_mode: None,
+            source: None,
+        };
+        // Esc 中断后没有 Stop（停在 Thinking）、刚启动未提问（Idle）：空闲提醒转为 Idle，不通知
+        for prev in [Some(Thinking), Some(Idle), Some(Waiting), None] {
+            let mut a = Agents::default();
+            assert_eq!(step(prev, &mut a, &idle), Some(Step { next: Some(Idle), message: None, body: None }));
+        }
+        // 已完成 / 后台运行中：保持原状态
+        for prev in [Some(Done), Some(Background)] {
+            let mut a = Agents::default();
+            assert_eq!(step(prev, &mut a, &idle), None);
+        }
     }
 
     #[test]
