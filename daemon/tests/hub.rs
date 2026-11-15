@@ -1,5 +1,5 @@
 //! hub 客户端连接层集成测试：本地起明文 ws 的 mock hub（不依赖外部网络），验证 hello → welcome → sessions 上报、
-//! 会话变化防抖上报、401 分类为致命错误、断线后自动重连。
+//! 会话变化防抖上报、401 分类为致命错误、断线后自动重连、接管消息的收发。接管的 daemon 侧逻辑见 src/hub.rs 的单元测试。
 
 use std::{
     sync::{Arc, Mutex},
@@ -36,6 +36,8 @@ enum Event {
     Hello(usize, Value),
     Sessions(usize, Value),
     Pong(usize),
+    /// 其它上行消息（接管相关）
+    Up(usize, Value),
 }
 
 /// mock hub 的行为
@@ -47,6 +49,8 @@ enum Mode {
     ProtoUnsupported,
     /// 回 welcome；常驻连接（非 probe）收到首条 sessions 后回 replaced 错误并以 4004 关闭，probe 连接不受影响
     Replaced,
+    /// 回 welcome；收到首条 sessions 后发 attach / input，收到 output 后断开
+    Takeover,
 }
 
 /// 起 mock hub，返回端口与事件接收端；token 不对时以 401 拒绝握手
@@ -89,7 +93,7 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                             probe = v["probe"] == true;
                             let _ = tx.send(Event::Hello(n, v));
                             let reply = match mode {
-                                Mode::Normal | Mode::Replaced => r#"{"type":"welcome","proto":1,"hubVersion":"9.9.9"}"#,
+                                Mode::Normal | Mode::Replaced | Mode::Takeover => r#"{"type":"welcome","proto":2,"hubVersion":"9.9.9"}"#,
                                 Mode::ProtoUnsupported => r#"{"type":"error","code":"proto_unsupported","message":"hub 仅支持协议 2"}"#,
                             };
                             // 未知类型的消息应被忽略
@@ -109,6 +113,11 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                                 let _ = ws.close(Some(frame)).await;
                                 return;
                             }
+                            if let (Mode::Takeover, 1) = (mode, sessions) {
+                                let _ = ws.send(Message::Text(r#"{"type":"attach","sessionId":1}"#.into())).await;
+                                let _ = ws.send(Message::Text(r#"{"type":"input","sessionId":1,"data":"bHMK"}"#.into())).await;
+                                continue;
+                            }
                             if sessions == 1 {
                                 // 心跳：客户端应自动回 pong
                                 let _ = ws.send(Message::Ping(b"hb".to_vec().into())).await;
@@ -118,7 +127,13 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                                 return;
                             }
                         }
-                        _ => {}
+                        _ => {
+                            let output = v["type"] == "output";
+                            let _ = tx.send(Event::Up(n, v));
+                            if let (Mode::Takeover, true) = (mode, output) {
+                                return;
+                            }
+                        }
                     }
                 }
             });
@@ -139,6 +154,7 @@ fn session(id: u32, name: &str) -> SessionInfo {
         host: None,
         host_id: None,
         claude: None,
+        taken_over: false,
     }
 }
 
@@ -146,6 +162,9 @@ struct Harness {
     list: Arc<Mutex<Vec<SessionInfo>>>,
     changed: Arc<Notify>,
     states: Arc<Mutex<Vec<(HubState, Option<String>)>>>,
+    /// conn 回调：Some(是否带发送端)
+    conns: mpsc::UnboundedReceiver<Option<mpsc::UnboundedSender<link::Up>>>,
+    downs: mpsc::UnboundedReceiver<link::Down>,
 }
 
 fn make_link(port: u16, token: &str) -> (link::Link, Harness) {
@@ -153,15 +172,19 @@ fn make_link(port: u16, token: &str) -> (link::Link, Harness) {
     let changed = Arc::new(Notify::new());
     let states = Arc::new(Mutex::new(Vec::new()));
     let (l, s) = (list.clone(), states.clone());
+    let (conn_tx, conns) = mpsc::unbounded_channel();
+    let (down_tx, downs) = mpsc::unbounded_channel();
     let link = link::Link {
         endpoint: link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap(),
         token: Secret(token.into()),
-        hello: link::Up::Hello { proto: 1, machine_id: "mid-1".into(), machine_name: "TEST-PC".into(), version: "0.0.1".into(), probe: false },
+        hello: link::hello("mid-1".into(), "TEST-PC", "0.0.1"),
         sessions: Arc::new(move || l.lock().unwrap().clone()),
         changed: changed.clone(),
         status: Arc::new(move |state, error| s.lock().unwrap().push((state, error))),
+        conn: Arc::new(move |tx| drop(conn_tx.send(tx))),
+        down: Arc::new(move |msg| drop(down_tx.send(msg))),
     };
-    (link, Harness { list, changed, states })
+    (link, Harness { list, changed, states, conns, downs })
 }
 
 async fn next(rx: &mut mpsc::UnboundedReceiver<Event>) -> Event {
@@ -175,7 +198,7 @@ async fn hello_welcome_sessions_then_reconnect() {
     let task = tokio::spawn(link::run(link));
 
     let Event::Hello(1, hello) = next(&mut rx).await else { panic!("应先收到 hello") };
-    assert_eq!(hello["proto"], 1);
+    assert_eq!(hello["proto"], 2);
     assert!(hello.get("probe").is_none(), "常驻连接不带 probe");
     assert_eq!(hello["machineId"], "mid-1");
     assert_eq!(hello["machineName"], "TEST-PC");
@@ -230,7 +253,7 @@ async fn unauthorized_is_fatal() {
 
     // 测试连接同样分类为认证失败
     let ep = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
-    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: false };
+    let hello = link::hello("m".into(), "n", "v");
     let f = link::probe(&ep, &Secret("wrong-token".into()), &hello).await.unwrap_err();
     assert_eq!(f.kind, link::Kind::Auth);
 }
@@ -239,7 +262,7 @@ async fn unauthorized_is_fatal() {
 async fn probe_reports_hub_version_and_closes() {
     let (port, mut rx) = mock_hub(Mode::Normal).await;
     let ep = link::parse_address(&format!("ws://127.0.0.1:{port}/agent"), true).unwrap();
-    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: false };
+    let hello = link::hello("m".into(), "n", "v");
     let version = link::probe(&ep, &Secret(TOKEN.into()), &hello).await.unwrap();
     assert_eq!(version, "9.9.9");
     let Event::Hello(1, sent) = next(&mut rx).await else { panic!("应收到 hello") };
@@ -297,8 +320,34 @@ async fn probe_not_replaced() {
     // replaced 模式下 probe 连接照常成功（hub 不替换 / 不登记探测连接）
     let (port, mut rx) = mock_hub(Mode::Replaced).await;
     let ep = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
-    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: false };
+    let hello = link::hello("m".into(), "n", "v");
     assert_eq!(link::probe(&ep, &Secret(TOKEN.into()), &hello).await.unwrap(), "9.9.9");
     let Event::Hello(1, sent) = next(&mut rx).await else { panic!() };
     assert_eq!(sent["probe"], true);
+}
+
+#[tokio::test]
+async fn takeover_messages_relayed() {
+    let (port, mut rx) = mock_hub(Mode::Takeover).await;
+    let (link, mut h) = make_link(port, TOKEN);
+    let task = tokio::spawn(link::run(link));
+    assert!(matches!(next(&mut rx).await, Event::Hello(1, _)));
+    assert!(matches!(next(&mut rx).await, Event::Sessions(1, _)));
+    // 收到 welcome 后交出上行发送端
+    let up = tokio::time::timeout(Duration::from_secs(5), h.conns.recv()).await.unwrap().unwrap().expect("连接可用时应带发送端");
+    // 下行接管消息原样交给 daemon
+    let first = tokio::time::timeout(Duration::from_secs(5), h.downs.recv()).await.unwrap().unwrap();
+    assert_eq!(first, link::Down::Attach { session_id: 1 });
+    assert_eq!(h.downs.recv().await.unwrap(), link::Down::Input { session_id: 1, data: "bHMK".into() });
+    // daemon 经发送端推送的消息按序写到 hub
+    up.send(link::Up::Attached { session_id: 1, cols: 80, rows: 24, snapshot: "eA==".into() }).unwrap();
+    up.send(link::Up::Output { session_id: 1, data: "eQ==".into() }).unwrap();
+    let Event::Up(1, attached) = next(&mut rx).await else { panic!() };
+    assert_eq!(attached, serde_json::json!({ "type": "attached", "sessionId": 1, "cols": 80, "rows": 24, "snapshot": "eA==" }));
+    let Event::Up(1, output) = next(&mut rx).await else { panic!() };
+    assert_eq!(output["type"], "output");
+    // mock hub 收到 output 后断开：daemon 收到 None（据此结束全部接管）
+    let gone = tokio::time::timeout(Duration::from_secs(5), h.conns.recv()).await.unwrap().unwrap();
+    assert!(gone.is_none());
+    task.abort();
 }

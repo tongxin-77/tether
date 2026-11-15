@@ -1,14 +1,19 @@
-//! 管理服务器（hub）客户端：按 config.json 的 hub 设置与凭据管理器中的 token 维持一条常驻出站连接，上报会话列表。
+//! 管理服务器（hub）客户端：按 config.json 的 hub 设置与凭据管理器中的 token 维持一条常驻出站连接，上报会话列表；
+//! 设置允许时处理 hub 的远程接管（协议第 6 节）。
 //! 默认关闭；未启用 / 未配置 / 连接失败时不影响 daemon 其它功能（连接在独立异步任务中，失败只体现在 HubStatus）。
 
 mod link;
 
 use std::{path::Path, sync::Arc};
 
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use proto::{HubConfig, HubState, Secret, ServerMsg};
-use tokio::{sync::Notify, task::AbortHandle};
+use tokio::{
+    sync::{Notify, mpsc::UnboundedSender},
+    task::AbortHandle,
+};
 
-use crate::session::{Shared, State};
+use crate::session::{self, Shared, State};
 
 /// token 在 Windows 凭据管理器中的条目：服务名同 SSH 密码（tether / dev 构建 tether-dev），账户 `hub-token`，
 /// 凭据名（target）即 `hub-token.tether`；SSH 密码账户形如 `user@host:port`，不会与之冲突
@@ -26,11 +31,29 @@ pub struct Hub {
     generation: u64,
     /// 会话列表变化通知（State::push_sessions 触发），常驻连接据此防抖上报
     pub changed: Arc<Notify>,
+    /// 当前 hub 连接的上行发送端（已连接时 Some），接管消息经它推送；接管中的会话以 SessionInfo.taken_over 标记
+    tx: Option<UnboundedSender<link::Up>>,
 }
 
 impl Hub {
     pub fn status_msg(&self) -> ServerMsg {
         ServerMsg::HubStatus { state: self.state, error: self.error.clone() }
+    }
+
+    fn up(&self, msg: link::Up) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(msg);
+        }
+    }
+
+    /// 被接管会话的输出推给 hub（PTY 读线程持锁调用：只入队，不等网络）
+    pub fn output(&self, id: u32, data: &[u8]) {
+        self.up(link::Up::Output { session_id: id, data: B64.encode(data) });
+    }
+
+    /// 本机结束接管：reclaimed / disabled / exited
+    pub fn detached(&self, id: u32, reason: &str) {
+        self.up(link::Up::Detached { session_id: id, reason: reason.into() });
     }
 }
 
@@ -49,9 +72,12 @@ pub fn restart(state: &Shared, st: &mut State) {
     if let Some(task) = st.hub.task.take() {
         task.abort();
     }
+    // 旧连接随任务中止，其上的接管全部结束（无需发消息）
+    st.hub.tx = None;
+    release_all(st, None);
     st.hub.generation += 1;
     let generation = st.hub.generation;
-    let HubConfig { enabled, address, allow_insecure } = st.config.hub.clone();
+    let HubConfig { enabled, address, allow_insecure, .. } = st.config.hub.clone();
     if !enabled {
         return set_status(st, generation, HubState::Disabled, None);
     }
@@ -68,20 +94,102 @@ pub fn restart(state: &Shared, st: &mut State) {
             let mut st = shared.lock().unwrap();
             return set_status(&mut st, generation, HubState::Failed, Some("未保存 token：请在设置中填写 hub 签发的 token".into()));
         };
-        let sessions_state = shared.clone();
-        let status_state = shared.clone();
         log!("hub 客户端启动：{}", endpoint.url());
-        link::run(link::Link {
-            endpoint,
-            token: Secret(token),
-            hello: hello(),
-            sessions: Arc::new(move || sessions_state.lock().unwrap().sessions.values().map(|s| s.info.clone()).collect()),
-            changed,
-            status: Arc::new(move |state, error| set_status(&mut status_state.lock().unwrap(), generation, state, error)),
-        })
-        .await;
+        link::run(make_link(&shared, generation, endpoint, Secret(token), hello(), changed)).await;
     });
     st.hub.task = Some(task.abort_handle());
+}
+
+/// 组装常驻连接：各回调持锁操作 State，generation 不匹配（已被新任务取代）的迟到回调丢弃
+fn make_link(shared: &Shared, generation: u64, endpoint: link::Endpoint, token: Secret, hello: link::Up, changed: Arc<Notify>) -> link::Link {
+    let (sessions_state, status_state, conn_state, down_state) = (shared.clone(), shared.clone(), shared.clone(), shared.clone());
+    link::Link {
+        endpoint,
+        token,
+        hello,
+        sessions: Arc::new(move || sessions_state.lock().unwrap().sessions.values().map(|s| s.info.clone()).collect()),
+        changed,
+        status: Arc::new(move |state, error| set_status(&mut status_state.lock().unwrap(), generation, state, error)),
+        conn: Arc::new(move |tx| {
+            let mut st = conn_state.lock().unwrap();
+            if st.hub.generation == generation {
+                st.hub.tx = tx;
+                release_all(&mut st, None);
+            }
+        }),
+        down: Arc::new(move |msg| {
+            let mut st = down_state.lock().unwrap();
+            if st.hub.generation == generation {
+                on_down(&mut st, msg);
+            }
+        }),
+    }
+}
+
+// ---------------- 远程接管 ----------------
+
+/// 处理 hub 的接管消息：未允许接管时拒绝；input / resize 走与本地 GUI 相同的写入 / resize 代码；未接管的会话忽略
+fn on_down(st: &mut State, msg: link::Down) {
+    let taken = |st: &State, id: u32| st.sessions.get(&id).is_some_and(|s| s.info.taken_over);
+    match msg {
+        link::Down::Attach { session_id: id } => {
+            let reply = if st.config.hub.allow_takeover { session::snapshot(st, id).ok_or("not_found") } else { Err("disabled") };
+            match reply {
+                // 重复 attach 按成功处理，重发快照；attached 先入队，之后的输出（同在锁内判断 taken_over）排在其后
+                Ok((cols, rows, snapshot)) => {
+                    st.hub.up(link::Up::Attached { session_id: id, cols, rows, snapshot });
+                    let s = st.sessions.get_mut(&id).unwrap();
+                    if !std::mem::replace(&mut s.info.taken_over, true) {
+                        log!("hub 开始接管会话 #{id}");
+                        st.push_sessions();
+                    }
+                }
+                Err(reason) => {
+                    log!("拒绝 hub 接管会话 #{id}：{reason}");
+                    st.hub.up(link::Up::AttachDenied { session_id: id, reason: reason.into() });
+                }
+            }
+        }
+        link::Down::Input { session_id: id, data } if taken(st, id) => {
+            if let Ok(bytes) = B64.decode(data) {
+                session::input(st, id, &bytes);
+            }
+        }
+        link::Down::Resize { session_id: id, cols, rows } if taken(st, id) && (1..=1000).contains(&cols) && (1..=1000).contains(&rows) => {
+            session::resize(st, id, cols, rows);
+        }
+        // hub 主动结束的不回 detached
+        link::Down::Detach { session_id: id } if taken(st, id) => {
+            st.sessions.get_mut(&id).unwrap().info.taken_over = false;
+            log!("hub 结束接管会话 #{id}");
+            st.push_sessions();
+        }
+        _ => {}
+    }
+}
+
+/// 结束全部接管：reason 为 Some 时逐个发 detached（关闭了允许接管），None 用于连接断开 / 重建（不发消息）
+pub fn release_all(st: &mut State, reason: Option<&str>) {
+    let ids: Vec<u32> = st.sessions.values_mut().filter_map(|s| std::mem::take(&mut s.info.taken_over).then_some(s.info.id)).collect();
+    if ids.is_empty() {
+        return;
+    }
+    log!("结束 hub 对 {} 个会话的接管（{}）", ids.len(), reason.unwrap_or("连接断开"));
+    if let Some(reason) = reason {
+        for id in ids {
+            st.hub.detached(id, reason);
+        }
+    }
+    st.push_sessions();
+}
+
+/// 本地 GUI 点「收回」：结束该会话的接管，通知 hub（reclaimed）
+pub fn reclaim(st: &mut State, id: u32) {
+    let Some(s) = st.sessions.get_mut(&id).filter(|s| s.info.taken_over) else { return };
+    s.info.taken_over = false;
+    log!("本地收回会话 #{id} 的 hub 接管");
+    st.hub.detached(id, "reclaimed");
+    st.push_sessions();
 }
 
 /// 设置面板“测试连接”（异步任务）：独立连接，握手 → hello → welcome 后立即关闭；结果以 ServerMsg::TestHub 回复
@@ -195,5 +303,135 @@ mod tests {
         assert!(uuid::Uuid::parse_str(&regenerated).is_ok());
         assert_eq!(load_or_create(&path).unwrap(), regenerated);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 远程接管端到端（daemon 侧逻辑在 bin crate 内，tests/ 无法引用，故放在这里）：真实 State + 远程后端的测试会话
+    /// + 常驻连接，对接本地明文 ws 的模拟 hub
+    #[tokio::test]
+    async fn takeover_end_to_end() {
+        use std::{sync::Mutex, time::Duration};
+
+        use futures_util::{SinkExt, StreamExt};
+        use serde_json::{Value, json};
+        use tokio::{net::TcpListener, sync::mpsc::UnboundedReceiver};
+        use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+
+        use crate::ssh::Cmd;
+
+        type Ws = WebSocketStream<tokio::net::TcpStream>;
+        /// 下一条非 sessions 的上行消息
+        async fn recv(ws: &mut Ws) -> Value {
+            loop {
+                let msg = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("等待上行消息超时").unwrap().unwrap();
+                let Message::Text(text) = msg else { continue };
+                let v: Value = serde_json::from_str(&text).unwrap();
+                if v["type"] != "sessions" {
+                    return v;
+                }
+            }
+        }
+        /// 一段时间内没有非 sessions 的上行消息
+        async fn silent(ws: &mut Ws) {
+            assert!(tokio::time::timeout(Duration::from_millis(300), recv(ws)).await.is_err(), "不应再收到接管消息");
+        }
+        async fn send(ws: &mut Ws, v: Value) {
+            ws.send(Message::Text(v.to_string().into())).await.unwrap();
+        }
+        async fn cmd(rx: &mut UnboundedReceiver<Cmd>) -> Cmd {
+            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("等待写入会话超时").unwrap()
+        }
+        async fn wait_until(f: impl Fn() -> bool) {
+            for _ in 0..250 {
+                if f() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("等待条件超时");
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        let (id, mut cmds) = session::test_session(&mut shared.lock().unwrap(), 100, 20);
+        let taken = || shared.lock().unwrap().sessions[&id].info.taken_over;
+        let endpoint = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
+        let hello = link::hello("mid".into(), "PC", "0.0.1");
+        let task = tokio::spawn(link::run(make_link(&shared, 0, endpoint, Secret("t".into()), hello, Arc::new(Notify::new()))));
+        let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
+        assert_eq!(recv(&mut ws).await["proto"], 2);
+        send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "t" })).await;
+
+        // 未允许接管：拒绝
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "attachDenied", "sessionId": id, "reason": "disabled" }));
+        shared.lock().unwrap().config.hub.allow_takeover = true;
+        send(&mut ws, json!({ "type": "attach", "sessionId": 999 })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "attachDenied", "sessionId": 999, "reason": "not_found" }));
+
+        // 接管前的输出不上链路；attach 后先收到含该输出的快照，再收到实时输出
+        assert!(session::on_output(&shared, id, b"before"));
+        silent(&mut ws).await;
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        let attached = recv(&mut ws).await;
+        assert_eq!((attached["type"].as_str(), attached["cols"].as_u64(), attached["rows"].as_u64()), (Some("attached"), Some(100), Some(20)));
+        let snapshot = B64.decode(attached["snapshot"].as_str().unwrap()).unwrap();
+        assert!(String::from_utf8_lossy(&snapshot).contains("before"));
+        assert!(taken());
+        session::on_output(&shared, id, b"hello");
+        assert_eq!(recv(&mut ws).await, json!({ "type": "output", "sessionId": id, "data": B64.encode("hello") }));
+
+        // input 写入会话，resize 生效；越界尺寸忽略
+        send(&mut ws, json!({ "type": "input", "sessionId": id, "data": "bHMK" })).await;
+        assert!(matches!(cmd(&mut cmds).await, Cmd::Data(d) if d == b"ls\n"));
+        send(&mut ws, json!({ "type": "resize", "sessionId": id, "cols": 0, "rows": 30 })).await;
+        send(&mut ws, json!({ "type": "resize", "sessionId": id, "cols": 120, "rows": 30 })).await;
+        assert!(matches!(cmd(&mut cmds).await, Cmd::Resize(120, 30)));
+
+        // hub detach：不回 detached，之后不再推送输出，input 忽略
+        send(&mut ws, json!({ "type": "detach", "sessionId": id })).await;
+        wait_until(|| !taken()).await;
+        session::on_output(&shared, id, b"after");
+        send(&mut ws, json!({ "type": "input", "sessionId": id, "data": "bHMK" })).await;
+        silent(&mut ws).await;
+        assert!(cmds.try_recv().is_err());
+
+        // 重复 attach 按成功处理；本地收回 → reclaimed
+        for _ in 0..2 {
+            send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+            let again = recv(&mut ws).await;
+            assert_eq!((again["type"].as_str(), again["cols"].as_u64()), (Some("attached"), Some(120)));
+        }
+        reclaim(&mut shared.lock().unwrap(), id);
+        assert_eq!(recv(&mut ws).await, json!({ "type": "detached", "sessionId": id, "reason": "reclaimed" }));
+        assert!(!taken());
+
+        // 关闭允许接管 → disabled（与 SetConfig 中的处理相同）
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        assert_eq!(recv(&mut ws).await["type"], "attached");
+        {
+            let mut st = shared.lock().unwrap();
+            st.config.hub.allow_takeover = false;
+            release_all(&mut st, Some("disabled"));
+        }
+        assert_eq!(recv(&mut ws).await, json!({ "type": "detached", "sessionId": id, "reason": "disabled" }));
+
+        // 会话退出 → exited，之后 attach 为 not_found
+        shared.lock().unwrap().config.hub.allow_takeover = true;
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        assert_eq!(recv(&mut ws).await["type"], "attached");
+        session::on_exit(&shared, id);
+        assert_eq!(recv(&mut ws).await, json!({ "type": "detached", "sessionId": id, "reason": "exited" }));
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        assert_eq!(recv(&mut ws).await["reason"], "not_found");
+
+        // hub 断线：清空全部接管
+        let (id2, _cmds2) = session::test_session(&mut shared.lock().unwrap(), 80, 24);
+        send(&mut ws, json!({ "type": "attach", "sessionId": id2 })).await;
+        assert_eq!(recv(&mut ws).await["type"], "attached");
+        drop(ws);
+        wait_until(|| !shared.lock().unwrap().sessions[&id2].info.taken_over).await;
+        assert!(shared.lock().unwrap().hub.tx.is_none());
+        task.abort();
     }
 }

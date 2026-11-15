@@ -1,5 +1,5 @@
-//! daemon ↔ hub 协议 v1 的连接层（见 tether-hub 仓库 docs/protocol.md）：地址解析、分阶段建连（DNS → TCP → TLS → WebSocket 握手）、
-//! hello / welcome、会话全量上报（500 ms 防抖）、心跳超时、指数退避重连与错误分类。
+//! daemon ↔ hub 协议 v2 的连接层（见 tether-hub 仓库 docs/protocol.md）：地址解析、分阶段建连（DNS → TCP → TLS → WebSocket 握手）、
+//! hello / welcome、会话全量上报（500 ms 防抖）、心跳超时、指数退避重连与错误分类；远程接管的消息在这里收发，处理交给 daemon。
 //!
 //! 本文件只依赖外部 crate 与 `proto`，不引用 daemon 的其它模块（集成测试以 `#[path]` 直接引入本文件）；
 //! 调用方需在引入前定义 `log!` 宏。
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    sync::Notify,
+    sync::{Notify, mpsc},
 };
 use tokio_tungstenite::{
     WebSocketStream,
@@ -24,7 +24,7 @@ use tokio_tungstenite::{
 };
 
 /// hub 协议版本
-pub const HUB_PROTO: u32 = 1;
+pub const HUB_PROTO: u32 = 2;
 /// 连接路径固定为 /agent
 const PATH: &str = "/agent";
 /// 建连 + hello / welcome 的总超时（测试连接与常驻连接相同）
@@ -180,6 +180,14 @@ pub enum Up {
         probe: bool,
     },
     Sessions { sessions: Vec<SessionInfo> },
+    /// 接管成功：当前尺寸 + 屏幕快照（base64），之后该会话的输出以 Output 推送
+    Attached { session_id: u32, cols: u16, rows: u16, snapshot: String },
+    /// 拒绝接管：disabled / not_found / probe
+    AttachDenied { session_id: u32, reason: String },
+    /// PTY 原始输出（base64）
+    Output { session_id: u32, data: String },
+    /// 本机结束接管：reclaimed / disabled / exited
+    Detached { session_id: u32, reason: String },
 }
 
 /// hub → daemon；未知 type 忽略
@@ -192,6 +200,11 @@ pub enum Down {
         #[serde(default)]
         message: String,
     },
+    /// 远程接管（见协议第 6 节）；input.data 为 base64
+    Attach { session_id: u32 },
+    Input { session_id: u32, data: String },
+    Resize { session_id: u32, cols: u16, rows: u16 },
+    Detach { session_id: u32 },
     #[serde(other)]
     Unknown,
 }
@@ -409,7 +422,8 @@ pub async fn handshake(ws: &mut Ws, hello: &Up, stage: &Stage) -> Result<String,
                 return Err(Failure::new(Kind::Proto, format!("协议不兼容：hub 使用协议 {proto}，本机为 {HUB_PROTO}")));
             }
             Some(Down::Error { code, message }) => return Err(classify_code(&code, &message)),
-            Some(Down::Unknown) | None => {}
+            // welcome 前的接管消息不合协议，忽略；测试连接收到 welcome 即关闭，不会处理 attach
+            _ => {}
         }
     }
 }
@@ -460,6 +474,10 @@ pub struct Link {
     pub changed: Arc<Notify>,
     /// 状态变化回调
     pub status: Arc<dyn Fn(HubState, Option<String>) + Send + Sync>,
+    /// 连接可用（收到 welcome，附上行发送端，daemon 经它推送接管消息）/ 断开（None，daemon 据此结束全部接管）
+    pub conn: Arc<dyn Fn(Option<mpsc::UnboundedSender<Up>>) + Send + Sync>,
+    /// 接管下行消息（attach / input / resize / detach）交给 daemon 处理
+    pub down: Arc<dyn Fn(Down) + Send + Sync>,
 }
 
 /// 常驻连接主循环：连接 → hello / welcome → 上报；断线按退避重连，致命错误停在 failed 后返回。
@@ -482,7 +500,9 @@ pub async fn run(link: Link) {
                 attempt = 0;
                 last = None;
                 (link.status)(HubState::Connected, None);
-                serve(ws, &link).await
+                let failure = serve(ws, &link).await;
+                (link.conn)(None);
+                failure
             }
             Err(f) => f,
         };
@@ -503,12 +523,15 @@ pub async fn run(link: Link) {
     }
 }
 
-/// 已收到 welcome：立即上报一次全量，之后会话变化防抖上报；60 s 无任何帧判定断线。返回断开原因
+/// 已收到 welcome：立即上报一次全量，之后会话变化防抖上报；转发接管消息；60 s 无任何帧判定断线。返回断开原因。
+/// 接管上行（快照 / 输出）走无界通道：daemon 在 PTY 读线程中持锁推送，不能等待网络
 async fn serve(mut ws: Ws, link: &Link) -> Failure {
     let mut sent = String::new();
     if let Err(f) = report(&mut ws, link, &mut sent).await {
         return f;
     }
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    (link.conn)(Some(tx));
     // hub 的 ping 由 tungstenite 自动回 pong：收到 ping 后排队，下一次 read（本循环始终在等 ws.next()）先写出并 flush
     let idle = tokio::time::sleep(IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -524,8 +547,14 @@ async fn serve(mut ws: Ws, link: &Link) -> Failure {
                         let _ = ws.close(None).await;
                         return f;
                     }
+                    Ok(Some(msg @ (Down::Attach { .. } | Down::Input { .. } | Down::Resize { .. } | Down::Detach { .. }))) => (link.down)(msg),
                     Ok(_) => {}
                     Err(f) => return f,
+                }
+            }
+            Some(msg) = rx.recv() => {
+                if let Err(f) = send_up(&mut ws, &msg).await {
+                    return f;
                 }
             }
             _ = &mut idle => {
@@ -625,12 +654,12 @@ mod tests {
 
     #[test]
     fn up_wire_format() {
-        let probe = Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: true };
+        let probe = Up::Hello { proto: 2, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: true };
         assert_eq!(serde_json::to_value(&probe).unwrap()["probe"], true);
         let hello = hello("9f1c".into(), "DEV-PC", "0.4.0");
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
-            r#"{"type":"hello","proto":1,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0"}"#
+            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0"}"#
         );
         let info = SessionInfo {
             id: 1,
@@ -643,6 +672,7 @@ mod tests {
             host: None,
             host_id: None,
             claude: None,
+            taken_over: false,
         };
         let v = serde_json::to_value(Up::Sessions { sessions: vec![info] }).unwrap();
         assert_eq!(v["type"], "sessions");
@@ -654,7 +684,7 @@ mod tests {
     fn hello_fields_truncated() {
         let long = "名".repeat(300);
         let Up::Hello { machine_name, version, proto, .. } = hello("id".into(), &long, "0.4.0") else { panic!() };
-        assert_eq!((machine_name.chars().count(), version.as_str(), proto), (256, "0.4.0", 1));
+        assert_eq!((machine_name.chars().count(), version.as_str(), proto), (256, "0.4.0", 2));
         // 非 BMP 字符占 2 个 UTF-16 码元，不切断
         assert_eq!(truncate_chars(&"😀".repeat(200), 256).chars().count(), 128);
         assert_eq!(truncate_chars("DEV-PC", 256), "DEV-PC");
@@ -664,12 +694,24 @@ mod tests {
 
     #[test]
     fn down_wire_format() {
-        let w: Down = serde_json::from_str(r#"{"type":"welcome","proto":1,"hubVersion":"0.1.0"}"#).unwrap();
-        assert_eq!(w, Down::Welcome { proto: 1, hub_version: "0.1.0".into() });
+        let w: Down = serde_json::from_str(r#"{"type":"welcome","proto":2,"hubVersion":"0.1.0"}"#).unwrap();
+        assert_eq!(w, Down::Welcome { proto: 2, hub_version: "0.1.0".into() });
         let e: Down = serde_json::from_str(r#"{"type":"error","code":"proto_unsupported","message":"hub 仅支持协议 1"}"#).unwrap();
         assert_eq!(e, Down::Error { code: "proto_unsupported".into(), message: "hub 仅支持协议 1".into() });
         let u: Down = serde_json::from_str(r#"{"type":"takeover","session":1}"#).unwrap();
         assert_eq!(u, Down::Unknown);
+        let a: Down = serde_json::from_str(r#"{"type":"attach","sessionId":3}"#).unwrap();
+        assert_eq!(a, Down::Attach { session_id: 3 });
+        let i: Down = serde_json::from_str(r#"{"type":"input","sessionId":3,"data":"bHMK"}"#).unwrap();
+        assert_eq!(i, Down::Input { session_id: 3, data: "bHMK".into() });
+        let r: Down = serde_json::from_str(r#"{"type":"resize","sessionId":3,"cols":120,"rows":30}"#).unwrap();
+        assert_eq!(r, Down::Resize { session_id: 3, cols: 120, rows: 30 });
+        let d: Down = serde_json::from_str(r#"{"type":"detach","sessionId":3}"#).unwrap();
+        assert_eq!(d, Down::Detach { session_id: 3 });
+        let up = Up::Attached { session_id: 3, cols: 120, rows: 30, snapshot: "eA==".into() };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"attached","sessionId":3,"cols":120,"rows":30,"snapshot":"eA=="}"#);
+        let up = Up::AttachDenied { session_id: 3, reason: "not_found".into() };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"attachDenied","sessionId":3,"reason":"not_found"}"#);
     }
 
     #[test]

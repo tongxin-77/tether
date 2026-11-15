@@ -53,6 +53,8 @@ interface SessionInfo {
   /** 远程会话所用主机 id */
   hostId?: string;
   claude?: ClaudeState;
+  /** 正被 hub 远程接管（未接管时不带该字段） */
+  takenOver?: boolean;
 }
 
 interface Host {
@@ -164,6 +166,7 @@ interface View {
   hostEl: HTMLSpanElement;
   cwdEl: HTMLSpanElement;
   claudeEl: HTMLSpanElement;
+  takenEl: HTMLSpanElement;
 }
 
 const views = new Map<number, View>();
@@ -341,6 +344,11 @@ $("pwsh-dismiss").addEventListener("click", () => {
     localStorage.setItem(PWSH_NOTICE_KEY, "1");
   } catch {}
   renderPwshNotice();
+});
+
+// hub 接管提示条：收回当前会话的接管（daemon 通知 hub 后推送 sessions，提示条随之隐藏）
+$("hub-reclaim").addEventListener("click", () => {
+  if (activeId !== undefined) send({ type: "hubReclaim", id: activeId });
 });
 
 // Claude Code 集成：由 daemon 修改 settings.json（写前备份），写入前确认
@@ -650,9 +658,9 @@ function renderPwshNotice() {
   syncBannerSpace();
 }
 
-/** 终端区顶部提示条（PowerShell 7 安装 / 后台旧版本）任一显示时内容下移 */
+/** 终端区顶部提示条（PowerShell 7 安装 / 后台旧版本 / hub 接管中）任一显示时内容下移 */
 function syncBannerSpace() {
-  terminals.classList.toggle("banner", !$("pwsh-banner").hidden || daemonBannerShown());
+  terminals.classList.toggle("banner", !$("pwsh-banner").hidden || daemonBannerShown() || !$("hub-banner").hidden);
   // .term 下移不改变 #terminals 尺寸，ResizeObserver 不会触发，手动 fit
   activeView()?.fit.fit();
 }
@@ -879,6 +887,7 @@ function syncSessions(sessions: SessionInfo[]) {
     v.cwdEl.textContent = info.cwd;
     v.cwdEl.title = info.cwd;
     renderClaude(v.claudeEl, info.claude);
+    v.takenEl.hidden = !info.takenOver;
     // 状态写到 li 的 class 上，由 CSS 决定状态点颜色
     v.item.classList.remove("running", "waiting", "exited");
     v.item.classList.add(info.status);
@@ -907,6 +916,13 @@ function renderCardHead() {
   if (s) cwd.append(s.host ? `${s.host}:${s.cwd}` : s.cwd);
   cwd.title = s?.cwd ?? "";
   renderClaude($("ch-claude"), s?.claude);
+  // 当前会话被 hub 接管时显示提示条与「收回」
+  const taken = !!s?.takenOver;
+  const banner = $("hub-banner");
+  if (banner.hidden === taken) {
+    banner.hidden = !taken;
+    syncBannerSpace();
+  }
 }
 
 /** Claude 状态胶囊：圆点 + 状态文字（思考中圆点呼吸），等待确认时悬停显示消息；无状态时隐藏 */
@@ -1110,11 +1126,12 @@ function addView(info: SessionInfo): View {
   });
 
   const item = document.createElement("li");
-  item.innerHTML = `<span class="ico">${icon(info.host ? "server" : "terminal")}<span class="dot"></span></span><div class="row"><span class="name"></span><span class="close" title="关闭">${icon("x")}</span></div><div class="sub"><span class="host" hidden></span><span class="cc" hidden></span><span class="cwd"></span></div>`;
+  item.innerHTML = `<span class="ico">${icon(info.host ? "server" : "terminal")}<span class="dot"></span></span><div class="row"><span class="name"></span><span class="close" title="关闭">${icon("x")}</span></div><div class="sub"><span class="host" hidden></span><span class="cc" hidden></span><span class="tag taken" hidden>hub 接管中</span><span class="cwd"></span></div>`;
   const nameEl = item.querySelector(".name") as HTMLSpanElement;
   const hostEl = item.querySelector(".host") as HTMLSpanElement;
   const cwdEl = item.querySelector(".cwd") as HTMLSpanElement;
   const claudeEl = item.querySelector(".cc") as HTMLSpanElement;
+  const takenEl = item.querySelector(".taken") as HTMLSpanElement;
   item.addEventListener("click", () => activate(id));
   nameEl.addEventListener("dblclick", () => rename(id));
   // 右键：从该会话的启动目录新建（daemon 不跟踪 cd）；远程会话用同一主机
@@ -1158,7 +1175,7 @@ function addView(info: SessionInfo): View {
   });
   list.appendChild(item);
 
-  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl };
+  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl };
   views.set(id, v);
   return v;
 }

@@ -98,7 +98,8 @@ Tether 是面向个人的轻量 Windows 多会话终端，最初为运行 Claude
 | F-6.3a | 主机编辑框保存密码：认证为密码时显示密码输入框（`type=password`、`autocomplete=off`），状态“密码：已保存 / 未保存”，留空不改、“清除已保存密码”删除；改动随设置“保存”提交（setConfig 之后发 `setHostPassword`），取消丢弃；密码不回传 GUI、对话框关闭即清空输入框 | 保存后凭据管理器出现 `user@host:port` 条目，config.json 中无密码 | 已实现 |
 | F-6.4 | Claude Code 集成：显示状态（未启用 / 已启用 / 需要更新，后者“启用”按钮显示为“更新”）与 settings.json 路径，“启用 / 移除”需确认后由 daemon 执行 | 未点击启用前绝不改动 `~/.claude/settings.json` | 已实现 |
 | F-6.5 | 设置保存 / 取消（Esc）语义：未保存的草稿不生效 | 取消后外观与配置恢复原样 | 已实现 |
-| F-6.7 | 管理服务器分组：启用开关、服务器地址（保存 / 测试前前端校验，规则同 daemon）、token（`type=password`，已保存时留空不改，“清除 token”；随设置“保存”在 setConfig 之后发 `setHubToken`，不回传 GUI、关闭对话框即清空）、「允许明文连接（仅限局域网调试）」、「测试连接」与结果条、当前连接状态（daemon 推送）；旧 daemon（Config 无 `hubTokenSaved`）时分组置灰提示重启后台，测试 15 s 无回复同样提示 | 填写地址并测试得到明确的成功或失败原因；关闭开关保存后 daemon 断开 hub | 已实现未实测 |
+| F-6.7 | 管理服务器分组：启用开关、服务器地址（保存 / 测试前前端校验，规则同 daemon）、token（`type=password`，已保存时留空不改，“清除 token”；随设置“保存”在 setConfig 之后发 `setHubToken`，不回传 GUI、关闭对话框即清空）、「允许明文连接（仅限局域网调试）」、「允许 hub 远程接管本机会话」（`hub.allowTakeover`，附风险说明）、「测试连接」与结果条、当前连接状态（daemon 推送）；旧 daemon（Config 无 `hubTokenSaved`）时分组置灰提示重启后台，测试 15 s 无回复同样提示 | 填写地址并测试得到明确的成功或失败原因；关闭开关保存后 daemon 断开 hub | 已实现未实测 |
+| F-6.8 | hub 接管提示：`SessionInfo.takenOver` 为真时侧栏该会话显示「hub 接管中」标签；当前会话被接管时终端区上方显示提示条（warn 样式）与「收回」按钮，点后发 `hubReclaim`，daemon 推送 Sessions 后标签与提示条消失 | 收回后 hub 输入无效；两套主题下样式正常 | 已实现未实测 |
 | F-6.6 | 通知：“提示音”复选框（`config.sound`，随设置保存）与“试听”按钮（发 `playSound`，不受复选框影响） | 关闭并保存后系统通知无声；试听立即播放 | 已实现 |
 
 ### 3.7 外观
@@ -146,7 +147,7 @@ Tether 是面向个人的轻量 Windows 多会话终端，最初为运行 Claude
 - **GUI ↔ daemon**：命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），换行分隔 JSON，终端数据 base64。消息定义见 [daemon §4](daemon-requirements.md#4-接口gui--daemon-管道协议)。
 - **daemon 同时只服务一个 GUI 连接**：新 GUI 连接顶替旧连接（单实例保证正常情况下只有一个）。
 - **hub 连接**：设置中的「管理服务器」分组只编辑设置与显示状态，连接由 daemon 发起，见 [daemon §3.7](daemon-requirements.md#37-hub-客户端第二阶段)。
-- **hub 接管提示**（计划中）：会话被 hub 接管时 GUI 需显示“被接管中”标识并提供“收回控制”，见 [hub §3.3](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md#33-远程接管)。
+- **hub 接管提示**：见 F-6.8 与 [hub §3.3](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md#33-远程接管)。
 
 ## 6. 待定项
 
@@ -154,5 +155,5 @@ Tether 是面向个人的轻量 Windows 多会话终端，最初为运行 Claude
 2. 传输不支持取消，大文件传输期间无法中止。
 3. 远程打开的文件编辑后不回传，是否需要“监视并上传”。
 4. `claude` 补全为静态列表（对应 Claude Code 2.1.322），版本升级需手动同步。
-5. hub 接管相关 UI（被接管标识、收回控制、禁止接管开关）待 hub 设计确定。
+5. 按会话禁止接管（hub H-3.4 待定项）未实现，目前只有按机器的开关。
 6. 标为“已实现未实测”的条目需在真实环境补测。

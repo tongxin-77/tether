@@ -305,31 +305,8 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 g.attached.insert(id);
             }
         }
-        ClientMsg::Input { id, data } => {
-            let Some(s) = st.sessions.get_mut(&id) else { return true };
-            s.backend.write(data.as_bytes());
-            s.info.last_activity_at = now_ms();
-            let mut changed = s.info.status == Status::Waiting;
-            if changed {
-                s.info.status = Status::Running;
-            }
-            // 等待确认时用户作答（按键）后 Claude 继续处理；主代理已结束、只剩后台子代理时回到后台运行中
-            if let Some(c) = s.info.claude.as_mut().filter(|c| c.state == ClaudeStatus::Waiting) {
-                *c = match s.agents.bg {
-                    0 => claude_state(ClaudeStatus::Thinking, None, None),
-                    n => claude_state(ClaudeStatus::Background, None, Some(n)),
-                };
-                changed = true;
-            }
-            if changed {
-                st.push_sessions();
-            }
-        }
-        ClientMsg::Resize { id, cols, rows } => {
-            let Some(s) = st.sessions.get_mut(&id) else { return true };
-            s.backend.resize(cols, rows);
-            s.parser.set_size(nz(rows), nz(cols));
-        }
+        ClientMsg::Input { id, data } => input(st, id, data.as_bytes()),
+        ClientMsg::Resize { id, cols, rows } => resize(st, id, cols, rows),
         ClientMsg::Rename { id, name } => {
             let Some(s) = st.sessions.get_mut(&id) else { return true };
             s.info.name = name;
@@ -345,6 +322,9 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             if let Some(s) = &removed {
                 recent::push(&mut st.recent, &s.info);
                 st.push_recent();
+                if s.info.taken_over {
+                    st.hub.detached(id, "exited");
+                }
             }
             st.push_sessions();
             st.save_sessions();
@@ -370,9 +350,13 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                     // 主机账户变化 / 删除时同步凭据管理器中保存的密码
                     let old = config::all_hosts_with(&st.config, ssh.clone());
                     ssh::migrate_credentials(&ssh::Keyring, &old, &config::all_hosts_with(&config, ssh));
-                    // hub 设置变化，或已停在 failed（401 / 被替换等）时，保存即按新设置重连
-                    let hub_changed = st.config.hub != config.hub || matches!(st.hub.status_msg(), ServerMsg::HubStatus { state: proto::HubState::Failed, .. });
+                    // hub 连接设置变化，或已停在 failed（401 / 被替换等）时，保存即按新设置重连；只改允许接管不重连
+                    let link = |h: &proto::HubConfig| (h.enabled, h.address.clone(), h.allow_insecure);
+                    let hub_changed = link(&st.config.hub) != link(&config.hub) || matches!(st.hub.status_msg(), ServerMsg::HubStatus { state: proto::HubState::Failed, .. });
                     st.config = config;
+                    if !st.config.hub.allow_takeover {
+                        hub::release_all(st, Some("disabled"));
+                    }
                     if hub_changed {
                         hub::restart(state, st);
                     }
@@ -489,6 +473,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             }
             st.send_config();
         }
+        ClientMsg::HubReclaim { id } => hub::reclaim(st, id),
         ClientMsg::TestHub { req_id, address, allow_insecure, token, use_saved } => {
             let token = match token {
                 Some(t) if !t.0.trim().is_empty() => Some(t.0.trim().to_string()),
@@ -505,6 +490,42 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
         }
     }
     true
+}
+
+/// 写入会话（本地 GUI 与 hub 接管共用）：更新活动时间，等待中的状态回到运行中
+pub fn input(st: &mut State, id: u32, data: &[u8]) {
+    let Some(s) = st.sessions.get_mut(&id) else { return };
+    s.backend.write(data);
+    s.info.last_activity_at = now_ms();
+    let mut changed = s.info.status == Status::Waiting;
+    if changed {
+        s.info.status = Status::Running;
+    }
+    // 等待确认时用户作答（按键）后 Claude 继续处理；主代理已结束、只剩后台子代理时回到后台运行中
+    if let Some(c) = s.info.claude.as_mut().filter(|c| c.state == ClaudeStatus::Waiting) {
+        *c = match s.agents.bg {
+            0 => claude_state(ClaudeStatus::Thinking, None, None),
+            n => claude_state(ClaudeStatus::Background, None, Some(n)),
+        };
+        changed = true;
+    }
+    if changed {
+        st.push_sessions();
+    }
+}
+
+/// 调整会话尺寸（本地 GUI 与 hub 接管共用，以最后一次为准）
+pub fn resize(st: &mut State, id: u32, cols: u16, rows: u16) {
+    let Some(s) = st.sessions.get_mut(&id) else { return };
+    s.backend.resize(cols, rows);
+    s.parser.set_size(nz(rows), nz(cols));
+}
+
+/// hub 接管用：当前尺寸 (cols, rows) 与屏幕快照（base64，同 GUI Attach）；会话不存在或已退出时为 None
+pub fn snapshot(st: &State, id: u32) -> Option<(u16, u16, String)> {
+    let s = st.sessions.get(&id).filter(|s| s.info.status != Status::Exited)?;
+    let (rows, cols) = s.parser.screen().size();
+    Some((cols.get(), rows.get(), B64.encode(s.parser.screen().state_formatted())))
 }
 
 /// 按会话取文件后端，交给异步任务执行（不持锁 await）
@@ -572,7 +593,7 @@ fn spawn(state: &Shared, shell: &str, cwd: String, cols: u16, rows: u16) -> Resu
 /// 构造新会话的元信息，id 由 register 分配
 pub fn new_info(name: String, cwd: String, command: String, host: Option<String>) -> SessionInfo {
     let now = now_ms();
-    SessionInfo { id: 0, name, cwd, command, status: Status::Running, started_at: now, last_activity_at: now, host, host_id: None, claude: None }
+    SessionInfo { id: 0, name, cwd, command, status: Status::Running, started_at: now, last_activity_at: now, host, host_id: None, claude: None, taken_over: false }
 }
 
 /// 分配 id 并登记会话
@@ -591,22 +612,36 @@ fn alloc_id(state: &Shared) -> u32 {
 /// 以预先分配的 id 登记会话
 fn register_with_id(state: &Shared, id: u32, mut info: SessionInfo, backend: Backend, fs: fs::Backend, cols: u16, rows: u16) {
     info.id = id;
-    let parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), 0, Signals::default());
-    let session = Session {
+    let mut st = state.lock().unwrap();
+    st.sessions.insert(id, new_session(info, backend, fs, cols, rows));
+    st.save_sessions();
+}
+
+fn new_session(info: SessionInfo, backend: Backend, fs: fs::Backend, cols: u16, rows: u16) -> Session {
+    Session {
         info,
         backend,
         fs,
-        parser,
+        parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), 0, Signals::default()),
         pending_msg: None,
         timer_armed: false,
         muted_until: Instant::now(),
         hook_at: None,
         agents: Agents::default(),
         resume: None,
-    };
-    let mut st = state.lock().unwrap();
-    st.sessions.insert(id, session);
-    st.save_sessions();
+    }
+}
+
+/// 测试用：登记一个远程后端的会话（命令发到返回的接收端），不写 sessions.json
+#[cfg(test)]
+pub fn test_session(st: &mut State, cols: u16, rows: u16) -> (u32, tokio::sync::mpsc::UnboundedReceiver<ssh::Cmd>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    st.next_id += 1;
+    let id = st.next_id;
+    let mut info = new_info("test".into(), "C:\\".into(), "pwsh".into(), None);
+    info.id = id;
+    st.sessions.insert(id, new_session(info, Backend::Remote(tx), fs::Backend::Local, cols, rows));
+    (id, rx)
 }
 
 /// daemon 启动时恢复 sessions.json 中的会话：本地会话立即重建，有 Claude 对话的在其目录启动并在 shell 就绪后
@@ -671,8 +706,9 @@ pub fn on_output(state: &Shared, id: u32, data: &[u8]) -> bool {
     s.info.last_activity_at = now_ms();
     let sig = std::mem::take(s.parser.callbacks_mut());
     let gui_attached = st.gui.as_ref().is_some_and(|g| g.attached.contains(&id));
-    // 有 GUI 接入时由 xterm 回复，避免重复应答
-    if let (Some((row, col)), false) = (sig.cpr, gui_attached) {
+    let taken = s.info.taken_over;
+    // 有 GUI 接入或 hub 接管中时由对端 xterm 回复，避免重复应答
+    if let (Some((row, col)), false) = (sig.cpr, gui_attached || taken) {
         // 先格式化成完整字节串再一次写入：write! 会拆成多次小写入，ConPTY 收到碎片序列不会识别
         s.backend.write(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
     }
@@ -683,6 +719,9 @@ pub fn on_output(state: &Shared, id: u32, data: &[u8]) -> bool {
         if g.attached.contains(&id) {
             g.send(&ServerMsg::Output { id, data: B64.encode(data) });
         }
+    }
+    if taken {
+        st.hub.output(id, data);
     }
     true
 }
@@ -696,6 +735,9 @@ pub fn on_exit(state: &Shared, id: u32) {
             s.info.status = Status::Exited;
             s.info.claude = None;
             s.agents = Agents::default();
+            if std::mem::take(&mut s.info.taken_over) {
+                st.hub.detached(id, "exited");
+            }
             st.push_sessions();
         }
     }

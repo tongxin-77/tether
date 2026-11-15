@@ -46,6 +46,9 @@ pub struct SessionInfo {
     /// 会话中 Claude Code 的状态（由 Claude hooks 上报），未运行 / 未启用集成时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude: Option<ClaudeState>,
+    /// 正被 hub 远程接管（GUI 据此显示标识与「收回」按钮）；未接管时不写出
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub taken_over: bool,
 }
 
 /// Claude Code 在会话中的状态
@@ -125,6 +128,8 @@ pub struct HubConfig {
     pub address: String,
     /// 允许 `ws://` 明文连接（仅限局域网调试）
     pub allow_insecure: bool,
+    /// 允许 hub 远程接管本机会话（查看并输入）；默认关闭，关闭时一律拒绝接管
+    pub allow_takeover: bool,
 }
 
 /// daemon 与 hub 的连接状态
@@ -483,6 +488,8 @@ pub enum ClientMsg {
     /// 设置（Some）/ 清除（None）hub token：存入 Windows 凭据管理器，不进 config.json；hub 已启用时按新 token 重连；
     /// daemon 回 Config（其中 hubTokenSaved 反映结果）
     SetHubToken { token: Option<Secret> },
+    /// 收回 hub 对该会话的接管：daemon 向 hub 发 detached（reclaimed）并推送 Sessions；未被接管时忽略
+    HubReclaim { id: u32 },
     /// 设置面板“测试连接”：用面板当前填写的地址 / 明文开关 / token（未保存）新建一条独立连接，握手 → hello → 等 welcome
     /// 后立即关闭，不影响常驻连接。token 为 None 且 use_saved 时用凭据管理器中已保存的 token。
     /// daemon 以同一 req_id 回 TestHub（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
@@ -657,9 +664,10 @@ mod tests {
         assert_eq!(old.hub, super::HubConfig::default());
         assert!(!old.hub.enabled);
         let v = serde_json::to_value(super::Config::default()).unwrap();
-        assert_eq!(v["hub"], serde_json::json!({ "enabled": false, "address": "", "allowInsecure": false }));
+        assert_eq!(v["hub"], serde_json::json!({ "enabled": false, "address": "", "allowInsecure": false, "allowTakeover": false }));
         let partial: super::Config = serde_json::from_str(r#"{"hub":{"enabled":true,"address":"h:1"}}"#).unwrap();
         assert_eq!((partial.hub.enabled, partial.hub.address.as_str(), partial.hub.allow_insecure), (true, "h:1", false));
+        assert!(!partial.hub.allow_takeover);
     }
 
     #[test]
@@ -686,6 +694,9 @@ mod tests {
         // 旧 daemon 的 Config 没有 hubTokenSaved
         let cfg: super::ServerMsg = serde_json::from_str(r#"{"type":"config","config":{},"shells":[],"hosts":[],"sshHosts":[]}"#).unwrap();
         assert!(matches!(cfg, super::ServerMsg::Config { hub_token_saved: false, .. }));
+
+        let reclaim: super::ClientMsg = serde_json::from_str(r#"{"type":"hubReclaim","id":3}"#).unwrap();
+        assert!(matches!(reclaim, super::ClientMsg::HubReclaim { id: 3 }));
     }
 
     #[test]

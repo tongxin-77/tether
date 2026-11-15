@@ -108,22 +108,22 @@
 
 | 编号 | 需求 | 验收标准 | 状态 |
 |------|------|----------|------|
-| D-7.1 | 主动出站 WSS 连接 hub（协议 v1，路径 `/agent`，握手头 `Authorization: Bearer <token>`），token 存凭据管理器；断线按 1 s、2 s … 60 s ±20% 退避重连，收到 welcome 后归零；401 / `proto_unsupported` / `replaced` 停在 failed 不重连；60 s 未收到任何帧判定断线 | hub 重启后客户端自动恢复；客户端无入站端口 | 已实现未实测 |
+| D-7.1 | 主动出站 WSS 连接 hub（协议 v2，路径 `/agent`，握手头 `Authorization: Bearer <token>`），token 存凭据管理器；断线按 1 s、2 s … 60 s ±20% 退避重连，收到 welcome 后归零；401 / `proto_unsupported` / `replaced` 停在 failed 不重连；60 s 未收到任何帧判定断线 | hub 重启后客户端自动恢复；客户端无入站端口 | 已实现未实测 |
 | D-7.2 | 上报会话列表与元信息（`sessions` 全量，复用 `SessionInfo`），默认不传终端内容；welcome 后立即上报，之后会话列表推送（与 GUI 侧栏同一时机）时 500 ms 防抖、内容未变不发 | hub 侧只见元信息；网络流量随会话变化而非输出量 | 已实现未实测 |
-| D-7.3 | 接管：hub 请求接管时先发 vt100 快照，再流式推送输出，并接受 hub 的输入 / resize；本地 GUI 可收回控制 | 接管期间本地 GUI 显示被接管标识；收回后 hub 只读或断开 | 计划中 |
-| D-7.4 | 本地开关可禁止接管（按机器；按会话为待定项） | 开关关闭时 hub 接管请求被拒绝 | 计划中 |
-| D-7.5 | hub 可选、默认关闭：设置存 `config.json` 的 `hub`（`enabled` / `address` / `allowInsecure`），连接在独立异步任务中，未启用 / 未配置 / 失败时 daemon 其它行为不变、不阻塞启动；设置或 token 变化时重建连接；状态以 `HubStatus` 推给 GUI | 不配置 hub 时行为与此前一致；运行中关停 hub 不影响本地会话、SSH、文件树 | 已实现未实测 |
+| D-7.3 | 接管（协议第 6 节）：hub `attach` 后回 `attached`（当前尺寸 + vt100 `state_formatted()` 快照），之后该会话每块输出以 `output` 推送；hub 的 `input`（base64）/ `resize`（1–1000）走与本地 GUI 相同的写入 / resize 代码；hub `detach` 后停止推送（不回消息）；会话不存在或已退出回 `attachDenied not_found`，重复 attach 重发快照；会话退出 / 关闭发 `detached exited`；GUI `HubReclaim` 发 `detached reclaimed`；hub 断线或连接重建时清空全部接管。接管状态记在 `SessionInfo.takenOver`，随 Sessions 推给 GUI（也随上报到 hub）。接管中的会话 CPR 由对端 xterm 回复，daemon 不代答 | 接管前链路无终端内容；接管期间本地 GUI 显示标识，收回后 hub 输入无效 | 已实现未实测 |
+| D-7.4 | 本地开关 `hub.allowTakeover`（按机器，默认关闭）：关闭时 attach 一律回 `attachDenied disabled`；保存时关闭则对全部接管发 `detached disabled`；只改该项不重连 | 开关关闭时 hub 接管请求被拒绝 | 已实现未实测 |
+| D-7.5 | hub 可选、默认关闭：设置存 `config.json` 的 `hub`（`enabled` / `address` / `allowInsecure` / `allowTakeover`），连接在独立异步任务中，未启用 / 未配置 / 失败时 daemon 其它行为不变、不阻塞启动；设置或 token 变化时重建连接；状态以 `HubStatus` 推给 GUI | 不配置 hub 时行为与此前一致；运行中关停 hub 不影响本地会话、SSH、文件树 | 已实现未实测 |
 | D-7.6 | 测试连接 `TestHub`：用未保存的地址 / token 新建独立连接，DNS → TCP → TLS → 握手 → hello（`probe: true`，hub 不登记、不替换常驻连接）/ welcome（总限时 10 s）后关闭，按阶段报错，成功回耗时与 hubVersion | 各类失败给出明确阶段与原因 | 已实现未实测 |
 | D-7.7 | machine-id：首次需要时生成 UUID v4 存 `%APPDATA%\tether\machine-id`（dev 为 `tether-dev`），之后不变（空或超过 64 字符时重新生成）；machineName 取 `COMPUTERNAME`，截断到 256 字符 | 重启 daemon 后 hub 中仍是同一台机器 | 已实现未实测 |
 
-实现见 `daemon/src/hub.rs`（与 State / 配置 / 凭据管理器的衔接）与 `daemon/src/hub/link.rs`（协议、建连、退避与错误分类，不依赖 daemon 其它模块，集成测试 `daemon/tests/hub.rs` 用本地 mock hub 直接测试）。WebSocket 用 tokio-tungstenite（只启用握手 / 帧编解码），TLS 用 rustls + ring provider（不引入 aws-lc-rs），根证书取 Windows 证书库（rustls-native-certs，企业自签 CA 导入系统即可用）。
+实现见 `daemon/src/hub.rs`（与 State / 配置 / 凭据管理器的衔接）与 `daemon/src/hub/link.rs`（协议、建连、退避与错误分类，不依赖 daemon 其它模块，集成测试 `daemon/tests/hub.rs` 用本地 mock hub 直接测试；接管的 daemon 侧逻辑由 `hub.rs` 中的单元测试端到端覆盖）。接管上行（快照 / 输出）经无界通道交给连接任务：PTY 读线程持锁推送，不能等待网络；hub 长时间不读时内存随积压增长（与 GUI 管道相同的取舍）。WebSocket 用 tokio-tungstenite（只启用握手 / 帧编解码），TLS 用 rustls + ring provider（不引入 aws-lc-rs），根证书取 Windows 证书库（rustls-native-certs，企业自签 CA 导入系统即可用）。
 
 协议与安全细节见 [tether-hub 需求文档](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md)。
 
 ## 4. 接口：GUI ↔ daemon 管道协议
 
 - 传输：本机命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），每行一条 JSON，`type` 字段区分消息，终端数据 base64。类型定义在 `proto/src/lib.rs`，GUI（Rust 侧透传 + TS 类型）与 daemon 共用。
-- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
+- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
 - **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsResult、Transfer、Recent、ClaudeHooks、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
 - 文件类请求以 `reqId` 关联回复；Prompt 以 `reqId` 关联 PromptReply，`value=null` 表示取消。
 - 版本策略：GUI 与 daemon 同包发布，但更新时只替换 GUI、旧 daemon 继续运行，因此新 GUI 须兼容上一版 daemon（新增消息旧 daemon 会记日志后忽略）；连接时以 Hello 交换版本（`proto::PROTO_VERSION`，0.1.0 视为 0），不一致时提示重启后台。

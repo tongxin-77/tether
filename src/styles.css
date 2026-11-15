@@ -195,11 +195,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .fs-btn svg.i { width: 15px; height: 15px; }
 
 /* 胶囊按钮：主（焦糖实心）/ 次（软垫底） */
-.pill-primary, #empty-new, #pwsh-install, #daemon-restart, #cc-enable, dialog .actions button:first-child {
+.pill-primary, #empty-new, #pwsh-install, #daemon-restart, #hub-reclaim, #cc-enable, dialog .actions button:first-child {
   color: var(--on-accent);
   background: var(--accent);
 }
-.pill-primary:hover, #empty-new:hover, #pwsh-install:hover, #daemon-restart:hover, #cc-enable:hover, dialog .actions button:first-child:hover { color: var(--on-accent); background: var(--accent-strong); }
+.pill-primary:hover, #empty-new:hover, #pwsh-install:hover, #daemon-restart:hover, #hub-reclaim:hover, #cc-enable:hover, dialog .actions button:first-child:hover { color: var(--on-accent); background: var(--accent-strong); }
 
 /* ================= 左侧栏 ================= */
 #sidebar { position: relative; width: 252px; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; min-height: 0; padding: 0 0 0 2px; }
@@ -316,6 +316,7 @@ li:hover .close, li.active .close { visibility: visible; }
 /* 标签：主机名（SSH）等 */
 .tag, .host { flex-shrink: 0; padding: 1px 7px; font-size: 10.5px; font-weight: 700; white-space: nowrap; color: var(--text-2); background: var(--surface-hover); border-radius: 99px; }
 #session-list .host, #recent-list .tag { color: var(--special); background: var(--special-soft); }
+#session-list .taken { color: var(--warning-text); background: var(--warning-soft); }
 
 /* Claude 状态胶囊（侧栏 / 卡片头）：圆点 + 文字，思考中圆点呼吸 */
 .cc { display: inline-flex; align-items: center; flex-shrink: 0; gap: 5px; padding: 1px 8px 1px 6px; font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--text-2); background: var(--surface-hover); border-radius: 99px; }
@@ -720,6 +721,7 @@ dialog #h-test { margin-right: auto; }
 #hub-fields.off { opacity: 0.55; }
 #hub-fields input:not([type="checkbox"]) { font-family: var(--f-mono); font-weight: 500; }
 #hub-fields .check { margin-top: 0; }
+#hub-fields .hint { margin: -6px 0 0; }
 #hub-token-state { display: flex; align-items: center; gap: 8px; margin-top: -4px; }
 #hub-token-status { flex: 1; font-size: 12.5px; font-weight: 600; color: var(--text-3); }
 #hub-token-status.on { color: var(--status-done); }

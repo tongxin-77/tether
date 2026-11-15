@@ -1,4 +1,4 @@
-// 设置面板「管理服务器」分组：启用开关、服务器地址、token（存 Windows 凭据管理器，不回传 GUI）、允许明文、测试连接与当前连接状态。
+// 设置面板「管理服务器」分组：启用开关、服务器地址、token（存 Windows 凭据管理器，不回传 GUI）、允许明文、允许远程接管、测试连接与当前连接状态。
 // 连接由 daemon 发起；这里只编辑设置草稿（随设置“保存”提交）并显示 daemon 推送的状态。
 
 // 与 proto crate 的 HubConfig / HubState 保持一致
@@ -6,12 +6,15 @@ export interface HubConfig {
   enabled: boolean;
   address: string;
   allowInsecure: boolean;
+  /** 允许 hub 远程接管本机会话（旧 daemon 无此字段） */
+  allowTakeover?: boolean;
 }
 
 type HubState = "disabled" | "connecting" | "connected" | "failed";
 
 export type HubClientMsg =
   | { type: "setHubToken"; token: string | null }
+  | { type: "hubReclaim"; id: number }
   | { type: "testHub"; reqId: number; address: string; allowInsecure: boolean; token: string | null; useSaved: boolean };
 export type HubServerMsg =
   | { type: "hubStatus"; state: HubState; error: string | null }
@@ -35,6 +38,7 @@ const enabledCheck = $<HTMLInputElement>("hub-enabled");
 const addressInput = $<HTMLInputElement>("hub-address");
 const tokenInput = $<HTMLInputElement>("hub-token");
 const insecureCheck = $<HTMLInputElement>("hub-insecure");
+const takeoverCheck = $<HTMLInputElement>("hub-takeover");
 const testBtn = $<HTMLButtonElement>("hub-test");
 
 let deps: Deps;
@@ -108,9 +112,10 @@ export function fillHub(cfg: HubConfig | undefined, saved: boolean | undefined) 
   enabledCheck.checked = !!cfg?.enabled;
   addressInput.value = cfg?.address ?? "";
   insecureCheck.checked = !!cfg?.allowInsecure;
+  takeoverCheck.checked = !!cfg?.allowTakeover;
   clearToken = false;
   const supported = saved !== undefined;
-  for (const el of [enabledCheck, addressInput, tokenInput, insecureCheck, testBtn]) el.disabled = !supported;
+  for (const el of [enabledCheck, addressInput, tokenInput, insecureCheck, takeoverCheck, testBtn]) el.disabled = !supported;
   $("hub-fields").classList.toggle("off", !supported);
   if (!supported) renderStatus("disabled", "后台版本较旧，不支持管理服务器；重启后台后可用");
   $("hub-test-result").hidden = true;
@@ -120,7 +125,12 @@ export function fillHub(cfg: HubConfig | undefined, saved: boolean | undefined) 
 
 /** 设置面板中编辑中的 hub 设置（随 setConfig 提交） */
 export function draftHub(): HubConfig {
-  return { enabled: enabledCheck.checked, address: addressInput.value.trim(), allowInsecure: insecureCheck.checked };
+  return {
+    enabled: enabledCheck.checked,
+    address: addressInput.value.trim(),
+    allowInsecure: insecureCheck.checked,
+    allowTakeover: takeoverCheck.checked,
+  };
 }
 
 /** 设置面板关闭：保存时在 setConfig 之后提交 token 改动（留空不改、点过清除则清除）；token 不留在 DOM 中 */
