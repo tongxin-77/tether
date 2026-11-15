@@ -50,7 +50,7 @@ let testSeq = Math.floor(Math.random() * 2 ** 40);
 export function hubAddressError(input: string, allowInsecure: boolean): string | null {
   const s = input.trim();
   if (!s) return "未填写服务器地址";
-  let tls = true;
+  let tls = !allowInsecure; // 未写协议：默认 wss，勾选允许明文则默认 ws
   let rest = s;
   const i = s.indexOf("://");
   if (i >= 0) {

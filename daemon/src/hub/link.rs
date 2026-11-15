@@ -84,7 +84,7 @@ impl Endpoint {
 }
 
 /// 解析设置中填写的服务器地址：`host`、`host:port`、`[v6]:port`，可带 `ws://` / `wss://` 前缀与结尾的 `/` 或 `/agent`。
-/// 未写协议默认 wss；未写端口 wss 用 443、ws 用 80；ws 需 allow_insecure。错误信息不带“地址无效”前缀
+/// 未写协议时默认 wss，勾选 allow_insecure 则默认 ws；未写端口 wss 用 443、ws 用 80；ws 需 allow_insecure。错误信息不带“地址无效”前缀
 pub fn parse_address(input: &str, allow_insecure: bool) -> Result<Endpoint, String> {
     let s = input.trim();
     if s.is_empty() {
@@ -96,7 +96,7 @@ pub fn parse_address(input: &str, allow_insecure: bool) -> Result<Endpoint, Stri
             "ws" => (false, &s[i + 3..]),
             other => return Err(format!("不支持的协议 {other}://，只能是 wss:// 或 ws://")),
         },
-        None => (true, s),
+        None => (!allow_insecure, s),
     };
     if !tls && !allow_insecure {
         return Err("ws:// 为明文连接，需勾选「允许明文连接（仅限局域网调试）」".into());
@@ -575,6 +575,10 @@ mod tests {
         assert_eq!(parse_address("ws://10.0.0.2:9000/agent/", true), Ok(ep(false, "10.0.0.2", 9000)));
         assert_eq!(parse_address("[::1]:8443", false), Ok(ep(true, "::1", 8443)));
         assert_eq!(parse_address("wss://[FE80::1]", false), Ok(ep(true, "fe80::1", 443)));
+        // 勾选允许明文时，未写协议默认 ws；显式 wss 仍走 TLS
+        assert_eq!(parse_address("127.0.0.1:8443", true), Ok(ep(false, "127.0.0.1", 8443)));
+        assert_eq!(parse_address("hub.example.com", true), Ok(ep(false, "hub.example.com", 80)));
+        assert_eq!(parse_address("wss://hub.example.com", true), Ok(ep(true, "hub.example.com", 443)));
     }
 
     #[test]
