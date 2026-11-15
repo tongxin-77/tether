@@ -19,6 +19,12 @@
 ### 修复
 
 - Claude Code 的空闲提醒（「Claude is waiting for your input」）不再显示为「等待确认」：用 Esc 中断回复、或刚启动尚未提问时收到空闲提醒，状态改为空闲且不弹通知；真正的权限确认不受影响。
+- Claude Code 主代理结束后仍有后台 shell、monitor、teammate 等后台任务在运行时不再误报「已完成」：按 `background_tasks` 中所有未结束的任务计数（定时唤醒 `session_crons` 不计），状态标签由「子代理运行中」改为「后台运行中」。
+- 后台子代理结束时若它启动的后台任务仍在运行，不再提前转为「思考中」并在随后误报「已完成」：`SubagentStop` 只刷新后台任务计数，是否完成以主代理的 Stop 为准。
+- 斜杠命令（如旧版 Claude Code 中的 `/clear`、`/help`）不再让状态卡在「思考中」；自定义命令与 skill 改由新注册的 `UserPromptExpansion` hook 进入思考中（已启用集成的需在设置中点「更新」补齐）。
+- `/clear` 等开始新对话后，旧对话迟到的 hook 事件被丢弃，不再把新对话的状态改乱。
+- 回复中途自动压缩上下文不再把状态重置为空闲。
+- `agent_completed`、`quota_auto_resume_*`、`plugin_notification` 等告知类通知不再显示为「等待确认」、不再弹通知；只有权限确认、MCP 表单 / 链接确认、`agent_needs_input` 等需要操作的通知才算等待确认。
 
 ## [0.4.1] - 2026-11-15
 

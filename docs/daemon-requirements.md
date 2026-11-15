@@ -70,12 +70,12 @@
 
 | 编号 | 需求 | 验收标准 | 状态 |
 |------|------|----------|------|
-| D-4.1 | 仅在 GUI 发 `SetClaudeHooks` 时修改 settings.json（`CLAUDE_CONFIG_DIR` 或 `%USERPROFILE%\.claude`）：写前备份 `.tether-bak-<ms>`；合并到 7 个事件（SessionStart / UserPromptSubmit / Notification / Stop / SubagentStart / SubagentStop / SessionEnd）；只含部分事件时状态报 `outdated`，重新启用补齐；保留其它键与顺序；幂等；非法 JSON 拒绝修改 | 重复启用无重复条目；移除后只删 Tether 条目及因此变空的结构 | 已实现 |
+| D-4.1 | 仅在 GUI 发 `SetClaudeHooks` 时修改 settings.json（`CLAUDE_CONFIG_DIR` 或 `%USERPROFILE%\.claude`）：写前备份 `.tether-bak-<ms>`；合并到 8 个事件（SessionStart / UserPromptSubmit / UserPromptExpansion / Notification / Stop / SubagentStart / SubagentStop / SessionEnd）；只含部分事件时状态报 `outdated`，重新启用补齐；保留其它键与顺序；幂等；非法 JSON 拒绝修改 | 重复启用无重复条目；移除后只删 Tether 条目及因此变空的结构 | 已实现 |
 | D-4.2 | `tetherd hook` CLI：从 stdin 读 hook JSON，按 `TETHER_SESSION` / `TETHER_PIPE` 一次性发给 daemon；无输出、退出码恒 0；daemon 不在时约 1 秒放弃；非 Tether 会话立即退出 | 在普通终端运行 claude 不受影响、不报错 | 已实现 |
 | D-4.3 | 状态机：SessionStart→Idle、UserPromptSubmit→Thinking、Notification→Waiting（带消息）、Stop→Done，SessionEnd / 会话退出清除；Waiting 时用户按键回到 Thinking | GUI 显示思考中 / 等待确认 / 已完成 | 已实现 |
 | D-4.4 | Notification 与 Stop 按 D-3.2 条件弹 toast（标题 `<会话名> · Claude`），`idle_prompt` 不重复通知 | 一次任务完成只弹一条“任务已完成” | 已实现 |
 | D-4.5 | 去重：会话有 Claude 状态或 5 秒内收到过 hook 事件时，抑制其 OSC 9 / BEL 通知；远程会话（hook 回不到本机）仍以 OSC 9 / BEL 为准 | 启用集成后本地会话不出现双通知 | 已实现 |
-| D-4.6 | 后台子代理：Stop 时 `background_tasks` 中仍有 subagent → Background（带计数，不通知），SubagentStop 计数减一，减到 0 转 Thinking，下一次无子代理的 Stop 才 Done + 通知；忽略 `agent_type` 为空的内部代理；Stop 报 0 个时清空登记，旧版无该字段时按登记计数且 30 分钟过期；SessionStart / SessionEnd / 退出重置 | 后台子代理未结束时不显示已完成、不弹通知；漏掉 SubagentStop 不会永久卡住 | 已实现 |
+| D-4.6 | 后台任务：Stop 时 `background_tasks` 中仍有未结束的任务（任何类型，不含 session_crons）→ Background（带计数，不通知），SubagentStop 按其 `background_tasks`（不含自身）刷新计数、不改状态，下一次无后台任务的 Stop 才 Done + 通知（旧版无该字段时 SubagentStop 计数减一、减到 0 转 Thinking）；忽略 `agent_type` 为空的内部代理；Stop 报 0 个时清空登记，旧版无该字段时按登记计数且 30 分钟过期；SessionStart / SessionEnd / 退出重置 | 后台子代理未结束时不显示已完成、不弹通知；漏掉 SubagentStop 不会永久卡住 | 已实现 |
 
 ### 3.5 SSH 远程会话
 

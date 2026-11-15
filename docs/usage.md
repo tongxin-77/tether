@@ -57,18 +57,18 @@ GUI 未运行、窗口失去焦点或会话不在前台时，收到通知会弹�
 
 **设置 → Claude Code 集成** 显示状态（未启用 / 已启用 / 需要更新）与 settings.json 路径，点 **启用** / **移除** 并确认后由 daemon 修改 Claude Code 的用户设置文件（`CLAUDE_CONFIG_DIR` 环境变量指定的目录下的 `settings.json`，未设置时为 `%USERPROFILE%\.claude\settings.json`）。
 
-- **写入内容**：在 `hooks` 下为 `SessionStart`、`UserPromptSubmit`、`Notification`、`Stop`、`SubagentStart`、`SubagentStop`、`SessionEnd` 各追加一个匹配组（不写 matcher，即匹配全部），命令为当前运行的 `tetherd.exe` 绝对路径（正斜杠；路径无空格时不加引号，Git Bash 与 PowerShell 均可执行，含空格时加双引号，适用于 Claude Code 默认的 Git Bash）加 ` hook`：
+- **写入内容**：在 `hooks` 下为 `SessionStart`、`UserPromptSubmit`、`UserPromptExpansion`、`Notification`、`Stop`、`SubagentStart`、`SubagentStop`、`SessionEnd` 各追加一个匹配组（不写 matcher，即匹配全部），命令为当前运行的 `tetherd.exe` 绝对路径（正斜杠；路径无空格时不加引号，Git Bash 与 PowerShell 均可执行，含空格时加双引号，适用于 Claude Code 默认的 Git Bash）加 ` hook`：
 
   ```json
   { "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "C:/Users/me/AppData/Local/tether/tetherd.exe hook", "timeout": 5 } ] } ] } }
   ```
 
-- 写入前备份为同目录 `settings.json.tether-bak-<毫秒时间戳>`；文件不存在时新建，不是合法 JSON 时拒绝修改并报错。其它键与用户自己的 hooks 保持不动（键顺序保留，以 2 空格缩进写回）；重复启用不会产生重复条目（命令含 `tetherd` 与 ` hook` 的条目视为 Tether 的，先删后加，换了安装位置也会更新路径），已是目标状态时不写文件。旧版只写了前 5 个事件，设置中显示 **需要更新**，点 **更新**（即重新启用）补齐子代理事件。
+- 写入前备份为同目录 `settings.json.tether-bak-<毫秒时间戳>`；文件不存在时新建，不是合法 JSON 时拒绝修改并报错。其它键与用户自己的 hooks 保持不动（键顺序保留，以 2 空格缩进写回）；重复启用不会产生重复条目（命令含 `tetherd` 与 ` hook` 的条目视为 Tether 的，先删后加，换了安装位置也会更新路径），已是目标状态时不写文件。旧版只写了部分事件（0.4.x 及更早缺 `UserPromptExpansion`，更早的还缺子代理事件），设置中显示 **需要更新**，点 **更新**（即重新启用）补齐。
 - **移除**：只删除 Tether 的条目，以及因此变空的匹配组 / 事件数组 / `hooks` 对象。
 - **工作方式**：daemon 给每个本地会话设置环境变量 `TETHER_SESSION=<会话 id>`、`TETHER_PIPE=<管道名>`（不含 `\\.\pipe\` 前缀，dev / 安装版各指向自己的 daemon）。Claude Code 触发 hook 时运行 `tetherd hook`：从 stdin 读 hook JSON，经命名管道发一条一次性消息给 daemon 后退出（不占用 GUI 连接），不输出任何内容、退出码恒为 0，daemon 未运行时约 1 秒内放弃；不在 Tether 会话中（无上述环境变量）运行时立即退出。
-- **状态**：侧栏会话第二行与卡片标题行显示 `✳` 标记：`Claude`（已启动）、`思考中`（UserPromptSubmit）、`等待确认`（Notification，橙色，悬停显示消息；在终端中按键作答后回到思考中）、`子代理运行中 ×N`（主代理 Stop 时仍有后台子代理在运行）、`已完成`（Stop 且没有后台子代理）；SessionEnd 或会话退出时清除。
-- **后台子代理**：主代理 Stop 时按 hook JSON 的 `background_tasks`（`type` 为 `subagent` 的条目，后台 shell / monitor 不计）判断是否仍有子代理在运行：有则显示 `子代理运行中 ×N` 且不通知，每个 `SubagentStop` 计数减一；最后一个结束后 Claude 会被唤起处理结果（不经 UserPromptSubmit），状态转为 `思考中`，直到下一次没有后台子代理的 Stop 才显示 `已完成` 并通知。Claude Code 内部代理（`agent_type` 为空，如提示建议）不计。防卡住：Stop 报告没有子代理时清空登记；不带 `background_tasks` 的旧版 Claude Code 按 SubagentStart / SubagentStop 登记计数，超过 30 分钟未结束的登记作废；新提示、SessionStart、SessionEnd、会话退出也会重置。
-- **通知**：Notification（标题 `<会话名> · Claude`，内容为 Claude 的消息）与 Stop（内容“任务已完成”，有后台子代理时推迟到全部完成）按与 OSC 9 相同的条件弹系统通知；回复完成后的空闲提醒（`idle_prompt`）不重复通知。会话有 Claude 状态或 5 秒内收到过 hook 事件时，不再对其 OSC 9 / BEL 弹通知，避免重复；远程会话（hook 无法回到本机 daemon）与未启用集成时仍以 OSC 9 / BEL 为准。
+- **状态**：侧栏会话第二行与卡片标题行显示 `✳` 标记：`Claude`（已启动）、`思考中`（UserPromptSubmit；以 `/` 开头的斜杠命令不算，自定义命令 / skill 以随后的 UserPromptExpansion 为准）、`等待确认`（需要确认 / 输入的 Notification，橙色，悬停显示消息；在终端中按键作答后回到思考中）、`后台运行中 ×N`（主代理 Stop 时仍有后台任务在运行）、`已完成`（Stop 且没有后台任务）；SessionEnd 或会话退出时清除。自动压缩（SessionStart 的 source 为 compact）不改变状态；`/clear` 等开始新对话后，旧对话迟到的 hook 事件（按 `session_id` 判断）被丢弃。
+- **后台任务**：主代理 Stop 时按 hook JSON 的 `background_tasks`（子代理、后台 shell、monitor、teammate 等所有未结束的条目；`session_crons` 定时唤醒不计）判断是否仍有后台任务：有则显示 `后台运行中 ×N` 且不通知；`SubagentStop` 只按其 `background_tasks`（父会话视角，不含该子代理自身）刷新计数，不改变状态。后台任务结束后 Claude 被唤起处理结果（经 UserPromptSubmit）转为 `思考中`，直到下一次没有后台任务的 Stop 才显示 `已完成` 并通知。Claude Code 内部代理（`agent_type` 为空，如提示建议）不计。防卡住：Stop 报告没有后台任务时清空子代理登记；不带 `background_tasks` 的旧版 Claude Code 每个 `SubagentStop` 计数减一、最后一个结束后转为 `思考中`；不带 `background_tasks` 的旧版 Claude Code 按 SubagentStart / SubagentStop 登记计数，超过 30 分钟未结束的登记作废；新提示、SessionStart、SessionEnd、会话退出也会重置。
+- **通知**：需要确认 / 输入的 Notification（`permission_prompt`、`elicitation_dialog`、`elicitation_url_dialog`、`agent_needs_input`，以及不带 `notification_type` 的旧版事件；标题 `<会话名> · Claude`，内容为 Claude 的消息）与 Stop（内容“任务已完成”，有后台任务时推迟到全部完成）按与 OSC 9 相同的条件弹系统通知；回复完成后的空闲提醒（`idle_prompt`）不重复通知，其它告知类通知（`agent_completed`、`quota_auto_resume_*`、`plugin_notification` 等）不改状态、不通知。会话有 Claude 状态或 5 秒内收到过 hook 事件时，不再对其 OSC 9 / BEL 弹通知，避免重复；远程会话（hook 无法回到本机 daemon）与未启用集成时仍以 OSC 9 / BEL 为准。
 
 ## claude 命令补全
 

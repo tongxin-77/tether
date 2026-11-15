@@ -61,9 +61,9 @@ pub enum ClaudeStatus {
     Thinking,
     /// 等待用户确认 / 输入（Notification）
     Waiting,
-    /// 主代理本轮已结束（Stop），但仍有后台子代理在运行；全部结束且主代理再次 Stop 后才算完成
+    /// 主代理本轮已结束（Stop），但仍有后台任务（子代理、后台 shell、monitor 等）在运行；全部结束且主代理再次 Stop 后才算完成
     Background,
-    /// 本轮回复完成（Stop，且没有后台子代理在运行）
+    /// 本轮回复完成（Stop，且没有后台任务在运行）
     Done,
 }
 
@@ -74,7 +74,7 @@ pub struct ClaudeState {
     /// Notification 的消息文本
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Background 时仍在运行的后台子代理数
+    /// Background 时仍在运行的后台任务数
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
     /// 状态变化时间，Unix 毫秒时间戳
@@ -450,9 +450,16 @@ pub enum ClientMsg {
         agent_id: Option<String>,
         #[serde(default)]
         agent_type: Option<String>,
-        /// hook JSON 中 background_tasks 里 type 为 subagent 的条目数；该字段缺失（旧版 Claude Code）时为 None
+        /// hook JSON 中 background_tasks 里未结束的后台任务数（子代理、shell、monitor、teammate 等，不含 session_crons；
+        /// SubagentStop 时不含该子代理自身）；该字段缺失（旧版 Claude Code）时为 None
         #[serde(default)]
         background: Option<u32>,
+        /// background_tasks 各项的 `type:status`（逗号分隔），仅用于日志
+        #[serde(default)]
+        tasks: Option<String>,
+        /// UserPromptSubmit 的 prompt 前 20 个字符（判断斜杠命令、写日志），不转发完整内容
+        #[serde(default)]
+        prompt: Option<String>,
         /// hook JSON 的 session_id 与 cwd：daemon 重启后据此 `claude --resume`
         #[serde(default)]
         claude_session: Option<String>,

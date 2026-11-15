@@ -35,7 +35,7 @@ type Status = "running" | "waiting" | "exited";
 interface ClaudeState {
   state: "idle" | "thinking" | "waiting" | "background" | "done";
   message?: string;
-  /** background 时仍在运行的后台子代理数 */
+  /** background 时仍在运行的后台任务数 */
   count?: number;
   at: number;
 }
@@ -240,7 +240,7 @@ const CLAUDE_LABELS: Record<ClaudeState["state"], string> = {
   idle: "Claude",
   thinking: "思考中",
   waiting: "等待确认",
-  background: "子代理运行中",
+  background: "后台运行中",
   done: "已完成",
 };
 

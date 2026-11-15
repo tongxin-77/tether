@@ -76,12 +76,14 @@ pub struct Session {
     resume: Option<saved::Resume>,
 }
 
-/// Claude 子代理跟踪：running 为 SubagentStart 登记、SubagentStop 移除的子代理（id → 登记时间）；
-/// bg 为主代理 Stop 时仍在后台运行的子代理数，此后每个 SubagentStop 减一
+/// Claude 子代理 / 后台任务跟踪：running 为 SubagentStart 登记、SubagentStop 移除的子代理（id → 登记时间）；
+/// bg 为主代理 Stop 时仍在运行的后台任务数，此后由 SubagentStop 刷新（旧版不带 background_tasks 时每个减一）；
+/// session 为最近一次 SessionStart 的 Claude 对话 session_id，据此丢弃旧对话迟到的事件
 #[derive(Default)]
 struct Agents {
     running: HashMap<String, Instant>,
     bg: u32,
+    session: Option<String>,
 }
 
 /// 会话 I/O 后端
@@ -500,7 +502,7 @@ pub fn input(st: &mut State, id: u32, data: &[u8]) {
     if changed {
         s.info.status = Status::Running;
     }
-    // 等待确认时用户作答（按键）后 Claude 继续处理；主代理已结束、只剩后台子代理时回到后台运行中
+    // 等待确认时用户作答（按键）后 Claude 继续处理；主代理已结束、只剩后台任务时回到后台运行中
     if let Some(c) = s.info.claude.as_mut().filter(|c| c.state == ClaudeStatus::Waiting) {
         *c = match s.agents.bg {
             0 => claude_state(ClaudeStatus::Thinking, None, None),
@@ -850,8 +852,29 @@ fn attention(st: &State, id: u32, message: &str) -> bool {
 
 /// Claude Code hook 事件（`ClientMsg::ClaudeEvent`）：更新会话的 Claude 状态并推送；Notification / Stop 按与 OSC9 相同的条件弹通知
 pub fn claude_event(state: &Shared, ev: ClientMsg) {
-    let ClientMsg::ClaudeEvent { session: id, event, .. } = &ev else { return };
+    let ClientMsg::ClaudeEvent {
+        session: id,
+        event,
+        notification_type,
+        agent_id,
+        agent_type,
+        background,
+        tasks,
+        prompt,
+        claude_session,
+        reason,
+        source,
+        ..
+    } = &ev
+    else {
+        return;
+    };
     let id = *id;
+    let sid: String = claude_session.as_deref().unwrap_or_default().chars().take(8).collect();
+    log!(
+        "Claude hook：会话 #{id} {event} source={source:?} reason={reason:?} type={notification_type:?} bg={background:?}[{}] prompt={prompt:?} agent={agent_id:?}/{agent_type:?} sid={sid}",
+        tasks.as_deref().unwrap_or_default()
+    );
     let mut guard = state.lock().unwrap();
     let st = &mut *guard;
     let Some(s) = st.sessions.get_mut(&id) else { return };
@@ -859,6 +882,9 @@ pub fn claude_event(state: &Shared, ev: ClientMsg) {
         return;
     }
     s.hook_at = Some(Instant::now());
+    if stale(&s.agents, &ev) {
+        return;
+    }
     let resume = next_resume(s.resume.as_ref(), &s.info.cwd, &ev);
     if resume != s.resume {
         s.resume = resume;
@@ -927,26 +953,53 @@ struct Step {
     body: Option<String>,
 }
 
+/// 每个 hook 是独立的 `tetherd hook` 进程，到达顺序无保证：带 session_id 且不是最近一次 SessionStart 的对话的事件
+/// （如 /clear 后旧对话迟到的事件）视为过期；没有 session_id 的事件（旧版）或尚未见过 SessionStart 时不过滤
+fn stale(a: &Agents, ev: &ClientMsg) -> bool {
+    let ClientMsg::ClaudeEvent { event, claude_session: Some(sid), .. } = ev else { return false };
+    event != "SessionStart" && a.session.as_ref().is_some_and(|cur| cur != sid)
+}
+
+/// UserPromptSubmit 的 prompt 是否为斜杠命令（首个词以 / 开头且不含路径分隔符；以 / 开头的路径不算）
+fn slash_command(prompt: &str) -> bool {
+    prompt.strip_prefix('/').and_then(|rest| rest.split(char::is_whitespace).next()).is_some_and(|name| !name.is_empty() && !name.contains(['/', '\\']))
+}
+
 /// Claude 状态机（不含推送 / 通知，便于测试）。返回 None 表示忽略该事件（状态不变、不推送）。
-/// 主代理 Stop 时仍有后台子代理在运行 → Background（不通知）；子代理全部结束后 Claude 会被重新唤起处理结果
-/// （不经 UserPromptSubmit），因此转为 Thinking，等到下一次没有后台子代理的 Stop 才算 Done 并通知
+/// 主代理 Stop 时仍有后台任务（子代理、后台 shell 等）在运行 → Background（不通知）；新版 Claude Code 在后台任务结束后
+/// 经 UserPromptSubmit 唤起 Claude 处理结果（转为 Thinking），等到下一次没有后台任务的 Stop 才算 Done 并通知
 fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<Step> {
-    let ClientMsg::ClaudeEvent { event, message, notification_type, agent_id, agent_type, background, .. } = ev else {
+    let ClientMsg::ClaudeEvent { event, message, notification_type, agent_id, agent_type, background, prompt, claude_session, source, .. } = ev
+    else {
         return None;
     };
+    if stale(a, ev) {
+        return None;
+    }
     let set = |next| Some(Step { next, message: None, body: None });
     // Claude Code 内部代理（提示建议、/btw 等）的 agent_type 为空串，不算子代理
     let subagent = agent_type.as_deref().is_some_and(|t| !t.is_empty());
     match event.as_str() {
+        // 压缩（可能是回复中途的自动压缩）：同一对话继续，状态与计数不变；尚无状态时视为空闲
+        "SessionStart" if source.as_deref() == Some("compact") => {
+            if claude_session.is_some() {
+                a.session = claude_session.clone();
+            }
+            prev.is_none().then(|| set(Some(ClaudeStatus::Idle))).flatten()
+        }
         "SessionStart" => {
-            *a = Agents::default();
+            *a = Agents { session: claude_session.clone(), ..Agents::default() };
             set(Some(ClaudeStatus::Idle))
         }
         "SessionEnd" => {
-            *a = Agents::default();
+            // 保留 session：该对话迟到的事件仍按过期丢弃
+            *a = Agents { session: a.session.take(), ..Agents::default() };
             set(None)
         }
-        "UserPromptSubmit" => {
+        // 斜杠命令：旧版 Claude Code 的内置命令（/clear、/help 等）也触发 UserPromptSubmit，不进入思考中；
+        // 自定义命令 / skill 随后有 UserPromptExpansion
+        "UserPromptSubmit" if prompt.as_deref().is_some_and(slash_command) => None,
+        "UserPromptSubmit" | "UserPromptExpansion" => {
             // 子代理可能跨提示继续运行，running 保留；bg 到下次 Stop 时重新计算
             a.bg = 0;
             set(Some(ClaudeStatus::Thinking))
@@ -964,12 +1017,18 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
             if let Some(id) = agent_id {
                 a.running.remove(id);
             }
+            // 新版带 background_tasks（父会话视角，已除去该子代理自身）：只刷新计数、不自行退出 Background——
+            // 子代理留下的后台任务可能仍在运行；Claude 被唤起时有 UserPromptSubmit，最终由 Stop 判断是否完成
+            if let Some(n) = background {
+                a.bg = *n;
+                return (prev == Some(ClaudeStatus::Background)).then(|| set(Some(ClaudeStatus::Background))).flatten();
+            }
+            // 旧版：每个 SubagentStop 减一，最后一个结束时 Claude 将被唤起处理结果（不经 UserPromptSubmit）
             if a.bg == 0 {
                 return None;
             }
             a.bg -= 1;
             match prev {
-                // 最后一个后台子代理结束：Claude 将被唤起处理结果
                 Some(ClaudeStatus::Background) if a.bg == 0 => set(Some(ClaudeStatus::Thinking)),
                 Some(ClaudeStatus::Background) => set(Some(ClaudeStatus::Background)),
                 // 等待确认等其它状态只更新计数
@@ -977,7 +1036,7 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
             }
         }
         "Stop" => {
-            // background_tasks 为权威数据：没有子代理时清空登记，防止漏掉的 SubagentStop 让会话一直卡住；
+            // background_tasks 为权威数据：没有后台任务时清空子代理登记，防止漏掉的 SubagentStop 让会话一直卡住；
             // 旧版 Claude Code 不带该字段时按登记数计算，并丢弃过久未结束的登记
             a.bg = match background {
                 Some(n) => {
@@ -1003,13 +1062,13 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
                 Some("idle_prompt") if matches!(prev, Some(ClaudeStatus::Done | ClaudeStatus::Background)) => None,
                 // 其余情况（Esc 中断后没有 Stop、刚启动未提问等）只是空闲，不算等待确认，也不通知
                 Some("idle_prompt") => set(Some(ClaudeStatus::Idle)),
-                // 不需要用户输入的通知类型
-                Some("auth_success" | "elicitation_complete" | "elicitation_response") => None,
-                // 含后台子代理的权限请求（显示在主会话中）
-                _ => {
+                // 需要用户操作的确认 / 输入（含后台子代理的权限请求，显示在主会话中）；旧版不带 notification_type 时同样处理
+                None | Some("permission_prompt" | "elicitation_dialog" | "elicitation_url_dialog" | "agent_needs_input") => {
                     let body = message.clone().unwrap_or_else(|| "Claude 需要你的关注".into());
                     Some(Step { next: Some(ClaudeStatus::Waiting), message, body: Some(body) })
                 }
+                // 其余只是告知（agent_completed、quota_auto_resume_*、plugin_notification、auth_success 等）：不改状态、不通知
+                _ => None,
             }
         }
         _ => None,
@@ -1039,13 +1098,22 @@ mod tests {
                 agent_id: agent.map(|a| a.0.into()),
                 agent_type: agent.map(|a| a.1.into()),
                 background,
+                tasks: None,
+                prompt: None,
                 claude_session: None,
                 cwd: None,
                 reason: None,
                 permission_mode: None,
                 source: None,
             };
-            if let Some(step) = step(self.state, &mut self.agents, &ev) {
+            self.apply(&ev)
+        }
+        /// 喂一条 hook JSON（与 `tetherd hook` 相同的解析）
+        fn hook(&mut self, json: &str) -> Option<ClaudeStatus> {
+            self.apply(&claude::event_msg(1, json, None).unwrap())
+        }
+        fn apply(&mut self, ev: &ClientMsg) -> Option<ClaudeStatus> {
+            if let Some(step) = step(self.state, &mut self.agents, ev) {
                 self.state = step.next;
                 self.toasts.extend(step.body);
             }
@@ -1054,8 +1122,9 @@ mod tests {
         fn start(&mut self, id: &str) {
             self.feed("SubagentStart", Some((id, "general-purpose")), None);
         }
-        fn stop_agent(&mut self, id: &str) -> Option<ClaudeStatus> {
-            self.feed("SubagentStop", Some((id, "general-purpose")), Some(0))
+        /// 子代理结束；remaining 为 SubagentStop 的 background_tasks 中其余未结束的后台任务数
+        fn stop_agent(&mut self, id: &str, remaining: u32) -> Option<ClaudeStatus> {
+            self.feed("SubagentStop", Some((id, "general-purpose")), Some(remaining))
         }
     }
 
@@ -1073,7 +1142,7 @@ mod tests {
         let mut s = Sim::default();
         s.feed("UserPromptSubmit", None, None);
         s.start("a");
-        assert_eq!(s.stop_agent("a"), Some(Thinking));
+        assert_eq!(s.stop_agent("a", 0), Some(Thinking));
         assert_eq!(s.feed("Stop", None, Some(0)), Some(Done));
         assert_eq!(s.toasts.len(), 1);
     }
@@ -1087,10 +1156,12 @@ mod tests {
         // 主代理结束，2 个后台子代理仍在运行：不通知
         assert_eq!(s.feed("Stop", None, Some(2)), Some(Background));
         assert_eq!(s.agents.bg, 2);
-        assert_eq!(s.stop_agent("a"), Some(Background));
+        assert_eq!(s.stop_agent("a", 1), Some(Background));
         assert_eq!(s.agents.bg, 1);
-        // 最后一个结束：Claude 被唤起处理结果（无 UserPromptSubmit）
-        assert_eq!(s.stop_agent("b"), Some(Thinking));
+        // 最后一个结束：仍为 Background，直到 Claude 被唤起处理结果（经 UserPromptSubmit）
+        assert_eq!(s.stop_agent("b", 0), Some(Background));
+        assert_eq!(s.agents.bg, 0);
+        assert_eq!(s.feed("UserPromptSubmit", None, None), Some(Thinking));
         assert!(s.toasts.is_empty());
         assert_eq!(s.feed("Stop", None, Some(0)), Some(Done));
         assert_eq!(s.toasts, ["任务已完成"]);
@@ -1101,10 +1172,12 @@ mod tests {
         let mut s = Sim::default();
         s.feed("UserPromptSubmit", None, None);
         assert_eq!(s.feed("Stop", None, Some(2)), Some(Background));
-        s.stop_agent("a");
+        s.stop_agent("a", 1);
         // Claude 处理第一个结果后再次 Stop，仍有 1 个在运行
+        s.feed("UserPromptSubmit", None, None);
         assert_eq!(s.feed("Stop", None, Some(1)), Some(Background));
-        assert_eq!(s.stop_agent("b"), Some(Thinking));
+        assert_eq!(s.stop_agent("b", 0), Some(Background));
+        assert_eq!(s.feed("UserPromptSubmit", None, None), Some(Thinking));
         assert_eq!(s.feed("Stop", None, Some(0)), Some(Done));
         assert_eq!(s.toasts.len(), 1);
     }
@@ -1138,6 +1211,8 @@ mod tests {
             agent_id: None,
             agent_type: None,
             background: None,
+            tasks: None,
+            prompt: None,
             claude_session: None,
             cwd: None,
             reason: None,
@@ -1157,6 +1232,8 @@ mod tests {
             agent_id: None,
             agent_type: None,
             background: None,
+            tasks: None,
+            prompt: None,
             claude_session: None,
             cwd: None,
             reason: None,
@@ -1206,7 +1283,7 @@ mod tests {
         assert_eq!(s.feed("SessionEnd", None, None), None);
         assert!(s.agents.running.is_empty() && s.agents.bg == 0);
         // 多余的 SubagentStop 不会让计数变负
-        assert_eq!(s.stop_agent("zz"), None);
+        assert_eq!(s.stop_agent("zz", 0), None);
         assert_eq!(s.agents.bg, 0);
     }
 
@@ -1223,6 +1300,8 @@ mod tests {
             agent_id: None,
             agent_type: None,
             background: None,
+            tasks: None,
+            prompt: None,
             claude_session: sid.map(Into::into),
             cwd: cwd.map(Into::into),
             reason: reason.map(Into::into),
@@ -1312,5 +1391,157 @@ mod tests {
         assert_eq!(s.feed("Stop", None, None), Some(Background));
         assert_eq!(s.feed("SubagentStop", Some(("a", "Explore")), None), Some(Thinking));
         assert_eq!(s.feed("Stop", None, None), Some(Done));
+    }
+
+    // 以下 hook JSON 取自 Claude Code 2.1.325 的真实事件（去掉无关字段）
+
+    #[test]
+    fn stop_with_shell_task_is_background() {
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        // 主代理用 run_in_background 启动后台 shell 后结束本轮
+        let stop = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"b79id3ldq","type":"shell","status":"running"}],"session_crons":[]}"#;
+        assert_eq!(s.hook(stop), Some(Background));
+        assert_eq!(s.agents.bg, 1);
+        assert!(s.toasts.is_empty());
+        // shell 结束后 Claude 被任务通知唤起（经 UserPromptSubmit），再次 Stop 时已无后台任务
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\n<task-id>b79id3ldq"}"#), Some(Thinking));
+        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[]}"#), Some(Done));
+        assert_eq!(s.toasts.len(), 1);
+    }
+
+    #[test]
+    fn stop_with_teammate_task_is_background() {
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        let stop = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"teammate","status":"running"},{"id":"m1","type":"monitor","status":"running"},{"id":"x","type":"shell","status":"completed"}]}"#;
+        assert_eq!(s.hook(stop), Some(Background));
+        assert_eq!(s.agents.bg, 2);
+        // session_crons 只是定时唤醒，不算后台任务
+        s.feed("UserPromptSubmit", None, None);
+        let cron = r#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[{"id":"c1","schedule":"0 9 * * 1-5","recurring":true}]}"#;
+        assert_eq!(s.hook(cron), Some(Done));
+    }
+
+    #[test]
+    fn subagent_stop_with_own_bg_task_keeps_background() {
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        s.start("a49");
+        // 主代理结束，后台子代理仍在运行
+        let stop = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"a49","type":"subagent","status":"running","agent_type":"general-purpose"}]}"#;
+        assert_eq!(s.hook(stop), Some(Background));
+        // 内部代理（agent_type 为空）的 SubagentStop 忽略
+        let internal = r#"{"hook_event_name":"SubagentStop","agent_id":"x1","agent_type":"","background_tasks":[{"id":"a49","type":"subagent","status":"running"}]}"#;
+        assert_eq!(s.hook(internal), Some(Background));
+        // 子代理结束，但它启动的后台 shell 仍在运行；列表里还带着子代理自己（id 即 agent_id，不计）
+        let sub = r#"{"hook_event_name":"SubagentStop","agent_id":"a49","agent_type":"general-purpose","background_tasks":[{"id":"a49","type":"subagent","status":"running","agent_type":"general-purpose"},{"id":"bla","type":"shell","status":"running"}]}"#;
+        assert_eq!(s.hook(sub), Some(Background));
+        assert_eq!(s.agents.bg, 1);
+        // Claude 被子代理结果唤起处理，结束时 shell 仍在运行
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"<agent-message from=\"a49"}"#), Some(Thinking));
+        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[{"id":"bla","type":"shell","status":"running"}]}"#), Some(Background));
+        assert!(s.toasts.is_empty());
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\n<task-id>bla"}"#), Some(Thinking));
+        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[]}"#), Some(Done));
+        assert_eq!(s.toasts, ["任务已完成"]);
+    }
+
+    #[test]
+    fn slash_clear_stays_idle() {
+        let mut s = Sim::default();
+        assert_eq!(s.hook(r#"{"hook_event_name":"SessionStart","session_id":"a","source":"startup"}"#), Some(Idle));
+        // 旧版 Claude Code 的内置命令也会触发 UserPromptSubmit（2.1.325 已不触发）：不进入思考中
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","session_id":"a","prompt":"/clear"}"#), Some(Idle));
+        assert_eq!(s.hook(r#"{"hook_event_name":"SessionStart","session_id":"b","source":"clear"}"#), Some(Idle));
+    }
+
+    #[test]
+    fn slash_help_no_thinking() {
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        assert_eq!(s.feed("Stop", None, Some(0)), Some(Done));
+        for p in ["/help", "/model sonnet", "/context"] {
+            let ups = format!(r#"{{"hook_event_name":"UserPromptSubmit","prompt":"{p}"}}"#);
+            assert_eq!(s.hook(&ups), Some(Done), "{p}");
+        }
+        // 以 / 开头的路径不是命令
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"/c/work/a.txt 看看"}"#), Some(Thinking));
+    }
+
+    #[test]
+    fn custom_command_expansion_thinks() {
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        s.feed("Stop", None, Some(0));
+        // 自定义命令 / skill：先有 UserPromptSubmit（prompt 为命令本身），随后 UserPromptExpansion
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"/hello"}"#), Some(Done));
+        let expansion = r#"{"hook_event_name":"UserPromptExpansion","expansion_type":"slash_command","command_name":"hello","prompt":"/hello"}"#;
+        assert_eq!(s.hook(expansion), Some(Thinking));
+        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[]}"#), Some(Done));
+        assert_eq!(s.toasts.len(), 2);
+    }
+
+    #[test]
+    fn late_ups_from_old_session_ignored() {
+        let mut s = Sim::default();
+        s.hook(r#"{"hook_event_name":"SessionStart","session_id":"a","source":"startup"}"#);
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","session_id":"a","prompt":"hi"}"#), Some(Thinking));
+        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","session_id":"a","background_tasks":[]}"#), Some(Done));
+        // /clear 后新对话已开始：旧对话迟到的事件（各 hook 是独立进程，到达顺序无保证）丢弃
+        assert_eq!(s.hook(r#"{"hook_event_name":"SessionStart","session_id":"b","source":"clear"}"#), Some(Idle));
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","session_id":"a","prompt":"hi"}"#), Some(Idle));
+        assert_eq!(s.hook(r#"{"hook_event_name":"SessionEnd","session_id":"a","reason":"clear"}"#), Some(Idle));
+        // 新对话的事件、不带 session_id 的事件（旧版）照常处理
+        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","session_id":"b","prompt":"hi"}"#), Some(Thinking));
+        assert_eq!(s.feed("Stop", None, Some(0)), Some(Done));
+    }
+
+    #[test]
+    fn auto_compact_mid_turn_keeps_thinking() {
+        let compact = r#"{"hook_event_name":"SessionStart","session_id":"a","source":"compact"}"#;
+        let mut s = Sim::default();
+        s.hook(r#"{"hook_event_name":"SessionStart","session_id":"a","source":"startup"}"#);
+        s.feed("UserPromptSubmit", None, None);
+        assert_eq!(s.hook(compact), Some(Thinking));
+        assert_eq!(s.feed("Stop", None, Some(0)), Some(Done));
+        // 后台任务计数不被清空
+        s.feed("UserPromptSubmit", None, None);
+        assert_eq!(s.feed("Stop", None, Some(2)), Some(Background));
+        assert_eq!(s.hook(compact), Some(Background));
+        assert_eq!(s.agents.bg, 2);
+        // 尚无状态（如 daemon 重启后）时视为空闲
+        let mut s = Sim::default();
+        assert_eq!(s.hook(compact), Some(Idle));
+    }
+
+    #[test]
+    fn non_attention_notifications_ignored() {
+        let note = |t: &str| format!(r#"{{"hook_event_name":"Notification","notification_type":"{t}","message":"m"}}"#);
+        for t in [
+            "agent_completed",
+            "quota_auto_resume_fired",
+            "quota_auto_resume_stale",
+            "quota_auto_resume_disabled",
+            "plugin_notification",
+            "auth_success",
+            "elicitation_complete",
+            "elicitation_response",
+            "some_future_type",
+        ] {
+            for prev in [Thinking, Done, Background] {
+                let mut s = Sim { state: Some(prev), ..Default::default() };
+                assert_eq!(s.hook(&note(t)), Some(prev), "{t}");
+                assert!(s.toasts.is_empty(), "{t}");
+            }
+        }
+        // 需要用户操作的确认 / 输入，以及不带 notification_type 的旧版事件：等待确认并通知
+        for t in ["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"] {
+            let mut s = Sim { state: Some(Thinking), ..Default::default() };
+            assert_eq!(s.hook(&note(t)), Some(Waiting), "{t}");
+            assert_eq!(s.toasts, ["m"], "{t}");
+        }
+        let mut s = Sim { state: Some(Thinking), ..Default::default() };
+        assert_eq!(s.hook(r#"{"hook_event_name":"Notification","message":"m"}"#), Some(Waiting));
     }
 }

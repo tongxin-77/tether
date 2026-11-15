@@ -67,7 +67,7 @@ Tether 是面向个人的轻量 Windows 多会话终端，最初为运行 Claude
 | 编号 | 需求 | 验收标准 | 状态 |
 |------|------|----------|------|
 | F-4.1 | 收到通知的会话在侧栏显示提示圈（waiting） | OSC 9 / BEL / Claude Notification 后提示圈出现，切到该会话后消失 | 已实现 |
-| F-4.2 | 侧栏第二行与卡片标题显示 `✳` Claude 状态：Claude / 思考中 / 等待确认（橙色，悬停显示消息）/ 子代理运行中 ×N / 已完成 | 状态随 hook 事件切换；SessionEnd 或会话退出后清除 | 已实现 |
+| F-4.2 | 侧栏第二行与卡片标题显示 `✳` Claude 状态：Claude / 思考中 / 等待确认（橙色，悬停显示消息）/ 后台运行中 ×N / 已完成 | 状态随 hook 事件切换；SessionEnd 或会话退出后清除 | 已实现 |
 | F-4.3 | 收到 daemon 的 Activate 时聚焦窗口并切到该会话（点击 toast 场景） | 点击仍在屏幕上的通知，GUI 前置并定位会话 | 已实现 |
 
 系统通知本身由 daemon 弹出，见 [daemon §3.3](daemon-requirements.md#33-通知)。
