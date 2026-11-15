@@ -25,7 +25,9 @@ mod claude;
 mod config;
 mod crash;
 mod fs;
+mod history;
 mod hub;
+mod image;
 mod notify;
 mod recent;
 mod saved;
@@ -109,6 +111,8 @@ async fn serve(state: Shared) {
     session::restore(&state);
     // hub 默认关闭；启用时在后台任务中连接，不阻塞管道服务
     hub::restart(&state, &mut state.lock().unwrap());
+    // 网页贴图保存的临时文件：启动时及每小时清理超过 24 小时的
+    image::start_cleanup();
     let mut conn = 0u64;
     loop {
         let connected = server.connect().await;

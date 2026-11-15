@@ -4,6 +4,18 @@
 
 ## [未发布]
 
+## [0.5.0] - 2026-11-15
+
+### 新增
+
+- 配合 tether-hub 0.4.0：hub 网页接管会话时可向上滚动回看接管前的历史输出（保留颜色与自动折行；每会话最多保留 5000 行，接管时发送最近 3000 行；全屏程序备用屏中的内容不计入历史，程序发出清空回滚 `ESC[3J` 时历史随之清空）。
+- 配合 tether-hub 0.4.0：hub 网页可向被接管的本地会话粘贴 / 上传图片（PNG / JPEG / GIF / WebP，单张不超过 10MB）。图片保存到 `%TEMP%\tether-img`，路径作为输入写入会话（不回车，便于 Claude Code 等程序引用），超过 24 小时自动删除；需本机允许 hub 远程接管，SSH 会话暂不支持。
+- 配合 tether-hub 0.4.0：hub 网页可关闭本机会话（不要求先接管；复用「允许 hub 远程接管本机会话」开关，未勾选时拒绝）。效果与在本地点关闭相同：本地会话结束进程，SSH 会话关闭通道，会话从列表移除并记入最近关闭。
+
+### 变更
+
+- hub 协议在 v2 上增加能力位协商（hello / welcome 的 `caps`），向下兼容：连接旧版 hub 时行为与 0.4.x 相同，不必同时升级。
+
 ## [0.4.1] - 2026-11-15
 
 ### 修复
@@ -82,7 +94,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.4.1...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tongxin-77/tether/releases/tag/v0.5.0
 [0.4.1]: https://github.com/tongxin-77/tether/releases/tag/v0.4.1
 [0.4.0]: https://github.com/tongxin-77/tether/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tongxin-77/tether/releases/tag/v0.3.0

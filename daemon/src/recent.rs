@@ -23,6 +23,10 @@ pub fn load() -> Vec<RecentItem> {
 }
 
 pub fn save(items: &[RecentItem]) {
+    // 单元测试（如 hub 端到端关闭会话）不写用户数据目录
+    if cfg!(test) {
+        return;
+    }
     let result = (|| -> Result<(), String> {
         let p = path().ok_or("未找到 APPDATA 环境变量")?;
         if let Some(dir) = p.parent() {

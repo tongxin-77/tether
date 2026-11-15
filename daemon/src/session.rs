@@ -14,7 +14,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use proto::{ClaudeState, ClaudeStatus, ClientMsg, Config, FsSource, HostSource, RecentItem, ServerMsg, SessionInfo, Status, Target};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-use crate::{claude, config, fs, hub, notify, now_ms, recent, saved, ssh, stats};
+use crate::{claude, config, fs, history, hub, notify, now_ms, recent, saved, ssh, stats};
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -139,9 +139,21 @@ struct Signals {
     msg: Option<String>,
     /// 收到光标位置查询（CSI 6 n）时记录当时的光标（0 起始的行、列）
     cpr: Option<(u16, u16)>,
+    /// 推出屏幕的历史行（hub 接管时发送；每块输出后不取走）
+    history: history::History,
+}
+
+impl AsMut<history::History> for Signals {
+    fn as_mut(&mut self) -> &mut history::History {
+        &mut self.history
+    }
 }
 
 impl vt100::Callbacks for Signals {
+    fn on_scroll(&mut self, row: vt100::capture::RowContents<'_>, alternate: bool) {
+        self.history.push(row, alternate);
+    }
+
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.fired = true;
     }
@@ -314,24 +326,11 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             st.save_sessions();
         }
         ClientMsg::Close { id } => {
-            let removed = st.sessions.remove(&id);
-            if let Some(g) = st.gui.as_mut() {
-                g.attached.remove(&id);
-            }
-            // 先推 Recent 再推 Sessions：GUI 收到空列表显示空状态时已包含刚关闭的这条
-            if let Some(s) = &removed {
-                recent::push(&mut st.recent, &s.info);
-                st.push_recent();
-                if s.info.taken_over {
-                    st.hub.detached(id, "exited");
-                }
-            }
-            st.push_sessions();
-            st.save_sessions();
+            let removed = remove(st, id);
             // 先释放锁再 kill/drop：drop master 会关闭 ConPTY，可能需要读线程（要抢锁）排空输出
             drop(guard);
-            if let Some(mut s) = removed {
-                s.backend.close();
+            if let Some(s) = removed {
+                s.close();
             }
         }
         ClientMsg::Focus { active_id, window_focused } => {
@@ -528,6 +527,52 @@ pub fn snapshot(st: &State, id: u32) -> Option<(u16, u16, String)> {
     Some((cols.get(), rows.get(), B64.encode(s.parser.screen().state_formatted())))
 }
 
+/// hub 接管用（能力 history）：推出屏幕的历史（base64，按协议拼装，浏览器在 snapshot 之前写入）
+pub fn history(st: &State, id: u32) -> Option<String> {
+    let s = st.sessions.get(&id)?;
+    Some(B64.encode(s.parser.callbacks().history.render(s.parser.screen())))
+}
+
+/// 本地会话（非 SSH）；会话不存在为 false
+pub fn is_local(st: &State, id: u32) -> bool {
+    st.sessions.get(&id).is_some_and(|s| s.info.host.is_none())
+}
+
+/// 把文件路径作为输入写入会话（网页贴图）：含空格时加双引号；会话开启 bracketed paste 时按粘贴包裹；不加回车
+pub fn paste_path(st: &mut State, id: u32, path: &str) {
+    let Some(s) = st.sessions.get(&id) else { return };
+    let path = if path.contains(' ') { format!("\"{path}\"") } else { path.to_string() };
+    let data = if s.parser.screen().bracketed_paste() { format!("\x1b[200~{path}\x1b[201~") } else { path };
+    input(st, id, data.as_bytes());
+}
+
+/// 关闭会话（本地 GUI 与 hub 网页共用）：移出列表、记入最近目录、正被接管时发 detached exited，推送并保存会话列表。
+/// 返回被移除的会话，调用方须在释放锁之后调用其 close
+pub fn remove(st: &mut State, id: u32) -> Option<Session> {
+    let removed = st.sessions.remove(&id);
+    if let Some(g) = st.gui.as_mut() {
+        g.attached.remove(&id);
+    }
+    // 先推 Recent 再推 Sessions：GUI 收到空列表显示空状态时已包含刚关闭的这条
+    if let Some(s) = &removed {
+        recent::push(&mut st.recent, &s.info);
+        st.push_recent();
+        if s.info.taken_over {
+            st.hub.detached(id, "exited");
+        }
+    }
+    st.push_sessions();
+    st.save_sessions();
+    removed
+}
+
+impl Session {
+    /// 结束会话后端：本地会话结束进程（drop 时关闭 ConPTY），SSH 会话关闭通道；不可持 State 锁调用
+    pub fn close(mut self) {
+        self.backend.close();
+    }
+}
+
 /// 按会话取文件后端，交给异步任务执行（不持锁 await）
 fn fs_spawn(state: &Shared, st: &State, req_id: u64, session_id: u32, op: fs::Op) {
     match st.sessions.get(&session_id) {
@@ -702,9 +747,10 @@ pub fn on_output(state: &Shared, id: u32, data: &[u8]) -> bool {
     let mut guard = state.lock().unwrap();
     let st = &mut *guard;
     let Some(s) = st.sessions.get_mut(&id) else { return false };
-    s.parser.process(data);
+    history::process(&mut s.parser, data);
     s.info.last_activity_at = now_ms();
-    let sig = std::mem::take(s.parser.callbacks_mut());
+    let mut sig = std::mem::take(s.parser.callbacks_mut());
+    s.parser.callbacks_mut().history = std::mem::take(&mut sig.history);
     let gui_attached = st.gui.as_ref().is_some_and(|g| g.attached.contains(&id));
     let taken = s.info.taken_over;
     // 有 GUI 接入时由 xterm 回复，避免重复应答（hub 网页端不回复终端查询）

@@ -40,6 +40,8 @@ pub const REPLACED_MSG: &str = "另一台机器使用了相同的机器 ID（例
 /// hello 字段上限（超出 hub 按 bad_hello 处理）：machineId 1–64 字符，machineName / version 不超过 256 字符
 pub const MACHINE_ID_MAX: usize = 64;
 const NAME_MAX: usize = 256;
+/// 本机支持的能力位（hello.caps）：双方都声明的才使用；proto 仍为 2，旧 hub 不回 caps 即视为空集
+pub const CAPS: &[&str] = &["history", "image", "close"];
 
 /// 截断到 max 个字符以内（按 UTF-16 码元计，与 hub 端 JavaScript 的字符串长度一致，不切断代理对）
 pub fn truncate_chars(s: &str, max: usize) -> String {
@@ -60,6 +62,7 @@ pub fn hello(machine_id: String, machine_name: &str, version: &str) -> Up {
         machine_name: truncate_chars(machine_name, NAME_MAX),
         version: truncate_chars(version, NAME_MAX),
         probe: false,
+        caps: CAPS.iter().map(|c| c.to_string()).collect(),
     }
 }
 
@@ -178,23 +181,52 @@ pub enum Up {
         /// 测试连接的探测连接：hub 照常回 welcome，但不登记、不替换同一 machineId 的常驻连接；常驻连接为 false（不写出）
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         probe: bool,
+        /// 能力位（缺省为空集）
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        caps: Vec<String>,
     },
     Sessions { sessions: Vec<SessionInfo> },
-    /// 接管成功：当前尺寸 + 屏幕快照（base64），之后该会话的输出以 Output 推送
-    Attached { session_id: u32, cols: u16, rows: u16, snapshot: String },
+    /// 接管成功：当前尺寸 + 屏幕快照（base64），之后该会话的输出以 Output 推送；
+    /// 双方都有 history 能力时另带历史（base64，浏览器先写 history 再写 snapshot）
+    Attached {
+        session_id: u32,
+        cols: u16,
+        rows: u16,
+        snapshot: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<String>,
+    },
     /// 拒绝接管：disabled / not_found / probe
     AttachDenied { session_id: u32, reason: String },
     /// PTY 原始输出（base64）
     Output { session_id: u32, data: String },
     /// 本机结束接管：reclaimed / disabled / exited
     Detached { session_id: u32, reason: String },
+    /// 网页贴图已保存（能力 image），path 已作为输入写入会话
+    ImageSaved { session_id: u32, upload_id: String, path: String },
+    /// 网页贴图失败：disabled / not_taken_over / unsupported / too_large / bad_type / io
+    ImageFailed { session_id: u32, upload_id: String, reason: String },
+    /// 网页关闭会话的结果（能力 close）；失败时 reason 为 disabled / not_found
+    CloseResult {
+        session_id: u32,
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 /// hub → daemon；未知 type 忽略
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Down {
-    Welcome { proto: u32, hub_version: String },
+    Welcome {
+        proto: u32,
+        hub_version: String,
+        /// 能力位（旧 hub 不带，缺省为空集）
+        #[serde(default)]
+        caps: Vec<String>,
+    },
     Error {
         code: String,
         #[serde(default)]
@@ -205,6 +237,12 @@ pub enum Down {
     Input { session_id: u32, data: String },
     Resize { session_id: u32, cols: u16, rows: u16 },
     Detach { session_id: u32 },
+    /// 网页贴图（能力 image）：begin 声明类型与总字节数，chunk 为 base64 分块，end 后 daemon 回 imageSaved / imageFailed
+    ImageBegin { session_id: u32, upload_id: String, mime: String, size: u64 },
+    ImageChunk { session_id: u32, upload_id: String, data: String },
+    ImageEnd { session_id: u32, upload_id: String },
+    /// 网页关闭会话（能力 close），不要求正被接管；daemon 回 closeResult
+    Close { session_id: u32, request_id: String },
     #[serde(other)]
     Unknown,
 }
@@ -411,13 +449,13 @@ fn read_frame(item: Option<Result<Message, tungstenite::Error>>) -> Result<Optio
     }
 }
 
-/// 发 hello，等 welcome；返回 hubVersion
-pub async fn handshake(ws: &mut Ws, hello: &Up, stage: &Stage) -> Result<String, Failure> {
+/// 发 hello，等 welcome；返回 hubVersion 与 hub 声明的能力位
+pub async fn handshake(ws: &mut Ws, hello: &Up, stage: &Stage) -> Result<(String, Vec<String>), Failure> {
     set_stage(stage, "等待 welcome");
     send_up(ws, hello).await?;
     loop {
         match read_frame(ws.next().await)? {
-            Some(Down::Welcome { proto, hub_version }) if proto == HUB_PROTO => return Ok(hub_version),
+            Some(Down::Welcome { proto, hub_version, caps }) if proto == HUB_PROTO => return Ok((hub_version, caps)),
             Some(Down::Welcome { proto, .. }) => {
                 return Err(Failure::new(Kind::Proto, format!("协议不兼容：hub 使用协议 {proto}，本机为 {HUB_PROTO}")));
             }
@@ -456,12 +494,15 @@ pub async fn probe(ep: &Endpoint, token: &Secret, hello: &Up) -> Result<String, 
         let mut ws = connect(ep, token, &stage).await?;
         let version = handshake(&mut ws, hello, &stage).await;
         let _ = ws.close(None).await;
-        version
+        version.map(|(version, _)| version)
     })
     .await
 }
 
 // ---------------- 常驻连接 ----------------
+
+/// 可用连接交给 daemon 的部分：上行发送端 + hub 声明的能力位
+pub type Conn = (mpsc::UnboundedSender<Up>, Vec<String>);
 
 /// 常驻连接所需的一切（由 daemon 从配置 / 凭据管理器组装）
 pub struct Link {
@@ -474,9 +515,9 @@ pub struct Link {
     pub changed: Arc<Notify>,
     /// 状态变化回调
     pub status: Arc<dyn Fn(HubState, Option<String>) + Send + Sync>,
-    /// 连接可用（收到 welcome，附上行发送端，daemon 经它推送接管消息）/ 断开（None，daemon 据此结束全部接管）
-    pub conn: Arc<dyn Fn(Option<mpsc::UnboundedSender<Up>>) + Send + Sync>,
-    /// 接管下行消息（attach / input / resize / detach）交给 daemon 处理
+    /// 连接可用（收到 welcome，附上行发送端与 hub 声明的能力位，daemon 经发送端推送接管消息）/ 断开（None，daemon 据此结束全部接管）
+    pub conn: Arc<dyn Fn(Option<Conn>) + Send + Sync>,
+    /// 接管下行消息（attach / input / resize / detach / image*）交给 daemon 处理
     pub down: Arc<dyn Fn(Down) + Send + Sync>,
 }
 
@@ -490,17 +531,17 @@ pub async fn run(link: Link) {
         let stage = Mutex::new("DNS 解析");
         let connected = with_timeout(CONNECT_TIMEOUT, &stage, async {
             let mut ws = connect(&link.endpoint, &link.token, &stage).await?;
-            let version = handshake(&mut ws, &link.hello, &stage).await?;
-            Ok((ws, version))
+            let (version, caps) = handshake(&mut ws, &link.hello, &stage).await?;
+            Ok((ws, version, caps))
         })
         .await;
         let failure = match connected {
-            Ok((ws, version)) => {
+            Ok((ws, version, caps)) => {
                 log!("hub 已连接 {}（hub 版本 {version}）", link.endpoint.url());
                 attempt = 0;
                 last = None;
                 (link.status)(HubState::Connected, None);
-                let failure = serve(ws, &link).await;
+                let failure = serve(ws, &link, caps).await;
                 (link.conn)(None);
                 failure
             }
@@ -525,13 +566,13 @@ pub async fn run(link: Link) {
 
 /// 已收到 welcome：立即上报一次全量，之后会话变化防抖上报；转发接管消息；60 s 无任何帧判定断线。返回断开原因。
 /// 接管上行（快照 / 输出）走无界通道：daemon 在 PTY 读线程中持锁推送，不能等待网络
-async fn serve(mut ws: Ws, link: &Link) -> Failure {
+async fn serve(mut ws: Ws, link: &Link, caps: Vec<String>) -> Failure {
     let mut sent = String::new();
     if let Err(f) = report(&mut ws, link, &mut sent).await {
         return f;
     }
     let (tx, mut rx) = mpsc::unbounded_channel();
-    (link.conn)(Some(tx));
+    (link.conn)(Some((tx, caps)));
     // hub 的 ping 由 tungstenite 自动回 pong：收到 ping 后排队，下一次 read（本循环始终在等 ws.next()）先写出并 flush
     let idle = tokio::time::sleep(IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -547,7 +588,16 @@ async fn serve(mut ws: Ws, link: &Link) -> Failure {
                         let _ = ws.close(None).await;
                         return f;
                     }
-                    Ok(Some(msg @ (Down::Attach { .. } | Down::Input { .. } | Down::Resize { .. } | Down::Detach { .. }))) => (link.down)(msg),
+                    Ok(Some(
+                        msg @ (Down::Attach { .. }
+                        | Down::Input { .. }
+                        | Down::Resize { .. }
+                        | Down::Detach { .. }
+                        | Down::ImageBegin { .. }
+                        | Down::ImageChunk { .. }
+                        | Down::ImageEnd { .. }
+                        | Down::Close { .. }),
+                    )) => (link.down)(msg),
                     Ok(_) => {}
                     Err(f) => return f,
                 }
@@ -654,13 +704,19 @@ mod tests {
 
     #[test]
     fn up_wire_format() {
-        let probe = Up::Hello { proto: 2, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: true };
-        assert_eq!(serde_json::to_value(&probe).unwrap()["probe"], true);
+        let probe = Up::Hello { proto: 2, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: true, caps: vec![] };
+        let v = serde_json::to_value(&probe).unwrap();
+        assert_eq!(v["probe"], true);
+        // 空能力集不写出（与旧版 hello 相同）
+        assert!(v.get("caps").is_none());
         let hello = hello("9f1c".into(), "DEV-PC", "0.4.0");
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
-            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0"}"#
+            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0","caps":["history","image","close"]}"#
         );
+        // 旧版 hello（无 caps）解析为空集
+        let old: Up = serde_json::from_str(r#"{"type":"hello","proto":2,"machineId":"m","machineName":"n","version":"v"}"#).unwrap();
+        assert!(matches!(old, Up::Hello { caps, .. } if caps.is_empty()));
         let info = SessionInfo {
             id: 1,
             name: "n".into(),
@@ -694,8 +750,11 @@ mod tests {
 
     #[test]
     fn down_wire_format() {
+        // 旧 hub 的 welcome 无 caps：空集；未知能力名照常解析（使用时按交集忽略）
         let w: Down = serde_json::from_str(r#"{"type":"welcome","proto":2,"hubVersion":"0.1.0"}"#).unwrap();
-        assert_eq!(w, Down::Welcome { proto: 2, hub_version: "0.1.0".into() });
+        assert_eq!(w, Down::Welcome { proto: 2, hub_version: "0.1.0".into(), caps: vec![] });
+        let w: Down = serde_json::from_str(r#"{"type":"welcome","proto":2,"hubVersion":"0.4.0","caps":["history","image","future"]}"#).unwrap();
+        assert_eq!(w, Down::Welcome { proto: 2, hub_version: "0.4.0".into(), caps: vec!["history".into(), "image".into(), "future".into()] });
         let e: Down = serde_json::from_str(r#"{"type":"error","code":"proto_unsupported","message":"hub 仅支持协议 1"}"#).unwrap();
         assert_eq!(e, Down::Error { code: "proto_unsupported".into(), message: "hub 仅支持协议 1".into() });
         let u: Down = serde_json::from_str(r#"{"type":"takeover","session":1}"#).unwrap();
@@ -708,10 +767,42 @@ mod tests {
         assert_eq!(r, Down::Resize { session_id: 3, cols: 120, rows: 30 });
         let d: Down = serde_json::from_str(r#"{"type":"detach","sessionId":3}"#).unwrap();
         assert_eq!(d, Down::Detach { session_id: 3 });
-        let up = Up::Attached { session_id: 3, cols: 120, rows: 30, snapshot: "eA==".into() };
+        let up = Up::Attached { session_id: 3, cols: 120, rows: 30, snapshot: "eA==".into(), history: None };
         assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"attached","sessionId":3,"cols":120,"rows":30,"snapshot":"eA=="}"#);
+        let up = Up::Attached { session_id: 3, cols: 120, rows: 30, snapshot: "eA==".into(), history: Some("eQ==".into()) };
+        assert_eq!(
+            serde_json::to_string(&up).unwrap(),
+            r#"{"type":"attached","sessionId":3,"cols":120,"rows":30,"snapshot":"eA==","history":"eQ=="}"#
+        );
         let up = Up::AttachDenied { session_id: 3, reason: "not_found".into() };
         assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"attachDenied","sessionId":3,"reason":"not_found"}"#);
+    }
+
+    #[test]
+    fn image_wire_format() {
+        let b: Down = serde_json::from_str(r#"{"type":"imageBegin","sessionId":3,"uploadId":"u1","mime":"image/png","size":834211}"#).unwrap();
+        assert_eq!(b, Down::ImageBegin { session_id: 3, upload_id: "u1".into(), mime: "image/png".into(), size: 834211 });
+        let c: Down = serde_json::from_str(r#"{"type":"imageChunk","sessionId":3,"uploadId":"u1","data":"iVBO"}"#).unwrap();
+        assert_eq!(c, Down::ImageChunk { session_id: 3, upload_id: "u1".into(), data: "iVBO".into() });
+        let e: Down = serde_json::from_str(r#"{"type":"imageEnd","sessionId":3,"uploadId":"u1"}"#).unwrap();
+        assert_eq!(e, Down::ImageEnd { session_id: 3, upload_id: "u1".into() });
+        let up = Up::ImageSaved { session_id: 3, upload_id: "u1".into(), path: r"C:\t\a.png".into() };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"imageSaved","sessionId":3,"uploadId":"u1","path":"C:\\t\\a.png"}"#);
+        let up = Up::ImageFailed { session_id: 3, upload_id: "u1".into(), reason: "bad_type".into() };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"imageFailed","sessionId":3,"uploadId":"u1","reason":"bad_type"}"#);
+    }
+
+    #[test]
+    fn close_wire_format() {
+        let c: Down = serde_json::from_str(r#"{"type":"close","sessionId":3,"requestId":"r1"}"#).unwrap();
+        assert_eq!(c, Down::Close { session_id: 3, request_id: "r1".into() });
+        let up = Up::CloseResult { session_id: 3, request_id: "r1".into(), ok: true, reason: None };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"closeResult","sessionId":3,"requestId":"r1","ok":true}"#);
+        let up = Up::CloseResult { session_id: 3, request_id: "r1".into(), ok: false, reason: Some("disabled".into()) };
+        assert_eq!(
+            serde_json::to_string(&up).unwrap(),
+            r#"{"type":"closeResult","sessionId":3,"requestId":"r1","ok":false,"reason":"disabled"}"#
+        );
     }
 
     #[test]

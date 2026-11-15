@@ -49,7 +49,7 @@ enum Mode {
     ProtoUnsupported,
     /// 回 welcome；常驻连接（非 probe）收到首条 sessions 后回 replaced 错误并以 4004 关闭，probe 连接不受影响
     Replaced,
-    /// 回 welcome；收到首条 sessions 后发 attach / input，收到 output 后断开
+    /// 回 welcome；收到首条 sessions 后发 attach / input / close，收到 output 后断开
     Takeover,
 }
 
@@ -118,6 +118,7 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                             if let (Mode::Takeover, 1) = (mode, sessions) {
                                 let _ = ws.send(Message::Text(r#"{"type":"attach","sessionId":1}"#.into())).await;
                                 let _ = ws.send(Message::Text(r#"{"type":"input","sessionId":1,"data":"bHMK"}"#.into())).await;
+                                let _ = ws.send(Message::Text(r#"{"type":"close","sessionId":1,"requestId":"r1"}"#.into())).await;
                                 continue;
                             }
                             if sessions == 1 {
@@ -166,8 +167,8 @@ struct Harness {
     list: Arc<Mutex<Vec<SessionInfo>>>,
     changed: Arc<Notify>,
     states: HubStates,
-    /// conn 回调：Some(是否带发送端)
-    conns: mpsc::UnboundedReceiver<Option<mpsc::UnboundedSender<link::Up>>>,
+    /// conn 回调：Some((发送端, hub 能力位))
+    conns: mpsc::UnboundedReceiver<Option<link::Conn>>,
     downs: mpsc::UnboundedReceiver<link::Down>,
 }
 
@@ -338,13 +339,16 @@ async fn takeover_messages_relayed() {
     assert!(matches!(next(&mut rx).await, Event::Hello(1, _)));
     assert!(matches!(next(&mut rx).await, Event::Sessions(1, _)));
     // 收到 welcome 后交出上行发送端
-    let up = tokio::time::timeout(Duration::from_secs(5), h.conns.recv()).await.unwrap().unwrap().expect("连接可用时应带发送端");
+    let (up, caps) = tokio::time::timeout(Duration::from_secs(5), h.conns.recv()).await.unwrap().unwrap().expect("连接可用时应带发送端");
+    // 旧 hub 的 welcome 不带 caps：能力为空集
+    assert!(caps.is_empty());
     // 下行接管消息原样交给 daemon
     let first = tokio::time::timeout(Duration::from_secs(5), h.downs.recv()).await.unwrap().unwrap();
     assert_eq!(first, link::Down::Attach { session_id: 1 });
     assert_eq!(h.downs.recv().await.unwrap(), link::Down::Input { session_id: 1, data: "bHMK".into() });
+    assert_eq!(h.downs.recv().await.unwrap(), link::Down::Close { session_id: 1, request_id: "r1".into() });
     // daemon 经发送端推送的消息按序写到 hub
-    up.send(link::Up::Attached { session_id: 1, cols: 80, rows: 24, snapshot: "eA==".into() }).unwrap();
+    up.send(link::Up::Attached { session_id: 1, cols: 80, rows: 24, snapshot: "eA==".into(), history: None }).unwrap();
     up.send(link::Up::Output { session_id: 1, data: "eQ==".into() }).unwrap();
     let Event::Up(1, attached) = next(&mut rx).await else { panic!() };
     assert_eq!(attached, serde_json::json!({ "type": "attached", "sessionId": 1, "cols": 80, "rows": 24, "snapshot": "eA==" }));

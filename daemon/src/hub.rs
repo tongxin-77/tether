@@ -4,7 +4,12 @@
 
 mod link;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use proto::{HubConfig, HubState, Secret, ServerMsg};
@@ -13,7 +18,13 @@ use tokio::{
     task::AbortHandle,
 };
 
-use crate::session::{self, Shared, State};
+use crate::{
+    image,
+    session::{self, Shared, State},
+};
+
+/// 单个网页贴图上传从 imageBegin 起的最长组装时间，超时丢弃
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// token 在 Windows 凭据管理器中的条目：服务名同 SSH 密码（tether / dev 构建 tether-dev），账户 `hub-token`，
 /// 凭据名（target）即 `hub-token.tether`；SSH 密码账户形如 `user@host:port`，不会与之冲突
@@ -33,6 +44,20 @@ pub struct Hub {
     pub changed: Arc<Notify>,
     /// 当前 hub 连接的上行发送端（已连接时 Some），接管消息经它推送；接管中的会话以 SessionInfo.taken_over 标记
     tx: Option<UnboundedSender<link::Up>>,
+    /// 当前连接双方都声明的能力位（welcome 时写入，断开清空）
+    caps: HashSet<String>,
+    /// 组装中的网页贴图：uploadId → 上传
+    uploads: HashMap<String, Upload>,
+}
+
+/// 组装中的网页贴图
+struct Upload {
+    session_id: u32,
+    mime: String,
+    /// imageBegin 声明的总字节数（不超过 10MB）
+    size: usize,
+    data: Vec<u8>,
+    started: Instant,
 }
 
 impl Hub {
@@ -72,8 +97,10 @@ pub fn restart(state: &Shared, st: &mut State) {
     if let Some(task) = st.hub.task.take() {
         task.abort();
     }
-    // 旧连接随任务中止，其上的接管全部结束（无需发消息）
+    // 旧连接随任务中止，其上的接管与上传全部结束（无需发消息）
     st.hub.tx = None;
+    st.hub.caps.clear();
+    st.hub.uploads.clear();
     release_all(st, None);
     st.hub.generation += 1;
     let generation = st.hub.generation;
@@ -110,17 +137,21 @@ fn make_link(shared: &Shared, generation: u64, endpoint: link::Endpoint, token: 
         sessions: Arc::new(move || sessions_state.lock().unwrap().sessions.values().map(|s| s.info.clone()).collect()),
         changed,
         status: Arc::new(move |state, error| set_status(&mut status_state.lock().unwrap(), generation, state, error)),
-        conn: Arc::new(move |tx| {
+        conn: Arc::new(move |conn| {
             let mut st = conn_state.lock().unwrap();
             if st.hub.generation == generation {
+                let (tx, caps) = conn.unzip();
                 st.hub.tx = tx;
+                // 只保留双方都声明的能力（未知能力名忽略）
+                st.hub.caps = caps.unwrap_or_default().into_iter().filter(|c| link::CAPS.contains(&c.as_str())).collect();
+                st.hub.uploads.clear();
                 release_all(&mut st, None);
             }
         }),
         down: Arc::new(move |msg| {
             let mut st = down_state.lock().unwrap();
             if st.hub.generation == generation {
-                on_down(&mut st, msg);
+                on_down(&down_state, &mut st, msg);
             }
         }),
     }
@@ -129,15 +160,18 @@ fn make_link(shared: &Shared, generation: u64, endpoint: link::Endpoint, token: 
 // ---------------- 远程接管 ----------------
 
 /// 处理 hub 的接管消息：未允许接管时拒绝；input / resize 走与本地 GUI 相同的写入 / resize 代码；未接管的会话忽略
-fn on_down(st: &mut State, msg: link::Down) {
+fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
     let taken = |st: &State, id: u32| st.sessions.get(&id).is_some_and(|s| s.info.taken_over);
+    // 超时未完成的上传丢弃（hub 侧同样 60 s 超时，不再回复）
+    st.hub.uploads.retain(|_, u| u.started.elapsed() < UPLOAD_TIMEOUT);
     match msg {
         link::Down::Attach { session_id: id } => {
             let reply = if st.config.hub.allow_takeover { session::snapshot(st, id).ok_or("not_found") } else { Err("disabled") };
             match reply {
                 // 重复 attach 按成功处理，重发快照；attached 先入队，之后的输出（同在锁内判断 taken_over）排在其后
                 Ok((cols, rows, snapshot)) => {
-                    st.hub.up(link::Up::Attached { session_id: id, cols, rows, snapshot });
+                    let history = if st.hub.caps.contains("history") { session::history(st, id) } else { None };
+                    st.hub.up(link::Up::Attached { session_id: id, cols, rows, snapshot, history });
                     let s = st.sessions.get_mut(&id).unwrap();
                     if !std::mem::replace(&mut s.info.taken_over, true) {
                         log!("hub 开始接管会话 #{id}");
@@ -161,11 +195,105 @@ fn on_down(st: &mut State, msg: link::Down) {
         // hub 主动结束的不回 detached
         link::Down::Detach { session_id: id } if taken(st, id) => {
             st.sessions.get_mut(&id).unwrap().info.taken_over = false;
+            st.hub.uploads.retain(|_, u| u.session_id != id);
             log!("hub 结束接管会话 #{id}");
             st.push_sessions();
         }
+        // 网页贴图：begin 先做一次校验（尽早拒绝，免得传完 10MB），end 时再完整校验
+        link::Down::ImageBegin { session_id: id, upload_id, mime, size } => {
+            let check = image_check(st, id).and_then(|()| match (image::ext(&mime), size > image::MAX_BYTES as u64) {
+                (None, _) => Err("bad_type"),
+                (_, true) => Err("too_large"),
+                _ => Ok(()),
+            });
+            match check {
+                Ok(()) => {
+                    let size = size as usize;
+                    let upload = Upload { session_id: id, mime, size, data: Vec::with_capacity(size), started: Instant::now() };
+                    st.hub.uploads.insert(upload_id, upload);
+                }
+                Err(reason) => image_failed(st, id, upload_id, reason),
+            }
+        }
+        link::Down::ImageChunk { session_id: id, upload_id, data } => {
+            let Some(u) = st.hub.uploads.get_mut(&upload_id).filter(|u| u.session_id == id) else { return };
+            let reason = match B64.decode(data) {
+                Ok(bytes) if u.data.len() + bytes.len() <= u.size => return u.data.extend_from_slice(&bytes),
+                Ok(_) => "too_large",
+                Err(_) => "io",
+            };
+            st.hub.uploads.remove(&upload_id);
+            image_failed(st, id, upload_id, reason);
+        }
+        link::Down::ImageEnd { session_id: id, upload_id } => {
+            let Some(u) = st.hub.uploads.remove(&upload_id).filter(|u| u.session_id == id) else { return };
+            let check = image_check(st, id).and_then(|()| match (u.data.len() == u.size, image::magic_ok(&u.mime, &u.data)) {
+                (false, _) => Err("too_large"),
+                (_, false) => Err("bad_type"),
+                _ => Ok(()),
+            });
+            if let Err(reason) = check {
+                return image_failed(st, id, upload_id, reason);
+            }
+            // 写文件不持锁；完成后再加锁写入路径
+            let shared = shared.clone();
+            tokio::task::spawn_blocking(move || {
+                let saved = image::save(image::ext(&u.mime).unwrap_or("png"), &u.data);
+                let mut st = shared.lock().unwrap();
+                let path = match saved {
+                    Ok(path) => path,
+                    Err(e) => {
+                        log!("保存 hub 贴图失败：{e}");
+                        return image_failed(&st, id, upload_id, "io");
+                    }
+                };
+                // 保存期间接管可能已结束
+                if let Err(reason) = image_check(&st, id) {
+                    let _ = std::fs::remove_file(&path);
+                    return image_failed(&st, id, upload_id, reason);
+                }
+                let path = path.display().to_string();
+                session::paste_path(&mut st, id, &path);
+                log!("hub 贴图已保存并写入会话 #{id}（{}，{} 字节）", u.mime, u.data.len());
+                st.hub.up(link::Up::ImageSaved { session_id: id, upload_id, path });
+            });
+        }
+        // 网页关闭会话：复用允许接管开关，不要求正被接管；与本地 GUI 关闭相同的路径（正被接管时随之发 detached exited）
+        link::Down::Close { session_id: id, request_id } => {
+            let alive = st.sessions.get(&id).is_some_and(|s| s.info.status != proto::Status::Exited);
+            let reason = match (st.config.hub.allow_takeover, alive) {
+                (false, _) => Some("disabled"),
+                (_, false) => Some("not_found"),
+                _ => None,
+            };
+            let removed = if reason.is_none() { session::remove(st, id) } else { None };
+            log!("hub 关闭会话 #{id}：{}", reason.unwrap_or("成功"));
+            st.hub.up(link::Up::CloseResult { session_id: id, request_id, ok: reason.is_none(), reason: reason.map(Into::into) });
+            // 调用方持有 State 锁：结束后端放到独立线程（drop ConPTY 可能要等读线程抢锁排空输出）
+            if let Some(s) = removed {
+                std::thread::spawn(move || s.close());
+            }
+        }
         _ => {}
     }
+}
+
+/// 网页贴图的前提：本机允许接管、该会话正被 hub 接管、本地会话（SSH 会话不支持）
+fn image_check(st: &State, id: u32) -> Result<(), &'static str> {
+    if !st.config.hub.allow_takeover {
+        Err("disabled")
+    } else if !st.sessions.get(&id).is_some_and(|s| s.info.taken_over) {
+        Err("not_taken_over")
+    } else if !session::is_local(st, id) {
+        Err("unsupported")
+    } else {
+        Ok(())
+    }
+}
+
+fn image_failed(st: &State, id: u32, upload_id: String, reason: &str) {
+    log!("hub 贴图失败（会话 #{id}）：{reason}");
+    st.hub.up(link::Up::ImageFailed { session_id: id, upload_id, reason: reason.into() });
 }
 
 /// 结束全部接管：reason 为 Some 时逐个发 detached（关闭了允许接管），None 用于连接断开 / 重建（不发消息）
@@ -279,7 +407,16 @@ fn load_or_create(path: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use tokio::{net::TcpListener, sync::mpsc::UnboundedReceiver};
+    use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+
+    use crate::ssh::Cmd;
 
     #[test]
     fn machine_id_created_once() {
@@ -305,51 +442,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    type Ws = WebSocketStream<tokio::net::TcpStream>;
+    /// 下一条非 sessions 的上行消息
+    async fn recv(ws: &mut Ws) -> Value {
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("等待上行消息超时").unwrap().unwrap();
+            let Message::Text(text) = msg else { continue };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            if v["type"] != "sessions" {
+                return v;
+            }
+        }
+    }
+    /// 一段时间内没有非 sessions 的上行消息
+    async fn silent(ws: &mut Ws) {
+        assert!(tokio::time::timeout(Duration::from_millis(300), recv(ws)).await.is_err(), "不应再收到接管消息");
+    }
+    async fn send(ws: &mut Ws, v: Value) {
+        ws.send(Message::Text(v.to_string().into())).await.unwrap();
+    }
+    async fn cmd(rx: &mut UnboundedReceiver<Cmd>) -> Cmd {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("等待写入会话超时").unwrap()
+    }
+    async fn wait_until(f: impl Fn() -> bool) {
+        for _ in 0..250 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("等待条件超时");
+    }
+
     /// 远程接管端到端（daemon 侧逻辑在 bin crate 内，tests/ 无法引用，故放在这里）：真实 State + 远程后端的测试会话
     /// + 常驻连接，对接本地明文 ws 的模拟 hub
     #[tokio::test]
     async fn takeover_end_to_end() {
-        use std::{sync::Mutex, time::Duration};
-
-        use futures_util::{SinkExt, StreamExt};
-        use serde_json::{Value, json};
-        use tokio::{net::TcpListener, sync::mpsc::UnboundedReceiver};
-        use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
-
-        use crate::ssh::Cmd;
-
-        type Ws = WebSocketStream<tokio::net::TcpStream>;
-        /// 下一条非 sessions 的上行消息
-        async fn recv(ws: &mut Ws) -> Value {
-            loop {
-                let msg = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("等待上行消息超时").unwrap().unwrap();
-                let Message::Text(text) = msg else { continue };
-                let v: Value = serde_json::from_str(&text).unwrap();
-                if v["type"] != "sessions" {
-                    return v;
-                }
-            }
-        }
-        /// 一段时间内没有非 sessions 的上行消息
-        async fn silent(ws: &mut Ws) {
-            assert!(tokio::time::timeout(Duration::from_millis(300), recv(ws)).await.is_err(), "不应再收到接管消息");
-        }
-        async fn send(ws: &mut Ws, v: Value) {
-            ws.send(Message::Text(v.to_string().into())).await.unwrap();
-        }
-        async fn cmd(rx: &mut UnboundedReceiver<Cmd>) -> Cmd {
-            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("等待写入会话超时").unwrap()
-        }
-        async fn wait_until(f: impl Fn() -> bool) {
-            for _ in 0..250 {
-                if f() {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            panic!("等待条件超时");
-        }
-
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let shared: Shared = Arc::new(Mutex::new(State::default()));
@@ -432,6 +560,161 @@ mod tests {
         drop(ws);
         wait_until(|| !shared.lock().unwrap().sessions[&id2].info.taken_over).await;
         assert!(shared.lock().unwrap().hub.tx.is_none());
+        task.abort();
+    }
+
+    /// 网页关闭会话端到端：disabled / not_found / 成功（结束接管、关闭后端、会话列表上报中消失）
+    #[tokio::test]
+    async fn close_end_to_end() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        let (id, mut cmds) = session::test_session(&mut shared.lock().unwrap(), 80, 24);
+        let (id2, _cmds2) = session::test_session(&mut shared.lock().unwrap(), 80, 24);
+        // 用 State 的变化通知：关闭后的会话列表经防抖上报
+        let changed = shared.lock().unwrap().hub.changed.clone();
+        let endpoint = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
+        let hello = link::hello("mid".into(), "PC", "0.0.1");
+        let task = tokio::spawn(link::run(make_link(&shared, 0, endpoint, Secret("t".into()), hello, changed)));
+        let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
+        assert!(recv(&mut ws).await["caps"].as_array().unwrap().contains(&json!("close")));
+        send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.4.0", "caps": ["history", "image", "close"] })).await;
+
+        // 未允许接管 → disabled，会话不受影响
+        send(&mut ws, json!({ "type": "close", "sessionId": id, "requestId": "r1" })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "closeResult", "sessionId": id, "requestId": "r1", "ok": false, "reason": "disabled" }));
+        assert!(shared.lock().unwrap().sessions.contains_key(&id));
+
+        // 会话不存在 / 已退出 → not_found
+        shared.lock().unwrap().config.hub.allow_takeover = true;
+        send(&mut ws, json!({ "type": "close", "sessionId": 999, "requestId": "r2" })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "closeResult", "sessionId": 999, "requestId": "r2", "ok": false, "reason": "not_found" }));
+        session::on_exit(&shared, id2);
+        send(&mut ws, json!({ "type": "close", "sessionId": id2, "requestId": "r3" })).await;
+        assert_eq!(recv(&mut ws).await["reason"], "not_found");
+
+        // 正被接管的会话：先结束接管（detached exited），再回成功；后端被关闭，之后的会话列表上报中不再有它
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        assert_eq!(recv(&mut ws).await["type"], "attached");
+        send(&mut ws, json!({ "type": "close", "sessionId": id, "requestId": "r4" })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "detached", "sessionId": id, "reason": "exited" }));
+        assert_eq!(recv(&mut ws).await, json!({ "type": "closeResult", "sessionId": id, "requestId": "r4", "ok": true }));
+        assert!(matches!(cmd(&mut cmds).await, Cmd::Close));
+        assert!(!shared.lock().unwrap().sessions.contains_key(&id));
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("等待会话列表上报超时").unwrap().unwrap();
+            let Message::Text(text) = msg else { continue };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            if v["type"] == "sessions" && v["sessions"].as_array().unwrap().iter().all(|s| s["id"] != id) {
+                break;
+            }
+        }
+        task.abort();
+    }
+
+    /// 网页贴图：begin → 每块原始 ≤256KB 的 chunk → end
+    async fn upload(ws: &mut Ws, id: u32, upload_id: &str, mime: &str, size: usize, data: &[u8]) {
+        send(ws, json!({ "type": "imageBegin", "sessionId": id, "uploadId": upload_id, "mime": mime, "size": size })).await;
+        for chunk in data.chunks(256 << 10) {
+            send(ws, json!({ "type": "imageChunk", "sessionId": id, "uploadId": upload_id, "data": B64.encode(chunk) })).await;
+        }
+        send(ws, json!({ "type": "imageEnd", "sessionId": id, "uploadId": upload_id })).await;
+    }
+
+    /// 能力位协商、attached 的 history、网页贴图端到端
+    #[tokio::test]
+    async fn history_and_image_end_to_end() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        shared.lock().unwrap().config.hub.allow_takeover = true;
+        let (id, mut cmds) = session::test_session(&mut shared.lock().unwrap(), 40, 5);
+        let (id2, _cmds2) = session::test_session(&mut shared.lock().unwrap(), 40, 5);
+        for i in 0..20 {
+            session::on_output(&shared, id, format!("\x1b[32mline {i}\x1b[m\r\n").as_bytes());
+        }
+        let endpoint = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
+        let hello = link::hello("mid".into(), "PC", "0.0.1");
+        let task = tokio::spawn(link::run(make_link(&shared, 0, endpoint, Secret("t".into()), hello, Arc::new(Notify::new()))));
+
+        // 旧 hub：welcome 无 caps → attached 不带 history
+        let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
+        assert_eq!(recv(&mut ws).await["caps"], json!(["history", "image", "close"]));
+        send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.3.0" })).await;
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        let attached = recv(&mut ws).await;
+        assert_eq!(attached["type"], "attached");
+        assert!(attached.get("history").is_none(), "{attached}");
+        assert!(shared.lock().unwrap().hub.caps.is_empty());
+
+        // 断线重连到新 hub：welcome 带 caps（未知能力忽略）→ attached 带 history
+        drop(ws);
+        let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
+        assert_eq!(recv(&mut ws).await["type"], "hello");
+        send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.4.0", "caps": ["history", "image", "future"] })).await;
+        send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
+        let attached = recv(&mut ws).await;
+        let history = String::from_utf8(B64.decode(attached["history"].as_str().unwrap()).unwrap()).unwrap();
+        // 5 行屏、20 行输出 + 末尾空行：推出 line 0–15
+        assert!(history.starts_with("\x1b[m\x1b[32mline 0\r\n"), "{history:?}");
+        assert!(history.ends_with(&format!("line 15\x1b[m{}", "\r\n".repeat(5))), "{history:?}");
+        assert_eq!(shared.lock().unwrap().hub.caps, HashSet::from(["history".to_string(), "image".to_string()]));
+
+        // 未接管的会话 → not_taken_over（begin 时即拒绝）
+        upload(&mut ws, id2, "u0", "image/png", 8, b"\x89PNG\r\n\x1a\n").await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "imageFailed", "sessionId": id2, "uploadId": "u0", "reason": "not_taken_over" }));
+        silent(&mut ws).await;
+
+        // 正常上传（多块）：文件存在、内容一致，路径作为输入写入会话（不加回车）
+        let png: Vec<u8> = b"\x89PNG\r\n\x1a\n".iter().copied().chain((0..600_000u32).map(|i| i as u8)).collect();
+        upload(&mut ws, id, "u1", "image/png", png.len(), &png).await;
+        let saved = recv(&mut ws).await;
+        assert_eq!((saved["type"].as_str(), saved["uploadId"].as_str()), (Some("imageSaved"), Some("u1")));
+        let path = saved["path"].as_str().unwrap().to_string();
+        assert!(path.ends_with(".png") && std::path::Path::new(&path).starts_with(image::dir()));
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        let typed = if path.contains(' ') { format!("\"{path}\"") } else { path.clone() };
+        assert!(matches!(cmd(&mut cmds).await, Cmd::Data(d) if d == typed.as_bytes()));
+        let _ = std::fs::remove_file(&path);
+
+        // 会话开启 bracketed paste：路径按粘贴包裹
+        session::on_output(&shared, id, b"\x1b[?2004h");
+        assert_eq!(recv(&mut ws).await["type"], "output");
+        let gif = b"GIF89a\x01\x00\x01\x00";
+        upload(&mut ws, id, "u2", "image/gif", gif.len(), gif).await;
+        let saved = recv(&mut ws).await;
+        let path = saved["path"].as_str().unwrap().to_string();
+        assert!(path.ends_with(".gif"));
+        let typed = if path.contains(' ') { format!("\"{path}\"") } else { path.clone() };
+        assert!(matches!(cmd(&mut cmds).await, Cmd::Data(d) if d == format!("\x1b[200~{typed}\x1b[201~").into_bytes()));
+        let _ = std::fs::remove_file(&path);
+
+        // 超过 10MB（begin 声明）/ 实际数据超出声明大小 → too_large
+        upload(&mut ws, id, "u3", "image/png", image::MAX_BYTES + 1, &[]).await;
+        assert_eq!(recv(&mut ws).await["reason"], "too_large");
+        upload(&mut ws, id, "u4", "image/png", 4, b"\x89PNG\r\n\x1a\n").await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "imageFailed", "sessionId": id, "uploadId": "u4", "reason": "too_large" }));
+        silent(&mut ws).await;
+
+        // 文件头与声明类型不符 / 不支持的类型 → bad_type
+        upload(&mut ws, id, "u5", "image/png", gif.len(), gif).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "imageFailed", "sessionId": id, "uploadId": "u5", "reason": "bad_type" }));
+        upload(&mut ws, id, "u6", "image/svg+xml", 4, b"<svg").await;
+        assert_eq!(recv(&mut ws).await["reason"], "bad_type");
+
+        // SSH 会话 → unsupported
+        send(&mut ws, json!({ "type": "attach", "sessionId": id2 })).await;
+        assert_eq!(recv(&mut ws).await["type"], "attached");
+        shared.lock().unwrap().sessions.get_mut(&id2).unwrap().info.host = Some("srv".into());
+        upload(&mut ws, id2, "u7", "image/png", 8, b"\x89PNG\r\n\x1a\n").await;
+        assert_eq!(recv(&mut ws).await["reason"], "unsupported");
+
+        // 本机未允许接管 → disabled
+        shared.lock().unwrap().config.hub.allow_takeover = false;
+        upload(&mut ws, id, "u8", "image/png", 8, b"\x89PNG\r\n\x1a\n").await;
+        assert_eq!(recv(&mut ws).await["reason"], "disabled");
+        silent(&mut ws).await;
+        assert!(cmds.try_recv().is_err());
         task.abort();
     }
 }
