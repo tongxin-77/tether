@@ -141,6 +141,8 @@
           <span class="ch-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></span>
           <h2>设置</h2>
         </div>
+        <!-- 可滚动区域：标题与底部按钮固定 -->
+        <div class="m-body">
         <div class="rows">
           <label class="row">
             <span class="rt"><b>默认 shell</b><small>仅对之后新建的会话生效<span id="pwsh-hint" hidden>；未检测到 PowerShell 7，自动将使用 Windows PowerShell（可用 winget 安装）</span></small></span>
@@ -212,6 +214,7 @@
         <div class="section-head">自定义联想命令<button type="button" id="completion-add">+ 添加</button></div>
         <ul id="completion-list"></ul>
         <p class="hint">在终端输入命令开头时弹出联想，Tab 接受</p>
+        </div>
         <div class="actions">
           <!-- 保存在前：回车提交时取首个按钮；视觉顺序由 CSS row-reverse 调换 -->
           <button value="save">保存</button>
