@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [0.4.1] - 2026-11-15
+
 ### 修复
 
 - 自动恢复 Claude Code 对话时保留原来的权限模式：原先以 `--dangerously-skip-permissions` 启动或处于 plan / acceptEdits 等模式的对话，重启后台后不再退回默认权限模式。
@@ -80,7 +82,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.4.0...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/tongxin-77/tether/releases/tag/v0.4.1
 [0.4.0]: https://github.com/tongxin-77/tether/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tongxin-77/tether/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tongxin-77/tether/releases/tag/v0.2.0
