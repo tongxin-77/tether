@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [0.4.0] - 2026-11-15
+
 ### 新增
 
 - 支持连接自托管的管理服务器 tether-hub（可选，默认关闭）：设置中新增「管理服务器」分组（启用开关、服务器地址、token、允许明文连接、测试连接、连接状态）。启用后由后台进程出站连接 hub 并上报会话列表（不含终端内容），断线自动重连；token 保存在 Windows 凭据管理器。未启用或连不上时本地功能不受影响。
@@ -73,7 +75,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.3.0...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tongxin-77/tether/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tongxin-77/tether/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tongxin-77/tether/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tongxin-77/tether/releases/tag/v0.1.1
