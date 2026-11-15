@@ -3,11 +3,7 @@
 
 mod link;
 
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::Arc};
 
 use proto::{HubConfig, HubState, Secret, ServerMsg};
 use tokio::{sync::Notify, task::AbortHandle};
@@ -30,21 +26,9 @@ pub struct Hub {
     generation: u64,
     /// 会话列表变化通知（State::push_sessions 触发），常驻连接据此防抖上报
     pub changed: Arc<Notify>,
-    /// 进行中的“测试连接”数与最近一次结束时间：测试连接用同一 machineId，hub 会以 replaced 顶掉常驻连接，
-    /// 这段时间内的 replaced 视为测试造成，测试结束后自动重连（而不是停在 failed）
-    probing: u32,
-    probe_end: Option<Instant>,
-    resume_after_probe: bool,
 }
 
-/// 测试连接结束后这段时间内到达的 replaced 仍算测试造成
-const PROBE_GRACE: Duration = Duration::from_secs(3);
-
 impl Hub {
-    fn probe_recent(&self) -> bool {
-        self.probing > 0 || self.probe_end.is_some_and(|t| t.elapsed() < PROBE_GRACE)
-    }
-
     pub fn status_msg(&self) -> ServerMsg {
         ServerMsg::HubStatus { state: self.state, error: self.error.clone() }
     }
@@ -93,28 +77,11 @@ pub fn restart(state: &Shared, st: &mut State) {
             hello: hello(),
             sessions: Arc::new(move || sessions_state.lock().unwrap().sessions.values().map(|s| s.info.clone()).collect()),
             changed,
-            status: Arc::new(move |state, error| on_status(&status_state, generation, state, error)),
+            status: Arc::new(move |state, error| set_status(&mut status_state.lock().unwrap(), generation, state, error)),
         })
         .await;
     });
     st.hub.task = Some(task.abort_handle());
-}
-
-/// 常驻连接的状态回调：测试连接期间（或刚结束）被 replaced 顶掉的，不停在 failed，测试结束后重连
-fn on_status(shared: &Shared, generation: u64, state: HubState, error: Option<String>) {
-    let mut guard = shared.lock().unwrap();
-    let st = &mut *guard;
-    let by_probe = state == HubState::Failed && error.as_deref() == Some(link::REPLACED_MSG) && st.hub.probe_recent();
-    if !by_probe || st.hub.generation != generation {
-        return set_status(st, generation, state, error);
-    }
-    log!("hub 常驻连接被本机的测试连接替换，测试结束后重连");
-    if st.hub.probing > 0 {
-        st.hub.resume_after_probe = true;
-        set_status(st, generation, HubState::Connecting, Some("测试连接期间被临时替换，测试结束后自动重连".into()));
-    } else {
-        restart(shared, st);
-    }
 }
 
 /// 设置面板“测试连接”（异步任务）：独立连接，握手 → hello → welcome 后立即关闭；结果以 ServerMsg::TestHub 回复
@@ -123,18 +90,8 @@ pub async fn test(state: Shared, req_id: u64, address: String, allow_insecure: b
     let result = match (link::parse_address(&address, allow_insecure), token) {
         (Err(e), _) => Err(format!("地址无效：{e}")),
         (Ok(_), None) => Err("未填写 token，凭据管理器中也没有已保存的 token".into()),
-        (Ok(ep), Some(token)) => {
-            state.lock().unwrap().hub.probing += 1;
-            let r = link::probe(&ep, &Secret(token), &hello()).await.map_err(|f| f.msg);
-            let mut guard = state.lock().unwrap();
-            let st = &mut *guard;
-            st.hub.probing -= 1;
-            st.hub.probe_end = Some(Instant::now());
-            if st.hub.probing == 0 && std::mem::take(&mut st.hub.resume_after_probe) {
-                restart(&state, st);
-            }
-            r
-        }
+        // hello 带 probe: true，hub 不会替换常驻连接
+        (Ok(ep), Some(token)) => link::probe(&ep, &Secret(token), &hello()).await.map_err(|f| f.msg),
     };
     let msg = match result {
         Ok(version) => {

@@ -113,7 +113,7 @@
 | D-7.3 | 接管：hub 请求接管时先发 vt100 快照，再流式推送输出，并接受 hub 的输入 / resize；本地 GUI 可收回控制 | 接管期间本地 GUI 显示被接管标识；收回后 hub 只读或断开 | 计划中 |
 | D-7.4 | 本地开关可禁止接管（按机器；按会话为待定项） | 开关关闭时 hub 接管请求被拒绝 | 计划中 |
 | D-7.5 | hub 可选、默认关闭：设置存 `config.json` 的 `hub`（`enabled` / `address` / `allowInsecure`），连接在独立异步任务中，未启用 / 未配置 / 失败时 daemon 其它行为不变、不阻塞启动；设置或 token 变化时重建连接；状态以 `HubStatus` 推给 GUI | 不配置 hub 时行为与此前一致；运行中关停 hub 不影响本地会话、SSH、文件树 | 已实现未实测 |
-| D-7.6 | 测试连接 `TestHub`：用未保存的地址 / token 新建独立连接，DNS → TCP → TLS → 握手 → hello / welcome（总限时 10 s）后关闭，按阶段报错，成功回耗时与 hubVersion | 各类失败给出明确阶段与原因 | 已实现未实测 |
+| D-7.6 | 测试连接 `TestHub`：用未保存的地址 / token 新建独立连接，DNS → TCP → TLS → 握手 → hello（`probe: true`，hub 不登记、不替换常驻连接）/ welcome（总限时 10 s）后关闭，按阶段报错，成功回耗时与 hubVersion | 各类失败给出明确阶段与原因 | 已实现未实测 |
 | D-7.7 | machine-id：首次需要时生成 UUID v4 存 `%APPDATA%\tether\machine-id`（dev 为 `tether-dev`），之后不变（空或超过 64 字符时重新生成）；machineName 取 `COMPUTERNAME`，截断到 256 字符 | 重启 daemon 后 hub 中仍是同一台机器 | 已实现未实测 |
 
 实现见 `daemon/src/hub.rs`（与 State / 配置 / 凭据管理器的衔接）与 `daemon/src/hub/link.rs`（协议、建连、退避与错误分类，不依赖 daemon 其它模块，集成测试 `daemon/tests/hub.rs` 用本地 mock hub 直接测试）。WebSocket 用 tokio-tungstenite（只启用握手 / 帧编解码），TLS 用 rustls + ring provider（不引入 aws-lc-rs），根证书取 Windows 证书库（rustls-native-certs，企业自签 CA 导入系统即可用）。

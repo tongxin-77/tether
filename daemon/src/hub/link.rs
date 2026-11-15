@@ -52,13 +52,14 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
         .collect()
 }
 
-/// 构造 hello：machineName / version 截断到协议上限
+/// 构造常驻连接的 hello（probe 为 false）：machineName / version 截断到协议上限
 pub fn hello(machine_id: String, machine_name: &str, version: &str) -> Up {
     Up::Hello {
         proto: HUB_PROTO,
         machine_id,
         machine_name: truncate_chars(machine_name, NAME_MAX),
         version: truncate_chars(version, NAME_MAX),
+        probe: false,
     }
 }
 
@@ -169,7 +170,15 @@ fn random() -> f64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Up {
-    Hello { proto: u32, machine_id: String, machine_name: String, version: String },
+    Hello {
+        proto: u32,
+        machine_id: String,
+        machine_name: String,
+        version: String,
+        /// 测试连接的探测连接：hub 照常回 welcome，但不登记、不替换同一 machineId 的常驻连接；常驻连接为 false（不写出）
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        probe: bool,
+    },
     Sessions { sessions: Vec<SessionInfo> },
 }
 
@@ -421,8 +430,13 @@ pub async fn with_timeout<T>(limit: Duration, stage: &Stage, fut: impl Future<Ou
     }
 }
 
-/// 测试连接：新建独立连接，握手 → hello → welcome 后立即关闭（不发 sessions）；返回 hubVersion
+/// 测试连接：新建独立连接，握手 → hello（probe: true）→ welcome 后立即关闭（不发 sessions）；返回 hubVersion
 pub async fn probe(ep: &Endpoint, token: &Secret, hello: &Up) -> Result<String, Failure> {
+    let mut hello = hello.clone();
+    if let Up::Hello { probe, .. } = &mut hello {
+        *probe = true;
+    }
+    let hello = &hello;
     let stage = Mutex::new("DNS 解析");
     with_timeout(CONNECT_TIMEOUT, &stage, async {
         let mut ws = connect(ep, token, &stage).await?;
@@ -607,7 +621,9 @@ mod tests {
 
     #[test]
     fn up_wire_format() {
-        let hello = Up::Hello { proto: 1, machine_id: "9f1c".into(), machine_name: "DEV-PC".into(), version: "0.4.0".into() };
+        let probe = Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: true };
+        assert_eq!(serde_json::to_value(&probe).unwrap()["probe"], true);
+        let hello = hello("9f1c".into(), "DEV-PC", "0.4.0");
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
             r#"{"type":"hello","proto":1,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0"}"#

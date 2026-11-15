@@ -45,7 +45,7 @@ enum Mode {
     Normal,
     /// 首条消息后回 proto_unsupported 错误并以 4002 关闭
     ProtoUnsupported,
-    /// 回 welcome，收到首条 sessions 后回 replaced 错误并以 4004 关闭
+    /// 回 welcome；常驻连接（非 probe）收到首条 sessions 后回 replaced 错误并以 4004 关闭，probe 连接不受影响
     Replaced,
 }
 
@@ -74,6 +74,7 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                 };
                 let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, check).await else { return };
                 let mut sessions = 0;
+                let mut probe = false;
                 while let Some(Ok(msg)) = ws.next().await {
                     if let Message::Pong(data) = &msg {
                         if data.as_ref() == b"hb" {
@@ -85,6 +86,7 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                     let v: Value = serde_json::from_str(&text).unwrap();
                     match v["type"].as_str() {
                         Some("hello") => {
+                            probe = v["probe"] == true;
                             let _ = tx.send(Event::Hello(n, v));
                             let reply = match mode {
                                 Mode::Normal | Mode::Replaced => r#"{"type":"welcome","proto":1,"hubVersion":"9.9.9"}"#,
@@ -101,7 +103,7 @@ async fn mock_hub(mode: Mode) -> (u16, mpsc::UnboundedReceiver<Event>) {
                         Some("sessions") => {
                             sessions += 1;
                             let _ = tx.send(Event::Sessions(n, v));
-                            if let Mode::Replaced = mode {
+                            if let (Mode::Replaced, false) = (mode, probe) {
                                 let _ = ws.send(Message::Text(r#"{"type":"error","code":"replaced","message":"x"}"#.into())).await;
                                 let frame = CloseFrame { code: CloseCode::from(4004), reason: "replaced".into() };
                                 let _ = ws.close(Some(frame)).await;
@@ -154,7 +156,7 @@ fn make_link(port: u16, token: &str) -> (link::Link, Harness) {
     let link = link::Link {
         endpoint: link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap(),
         token: Secret(token.into()),
-        hello: link::Up::Hello { proto: 1, machine_id: "mid-1".into(), machine_name: "TEST-PC".into(), version: "0.0.1".into() },
+        hello: link::Up::Hello { proto: 1, machine_id: "mid-1".into(), machine_name: "TEST-PC".into(), version: "0.0.1".into(), probe: false },
         sessions: Arc::new(move || l.lock().unwrap().clone()),
         changed: changed.clone(),
         status: Arc::new(move |state, error| s.lock().unwrap().push((state, error))),
@@ -174,6 +176,7 @@ async fn hello_welcome_sessions_then_reconnect() {
 
     let Event::Hello(1, hello) = next(&mut rx).await else { panic!("应先收到 hello") };
     assert_eq!(hello["proto"], 1);
+    assert!(hello.get("probe").is_none(), "常驻连接不带 probe");
     assert_eq!(hello["machineId"], "mid-1");
     assert_eq!(hello["machineName"], "TEST-PC");
     assert_eq!(hello["version"], "0.0.1");
@@ -227,7 +230,7 @@ async fn unauthorized_is_fatal() {
 
     // 测试连接同样分类为认证失败
     let ep = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
-    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into() };
+    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: false };
     let f = link::probe(&ep, &Secret("wrong-token".into()), &hello).await.unwrap_err();
     assert_eq!(f.kind, link::Kind::Auth);
 }
@@ -236,10 +239,11 @@ async fn unauthorized_is_fatal() {
 async fn probe_reports_hub_version_and_closes() {
     let (port, mut rx) = mock_hub(Mode::Normal).await;
     let ep = link::parse_address(&format!("ws://127.0.0.1:{port}/agent"), true).unwrap();
-    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into() };
+    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: false };
     let version = link::probe(&ep, &Secret(TOKEN.into()), &hello).await.unwrap();
     assert_eq!(version, "9.9.9");
-    assert!(matches!(next(&mut rx).await, Event::Hello(1, _)));
+    let Event::Hello(1, sent) = next(&mut rx).await else { panic!("应收到 hello") };
+    assert_eq!(sent["probe"], true, "测试连接的 hello 应带 probe: true");
     // 测试连接不发 sessions
     assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
 }
@@ -286,4 +290,15 @@ async fn replaced_is_fatal() {
     assert_eq!(error.as_deref(), Some(link::REPLACED_MSG));
     // 没有第二次连接
     assert!(tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn probe_not_replaced() {
+    // replaced 模式下 probe 连接照常成功（hub 不替换 / 不登记探测连接）
+    let (port, mut rx) = mock_hub(Mode::Replaced).await;
+    let ep = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
+    let hello = link::Up::Hello { proto: 1, machine_id: "m".into(), machine_name: "n".into(), version: "v".into(), probe: false };
+    assert_eq!(link::probe(&ep, &Secret(TOKEN.into()), &hello).await.unwrap(), "9.9.9");
+    let Event::Hello(1, sent) = next(&mut rx).await else { panic!() };
+    assert_eq!(sent["probe"], true);
 }
