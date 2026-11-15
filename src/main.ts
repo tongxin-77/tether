@@ -423,7 +423,10 @@ $("empty-new").addEventListener("click", createSession);
 setInterval(() => !emptyPanel.hidden && renderEmpty(), 60_000);
 
 // 容器尺寸变化时重新 fit 当前会话（含文件树展开 / 收起导致的宽度变化）；fit 改变行列后由 term.onResize 同步给 daemon
-new ResizeObserver(() => activeView()?.fit.fit()).observe(terminals);
+// 主机信息状态条显示 / 隐藏时终端卡片高度变化，同样需要 fit
+const fitObserver = new ResizeObserver(() => activeView()?.fit.fit());
+fitObserver.observe(terminals);
+fitObserver.observe($("host-info"));
 
 // 激活会话 + 窗口焦点上报给 daemon，用于判定是否弹系统通知。daemon 只记一份焦点状态，多个窗口时：
 // 获得焦点立即上报并广播 gui-focus；失焦延迟上报，期间另一个本应用窗口获得焦点则取消，避免覆盖它的上报

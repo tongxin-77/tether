@@ -363,9 +363,11 @@ li:hover .close, li.active .close { visibility: visible; }
 
 /* ================= 中间列 ================= */
 /* #terminals 本身不画底色：卡片头、提示条、终端卡片（::before）各自是圆角块。--top 为终端卡片顶部位置，提示条显示时下移 */
-#terminals { --top: calc(var(--card-head) + var(--gap)); flex: 1; position: relative; min-width: 0; }
+#terminals { --top: calc(var(--card-head) + var(--gap)); --bottom: 0px; flex: 1; position: relative; min-width: 0; }
+/* 主机信息状态条在终端卡片下方：显示时终端卡片 / 空状态 / 预览底部上移 */
+#terminals:has(> #host-info:not([hidden])) { --bottom: calc(30px + var(--gap)); }
 #terminals.banner, #terminals:has(> #daemon-banner:not([hidden])) { --top: calc(var(--card-head) + var(--banner-h) + 2 * var(--gap)); }
-#terminals::before { content: ""; position: absolute; inset: var(--top) 0 0 0; background: var(--term-bg); border-radius: var(--r-xl); }
+#terminals::before { content: ""; position: absolute; inset: var(--top) 0 var(--bottom) 0; background: var(--term-bg); border-radius: var(--r-xl); }
 
 /* 卡片头：图标块 + 会话名 / 目录 · shell + Claude 状态 */
 #card-head {
@@ -403,7 +405,7 @@ li:hover .close, li.active .close { visibility: visible; }
 /* 每个会话一个容器，切换时只隐藏不销毁。
    留白用定位偏移而非 padding：fit 插件读父元素高度时会把 border-box 的 padding 算进可用高度，导致底部被裁；
    内边距放在 .xterm 元素上（fit 会扣除 .xterm 自身的 padding） */
-.term { position: absolute; top: var(--top); right: 0; bottom: 0; left: 0; overflow: hidden; background: var(--term-inner); border-radius: var(--r-xl); }
+.term { position: absolute; top: var(--top); right: 0; bottom: var(--bottom); left: 0; overflow: hidden; background: var(--term-inner); border-radius: var(--r-xl); }
 .term .xterm { padding: 12px 4px 6px 14px; }
 .term.hidden { display: none; }
 
@@ -437,7 +439,7 @@ li:hover .close, li.active .close { visibility: visible; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* 无会话时的空状态：最近关闭的目录（覆盖终端卡片位置，与 .term 同级） */
-#empty { position: absolute; inset: var(--top) 0 0 0; z-index: 4; display: flex; justify-content: center; padding: 24px; overflow-y: auto; background: var(--surface); border-radius: var(--r-xl); }
+#empty { position: absolute; inset: var(--top) 0 var(--bottom) 0; z-index: 4; display: flex; justify-content: center; padding: 24px; overflow-y: auto; background: var(--surface); border-radius: var(--r-xl); }
 /* 内容整体左对齐于居中的盒子；margin auto 垂直居中，超高时可滚动 */
 #empty-box { width: min(520px, 100%); display: flex; flex-direction: column; margin: auto 0; }
 #empty-title { margin: 0; font-size: 20px; font-weight: 800; color: var(--text); }
@@ -468,7 +470,7 @@ li:hover .close, li.active .close { visibility: visible; }
 
 /* ================= Markdown 预览：覆盖终端卡片（.term 样式不变） ================= */
 /* 打开时隐藏下方终端，半透明下也不透出终端文字 */
-#preview { position: absolute; inset: var(--top) 0 0 0; z-index: 5; display: flex; flex-direction: column; overflow: hidden; background: var(--popover); border-radius: var(--r-xl); box-shadow: var(--shadow-modal); }
+#preview { position: absolute; inset: var(--top) 0 var(--bottom) 0; z-index: 5; display: flex; flex-direction: column; overflow: hidden; background: var(--popover); border-radius: var(--r-xl); box-shadow: var(--shadow-modal); }
 #terminals:has(> #preview:not([hidden])) > .term { visibility: hidden; }
 #pv-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 14px 14px 14px 18px; border-bottom: 1px solid var(--border); }
 .pv-ico { color: var(--accent); }
@@ -514,7 +516,7 @@ li:hover .close, li.active .close { visibility: visible; }
 /* 收起：只留一个展开按钮 */
 #files.collapsed { width: 44px; }
 #files.collapsed .tree-panel { padding: 7px; }
-#files.collapsed .tree-panel > :not(#files-head), #files.collapsed #files-head > :not(#fs-toggle), #files.collapsed #host-info { display: none; }
+#files.collapsed .tree-panel > :not(#files-head), #files.collapsed #files-head > :not(#fs-toggle) { display: none; }
 
 #fs-tree { flex: 1; min-height: 0; margin: 0 -6px; padding: 0 6px; overflow: auto; font-size: 13px; user-select: none; }
 #fs-tree:focus { outline: none; }
@@ -544,8 +546,8 @@ svg.fs-icon { width: 15px; height: 15px; color: var(--text-3); }
 .fs-t-bar { height: 8px; overflow: hidden; background: var(--surface-hover); border-radius: 99px; }
 .fs-t-bar i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, var(--accent-muted), var(--accent)); border-radius: 99px; }
 
-/* 主机信息：单行状态条，悬停或点击（.open）弹出详情 */
-#host-info { position: relative; flex-shrink: 0; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 11.5px; color: var(--text-2); background: var(--surface); border-radius: var(--r-md); outline: none; cursor: default; user-select: none; }
+/* 主机信息：终端卡片下方的单行状态条，悬停或点击（.open）弹出详情 */
+#host-info { position: absolute; right: 0; bottom: 0; left: 0; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 11.5px; color: var(--text-2); background: var(--surface); border-radius: var(--r-md); outline: none; cursor: default; user-select: none; }
 #host-info > svg.i { width: 13px; height: 13px; color: var(--accent); }
 #host-info:hover, #host-info.open { background: var(--surface-hover); }
 .hb { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -556,7 +558,7 @@ svg.fs-icon { width: 15px; height: 15px; color: var(--text-3); }
 .hi-note { color: var(--text-3); }
 .host-pop {
   position: absolute;
-  right: 0;
+  left: 0;
   bottom: calc(100% + 8px);
   z-index: 30;
   width: 300px;
@@ -755,6 +757,7 @@ dialog #h-test { margin-right: auto; }
 /* 会话项拖动中（拖出窗口外松开即成为独立窗口） */
 #session-list li.dragging { opacity: 0.5; cursor: grabbing; }
 /* 拖出的独立窗口：只有中间列，无会话列表与文件栏 */
-body.detached #sidebar, body.detached #files { display: none; }
+body.detached #sidebar, body.detached #files, body.detached #host-info { display: none !important; }
+body.detached #terminals:has(> #host-info) { --bottom: 0px; }
 
 @media (prefers-reduced-motion: reduce) { *, *::after { animation: none !important; transition: none !important; } }

@@ -50,8 +50,6 @@ let reqSeq = Math.floor(Math.random() * 2 ** 40);
 export function initHostInfo(d: Deps) {
   deps = d;
   document.addEventListener("visibilitychange", kick);
-  // 文件树的收起 / 展开按钮（files.ts 的监听先注册，此时 collapsed 已更新）
-  $("fs-toggle").addEventListener("click", kick);
   // 点击状态条固定 / 收起详情（悬停时由 CSS 显示），点别处收起
   card.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -89,7 +87,8 @@ export function onHostStats(m: HostStatsServerMsg) {
 }
 
 function canPoll() {
-  return document.visibilityState === "visible" && !panel.classList.contains("collapsed") && panel.offsetWidth > 0;
+  // 文件栏不可见（独立窗口）时不采样；文件栏收起不影响（状态条在终端下方）
+  return document.visibilityState === "visible" && panel.offsetWidth > 0;
 }
 
 /** 条件可能变化时调用：没有进行中的请求则立即采样 */
