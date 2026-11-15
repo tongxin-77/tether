@@ -707,8 +707,8 @@ pub fn on_output(state: &Shared, id: u32, data: &[u8]) -> bool {
     let sig = std::mem::take(s.parser.callbacks_mut());
     let gui_attached = st.gui.as_ref().is_some_and(|g| g.attached.contains(&id));
     let taken = s.info.taken_over;
-    // 有 GUI 接入或 hub 接管中时由对端 xterm 回复，避免重复应答
-    if let (Some((row, col)), false) = (sig.cpr, gui_attached || taken) {
+    // 有 GUI 接入时由 xterm 回复，避免重复应答（hub 网页端不回复终端查询）
+    if let (Some((row, col)), false) = (sig.cpr, gui_attached) {
         // 先格式化成完整字节串再一次写入：write! 会拆成多次小写入，ConPTY 收到碎片序列不会识别
         s.backend.write(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
     }
