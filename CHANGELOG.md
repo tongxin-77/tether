@@ -4,6 +4,19 @@
 
 ## [未发布]
 
+## [0.5.4] - 2026-11-16
+
+### ✨ 新增
+
+- **文件可一键发给 Claude**
+  - 文件树右键「发给 Claude」，向当前会话输入 `@路径`（不回车），支持多选
+  - 会话目录内用相对路径，含空格时加引号
+  - 从资源管理器拖文件到终端区插入路径；Claude 运行中插入 `@路径`，拖到文件树仍为上传
+- **恢复 Claude 历史对话**
+  - 「新建会话」菜单新增「恢复 Claude 对话…」，列出目录下的历史对话（标题、时间、消息数），可过滤
+  - 选中后新开会话恢复该对话，沿用原来的权限模式
+  - 已在某个会话中打开的对话标注「已打开」，点击直接切换过去
+
 ## [0.5.3] - 2026-11-16
 
 ### ✨ 新增
@@ -166,7 +179,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.3...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/tongxin-77/tether/releases/tag/v0.5.4
 [0.5.3]: https://github.com/tongxin-77/tether/releases/tag/v0.5.3
 [0.5.2]: https://github.com/tongxin-77/tether/releases/tag/v0.5.2
 [0.5.1]: https://github.com/tongxin-77/tether/releases/tag/v0.5.1
