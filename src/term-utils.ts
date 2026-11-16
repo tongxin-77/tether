@@ -57,3 +57,8 @@ export function branchDir(host: string | null, cwd: string): string | null {
 export function branchLabel(branch: string | null | undefined): string {
   return branch ? `⎇ ${branch}` : "";
 }
+
+/** 终端字号：4K 及以上（屏幕物理宽度 ≥ 3840）用 14，其余用更紧凑的 13 */
+export function terminalFontSize(screenWidth: number, dpr: number): number {
+  return screenWidth * dpr >= 3840 ? 14 : 13;
+}

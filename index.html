@@ -1,11 +1,12 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="cream">
+<html lang="zh-CN" data-theme="cream-light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tether</title>
-    <!-- 首帧前套用上次选择的主题，避免闪烁；校验与切换见 src/themes.ts -->
-    <script>try { var t = localStorage.getItem("tether.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+    <!-- 首帧前套用上次选择的主题，避免闪烁。内联脚本不能 import，逻辑须与 src/theme-utils.ts 的 parseTheme 一致（theme-utils.test.ts 会执行本脚本比对）：
+         存储值为 "<风格>-light|dark"；旧值 cream / cream-night / glass 迁移；其它值保持上面的默认主题 -->
+    <script>try { var t = localStorage.getItem("tether.theme"); t = { cream: "cream-light", "cream-night": "cream-dark", glass: "glass-light" }[t] || t; if (/^(cream|minimal|milk|glass|morandi|modern)-(light|dark)$/.test(t)) document.documentElement.dataset.theme = t; } catch (e) {}</script>
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
@@ -27,8 +28,8 @@
         <button id="update-badge" hidden></button>
         <div class="foot-row">
           <button id="settings-btn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>设置</button>
-          <!-- 轮换主题（奶油 / 奶咖夜 …），完整列表在设置面板 -->
-          <button id="theme-btn" class="icon-btn" title="切换主题"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8a2.83 2.83 0 0 0 4 4 4 4 0 1 1-4-4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.3 17.7-1.4 1.4"/><path d="m19.1 4.9-1.4 1.4"/></svg></button>
+          <!-- 同一风格内切换亮色 / 暗色（图标与提示由 main.ts 按当前模式填写），风格在设置面板选择 -->
+          <button id="theme-btn" class="icon-btn"></button>
         </div>
       </div>
     </aside>
@@ -95,6 +96,19 @@
         </div>
         <div id="pv-body" tabindex="-1"><article id="pv-doc"></article></div>
       </div>
+      <!-- 提交历史：覆盖在终端卡片上方（git-panel.ts 渲染）；上为 log --graph 列表，选中提交后下方显示改动 -->
+      <div id="git-panel" hidden>
+        <div id="gp-head">
+          <span id="gp-ico"></span>
+          <span id="gp-title">提交历史</span>
+          <span id="gp-branch"></span>
+          <button id="gp-close" class="fs-btn" title="关闭（Esc）"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div id="gp-body">
+          <div id="gp-list" tabindex="-1"></div>
+          <div id="gp-detail" hidden></div>
+        </div>
+      </div>
       <!-- 主机信息：单行状态条，悬停或点击弹出详情（host-info.ts 渲染） -->
       <div id="host-info" tabindex="0" hidden></div>
     </main>
@@ -115,6 +129,8 @@
       </section>
     </aside>
     <div id="fs-menu" hidden></div>
+    <!-- 卡片头分支的菜单：过滤 / 查看历史 / 本地与远程分支（git-panel.ts 渲染） -->
+    <div id="git-menu" hidden></div>
     <dialog id="fs-dialog">
       <form method="dialog">
         <p id="fs-d-msg"></p>
@@ -154,7 +170,7 @@
         <div class="section-head">外观</div>
         <div class="rows">
           <label class="row">
-            <span class="rt"><b>主题</b><small>立即生效；侧栏底部的按钮可快速轮换</small></span>
+            <span class="rt"><b>主题风格</b><small>立即生效；侧栏底部的按钮切换亮色 / 暗色</small></span>
             <select id="theme-select"></select>
           </label>
           <label class="row range">

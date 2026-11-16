@@ -21,13 +21,14 @@ import { type FsClientMsg, type FsServerMsg, ask, forgetFiles, initFiles, onFsMe
 import { attachFileLinks } from "./file-links";
 import { attachTableSelect, cellSelectionText, clearCellSelection } from "./table-select";
 import { closePreview, initPreview } from "./preview";
+import { closeGitPanel, initGitPanel } from "./git-panel";
 import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
 import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostStats, showHostInfo } from "./host-info";
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, branchDir, branchLabel, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
-import { applyTheme, currentTheme, getThemes, nextTheme, registerTerminal, setTransparent, unregisterTerminal, xtermTheme } from "./themes";
+import { TERMINAL_OPTIONS, terminalFontSize, branchDir, branchLabel, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
 type Status = "running" | "waiting" | "exited";
@@ -297,19 +298,22 @@ document.getElementById("new-btn")!.addEventListener("click", (ev) => {
 });
 document.addEventListener("click", () => (newMenu.hidden = true));
 
-// 主题：设置面板下拉框从注册表生成，侧栏按钮轮换；切换立即生效并记在本机（不随设置“取消”回退）
+// 主题：设置面板选“风格”，侧栏按钮在同一风格内切换亮色 / 暗色；切换立即生效并记在本机（不随设置“取消”回退）
 const themeSelect = $<HTMLSelectElement>("theme-select");
-themeSelect.replaceChildren(...getThemes().map((t) => new Option(t.label, t.id)));
+themeSelect.replaceChildren(...getStyles().map((s) => new Option(s.label, s.id)));
 const syncThemeUi = () => {
-  themeSelect.value = currentTheme().id;
-  $("theme-btn").title = `切换主题（当前：${currentTheme().label}）`;
+  const t = currentTheme();
+  themeSelect.value = t.style;
+  // 图标表示当前模式，提示表示点击后的模式
+  $("theme-btn").innerHTML = icon(t.dark ? "moon" : "sun");
+  $("theme-btn").title = t.dark ? "切换到亮色" : "切换到暗色";
 };
 themeSelect.addEventListener("change", () => {
-  applyTheme(themeSelect.value);
+  setStyle(themeSelect.value);
   syncThemeUi();
 });
 $("theme-btn").addEventListener("click", () => {
-  nextTheme();
+  toggleDark();
   syncThemeUi();
 });
 syncThemeUi();
@@ -419,6 +423,20 @@ initHostInfo({ send, active: () => activeView()?.info });
 initHub({ send });
 initPreview({
   openUrl: (url) => send({ type: "openUrl", url }),
+  onClose: () => {
+    const v = activeView();
+    v?.fit.fit();
+    v?.term.focus();
+  },
+});
+
+initGitPanel({
+  dir: () => {
+    const s = activeView()?.info;
+    return s ? branchDir(s.host, s.cwd) : null;
+  },
+  onSwitched: refreshBranch,
+  copy: (text) => writeText(text).then(showCopied),
   onClose: () => {
     const v = activeView();
     v?.fit.fit();
@@ -1125,7 +1143,7 @@ function addView(info: SessionInfo): View {
   const term = new Terminal({
     ...TERMINAL_OPTIONS,
     fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace',
-    fontSize: 14,
+    fontSize: terminalFontSize(screen.width, devicePixelRatio),
     cursorBlink: true,
     // 窗口半透明时终端背景透明，由终端卡片提供半透明底色
     allowTransparency: true,
@@ -1288,7 +1306,10 @@ function activeView() {
 
 function activate(id: number) {
   // 预览属于切换前的会话
-  if (id !== activeId) closePreview();
+  if (id !== activeId) {
+    closePreview();
+    closeGitPanel();
+  }
   activeId = id;
   for (const v of views.values()) {
     const on = v.info.id === id;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { terminalFontSize, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -171,5 +171,18 @@ describe("branchLabel", () => {
     expect(branchLabel(null)).toBe("");
     expect(branchLabel(undefined)).toBe("");
     expect(branchLabel("")).toBe("");
+  });
+});
+
+describe("terminalFontSize", () => {
+  it("4K 及以上（物理宽度 ≥ 3840）用 14", () => {
+    expect(terminalFontSize(3840, 1)).toBe(14);
+    expect(terminalFontSize(2560, 1.5)).toBe(14); // 4K 150% 缩放
+    expect(terminalFontSize(1920, 2)).toBe(14); // 4K 200% 缩放
+  });
+  it("低于 4K 用更紧凑的 13", () => {
+    expect(terminalFontSize(1920, 1)).toBe(13);
+    expect(terminalFontSize(2560, 1)).toBe(13); // 2K
+    expect(terminalFontSize(1536, 1.25)).toBe(13); // 1080p 125% 缩放
   });
 });

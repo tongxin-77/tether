@@ -1,12 +1,13 @@
 /* 视觉语言：奶油风（docs/design/02-cream.html）。奶白窗口上三块“软垫”——左会话栏 / 中终端卡 / 右文件栏，以留白分隔、不用硬分割线；
    大圆角、暖色阴影，终端为暖棕深底卡片。
-   主题：组件样式只引用语义变量；每套主题是下面“主题”段里的一个 :root[data-theme="<id>"] 块（与 src/themes.ts 的注册表一一对应）。
+   主题：组件样式只引用语义变量；每套主题是下面“主题”段里的一个 :root[data-theme="<id>"] 块（与 src/theme-utils.ts 的注册表一一对应，id 为 <风格>-light / <风格>-dark）。
    窗口透明度：窗口为透明窗口，窗口底色 / 软垫 / 终端卡片等大面积底色的 alpha 取 --alpha（main.ts 按设置写入，默认 1 即完全不透明）；
-   对话框 / 菜单等浮层用 --alpha-strong（至少 0.88）保证可读。文字、图标、边框颜色不受影响；不使用 backdrop-filter（内存开销大；仅玻璃主题经 --glass-filter 启用） */
+   对话框 / 菜单等浮层用 --alpha-strong（至少 0.88）保证可读。文字、图标、边框颜色不受影响；不使用 backdrop-filter（内存开销大；仅毛玻璃主题经 --glass-filter 启用） */
 
 /* ================= 主题 ================= */
 /* 每个主题块需给出同一组语义变量：*-rgb 为空格分隔的 RGB 通道（供 alpha 合成），其余为普通颜色 */
-:root[data-theme="cream"] {
+/* 奶油：亮色 */
+:root[data-theme="cream-light"] {
   color-scheme: light;
   --bg-rgb: 251 246 238;            /* 窗口底色：奶白 */
   --surface-rgb: 244 236 223;       /* 软垫面板 */
@@ -59,8 +60,8 @@
   --shadow-accent: 0 1px 0 rgba(255, 255, 255, 0.35) inset, 0 8px 18px -8px rgba(168, 111, 55, 0.7);
 }
 
-/* 奶咖夜 */
-:root[data-theme="cream-night"] {
+/* 奶油：暗色（奶咖夜） */
+:root[data-theme="cream-dark"] {
   color-scheme: dark;
   --bg-rgb: 42 33 27;
   --surface-rgb: 51 41 31;
@@ -113,9 +114,239 @@
   --shadow-accent: 0 8px 18px -8px rgba(0, 0, 0, 0.7);
 }
 
-/* 玻璃（docs/design/fd-03-glass.html）：黄昏湖面渐变壁纸上叠毛玻璃面板，烟色玻璃终端。
+/* 极简：亮色（docs/design/fd-01-minimal.html）。浅灰窗口上白色卡片，白纸终端；层级靠细线与字重，钴蓝为唯一强调色 */
+:root[data-theme="minimal-light"] {
+  color-scheme: light;
+  --bg-rgb: 246 247 248;            /* 设计稿 --bg */
+  --surface-rgb: 255 255 255;       /* 设计稿 --surface（卡片） */
+  --surface-hover-rgb: 239 241 243; /* 设计稿 --line-2 */
+  --raised-rgb: 255 255 255;
+  --border: #e6e8eb;                /* 设计稿 --line */
+  --text: #16191d;
+  --text-2: #5d646c;
+  --text-3: #9aa0a7;
+  --accent: #3355e0;
+  --accent-strong: #2643c4;
+  --accent-soft: #eef2fd;
+  --accent-muted: #7d93ee;
+  --on-accent: #ffffff;
+  --success: #2f855a;
+  --success-text: #2f855a;
+  --success-soft: #e6f2eb;
+  --warning: #b7791f;               /* 设计稿 --amber */
+  --warning-text: #975f12;
+  --warning-soft: #faf0de;
+  --danger: #c53030;
+  --danger-soft: #fbeaea;
+  --special: #7357e8;               /* 设计稿 --violet */
+  --special-soft: #f0ecfd;
+  --status-thinking: var(--accent); /* 设计稿 .st-thinking 等 */
+  --status-thinking-bg: var(--accent-soft);
+  --status-waiting: var(--warning);
+  --status-waiting-bg: var(--warning-soft);
+  --status-background: var(--special);
+  --status-background-bg: var(--special-soft);
+  --status-done: var(--success);
+  --status-done-bg: var(--success-soft);
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 255 255 255;       /* 终端即白色卡片 */
+  --term-inner: transparent;
+  --term-fg: #2a2f36;
+  --code-bg: #f6f7f8;
+  --code-fg: #2a2f36;
+  --selection: rgba(51, 85, 224, 0.16);
+  --scrim: rgba(246, 247, 248, 0.72); /* 设计稿 .scrim */
+  --sb-thumb: rgba(22, 25, 29, 0.18);
+  --sb-thumb-hover: rgba(22, 25, 29, 0.32);
+  --sb-thumb-idle: rgba(22, 25, 29, 0.06);
+  --shadow: 0 1px 2px rgba(22, 25, 29, 0.06);
+  --shadow-soft: 0 1px 2px rgba(22, 25, 29, 0.06);
+  --shadow-pop: 0 12px 28px -12px rgba(22, 25, 29, 0.22), 0 0 0 1px var(--border);
+  --shadow-modal: 0 30px 70px -24px rgba(22, 25, 29, 0.3), 0 0 0 1px var(--border);
+  --shadow-accent: 0 1px 2px rgba(51, 85, 224, 0.25);
+  --r-xl: 8px;
+  --r-lg: 6px;
+  --r-md: 5px;
+  --r-sm: 4px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --term-edge: inset 0 0 0 1px var(--border); /* 设计稿 .card 的 1px 细线 */
+}
+
+/* 极简：暗色（原版 docs/design/01-minimal.html 的暗色：--paper 窗口、--sheet 卡片与终端，钴蓝提亮） */
+:root[data-theme="minimal-dark"] {
+  color-scheme: dark;
+  --bg-rgb: 18 19 23;               /* 原版 --paper */
+  --surface-rgb: 13 14 17;          /* 原版 --sheet */
+  --surface-hover-rgb: 27 29 34;    /* 原版 --hover */
+  --raised-rgb: 23 24 29;
+  --border: #24262c;
+  --text: #e9eaee;
+  --text-2: #a3a7b1;
+  --text-3: #6b707b;
+  --accent: #7d93ff;
+  --accent-strong: #9aabff;
+  --accent-soft: #1c2140;
+  --accent-muted: #4f5fb0;
+  --on-accent: #0d0e11;
+  --success: #5cc28e;
+  --success-text: #5cc28e;
+  --success-soft: #15291f;
+  --warning: #e0a24a;
+  --warning-text: #e7b464;
+  --warning-soft: #2e2412;
+  --danger: #f07a72;
+  --danger-soft: #331a19;
+  --special: #b897f2;
+  --special-soft: #261e38;
+  --status-thinking: var(--accent);
+  --status-thinking-bg: var(--accent-soft);
+  --status-waiting: var(--warning);
+  --status-waiting-bg: var(--warning-soft);
+  --status-background: var(--special);
+  --status-background-bg: var(--special-soft);
+  --status-done: var(--success);
+  --status-done-bg: var(--success-soft);
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 13 14 17;
+  --term-inner: transparent;
+  --term-fg: #d7d9df;
+  --code-bg: #0d0e11;
+  --code-fg: #d7d9df;
+  --selection: rgba(125, 147, 255, 0.28);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --sb-thumb: rgba(233, 234, 238, 0.16);
+  --sb-thumb-hover: rgba(233, 234, 238, 0.3);
+  --sb-thumb-idle: rgba(233, 234, 238, 0.05);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 12px 28px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--border);
+  --shadow-modal: 0 30px 70px -24px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--border);
+  --shadow-accent: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --r-xl: 8px;
+  --r-lg: 6px;
+  --r-md: 5px;
+  --r-sm: 4px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --term-edge: inset 0 0 0 1px var(--border);
+}
+
+/* 奶油风：亮色（docs/design/fd-02-cream.html）。奶油窗口上奶白卡片，燕麦奶纸面终端（浅底深字），焦糖强调 */
+:root[data-theme="milk-light"] {
+  color-scheme: light;
+  --bg-rgb: 246 238 223;            /* 设计稿 --cream（窗口底色） */
+  --surface-rgb: 255 251 244;       /* 设计稿 --milk（卡片） */
+  --surface-hover-rgb: 236 223 201; /* 设计稿 --oat */
+  --raised-rgb: 255 251 244;
+  --border: #e4d3b8;
+  --text: #5a3f2c;                  /* 设计稿 --roast */
+  --text-2: #8a6b52;
+  --text-3: #ad957f;
+  --accent: #b9824a;                /* 设计稿 --caramel */
+  --accent-strong: #a87340;
+  --accent-soft: #f3e3ca;
+  --accent-muted: #d8a86e;
+  --on-accent: #fffbf4;
+  --success: #7e9a6a;               /* 设计稿 --sage */
+  --success-text: #55703f;
+  --success-soft: #e2ead9;
+  --warning: #e3a944;               /* 设计稿 --honey */
+  --warning-text: #8e6210;
+  --warning-soft: #fbe7b9;
+  --danger: #b4676e;                /* 设计稿 --berry */
+  --danger-soft: #f3dadb;
+  --special: #56647f;               /* 设计稿 --mist 系 */
+  --special-soft: #e3e6ef;
+  --status-thinking: #9a6630;       /* 设计稿 .cs.think 等 */
+  --status-thinking-bg: #f5e4cc;
+  --status-waiting: #8e6210;
+  --status-waiting-bg: #fbe7b9;
+  --status-background: #56647f;
+  --status-background-bg: #e3e6ef;
+  --status-done: #55703f;
+  --status-done-bg: #e2ead9;
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 247 238 223;       /* 设计稿 .term 纸面 */
+  --term-inner: transparent;
+  --term-fg: #4e3929;
+  --code-bg: #f7eedf;
+  --code-fg: #4e3929;
+  --selection: rgba(185, 130, 74, 0.22);
+  --scrim: rgba(90, 63, 44, 0.22);
+  --sb-thumb: rgba(173, 140, 100, 0.4);
+  --sb-thumb-hover: rgba(173, 140, 100, 0.6);
+  --sb-thumb-idle: rgba(173, 140, 100, 0.12);
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 6px 18px -8px rgba(120, 82, 45, 0.22), 0 2px 4px -2px rgba(120, 82, 45, 0.12);
+  --shadow-soft: 0 6px 18px -10px rgba(120, 82, 45, 0.28);
+  --shadow-pop: 0 30px 60px -24px rgba(110, 72, 38, 0.35), 0 10px 24px -12px rgba(110, 72, 38, 0.2);
+  --shadow-modal: 0 30px 60px -24px rgba(110, 72, 38, 0.35), 0 10px 24px -12px rgba(110, 72, 38, 0.2);
+  --shadow-accent: 0 4px 10px -4px rgba(185, 130, 74, 0.7);
+  --term-edge: inset 0 2px 6px rgba(120, 82, 45, 0.1), inset 0 0 0 1px rgba(216, 193, 160, 0.45); /* 设计稿 .term 纸面凹槽 */
+}
+
+/* 奶油风：暗色（原版 docs/design/02-cream.html 的暗色色板，按 fd-02 的层次：卡片比窗口亮、纸面终端介于两者之间） */
+:root[data-theme="milk-dark"] {
+  color-scheme: dark;
+  --bg-rgb: 31 24 19;               /* 原版暗色 --canvas */
+  --surface-rgb: 42 33 27;          /* 原版暗色 --cream */
+  --surface-hover-rgb: 62 50 39;    /* 原版暗色 --pad-2 */
+  --raised-rgb: 42 33 27;
+  --border: #4a3c30;
+  --text: #f1e4d2;
+  --text-2: #c9b49d;
+  --text-3: #8f7b67;
+  --accent: #d6995a;
+  --accent-strong: #e8b277;
+  --accent-soft: #4a3624;
+  --accent-muted: #8c6c50;
+  --on-accent: #2a1d12;
+  --success: #9ab386;
+  --success-text: #a9bf8e;
+  --success-soft: #36402b;
+  --warning: #e3a944;
+  --warning-text: #e6bc62;
+  --warning-soft: #4a3b1e;
+  --danger: #d08a90;
+  --danger-soft: #4a2a2d;
+  --special: #a3b0c8;
+  --special-soft: #2f3442;
+  --status-thinking: #e6b47a;
+  --status-thinking-bg: #4a3624;
+  --status-waiting: #e6bc62;
+  --status-waiting-bg: #4a3b1e;
+  --status-background: #a3b0c8;
+  --status-background-bg: #2f3442;
+  --status-done: #a9bf8e;
+  --status-done-bg: #36402b;
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 36 27 21;          /* 原版暗色 --t-bg */
+  --term-inner: transparent;
+  --term-fg: #efe2cf;
+  --code-bg: #241b15;
+  --code-fg: #efe2cf;
+  --selection: rgba(214, 153, 90, 0.3);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --sb-thumb: rgba(239, 226, 207, 0.16);
+  --sb-thumb-hover: rgba(239, 226, 207, 0.3);
+  --sb-thumb-idle: rgba(239, 226, 207, 0.05);
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 30px -12px rgba(0, 0, 0, 0.6);
+  --shadow-soft: 0 6px 18px -10px rgba(0, 0, 0, 0.6);
+  --shadow-pop: 0 30px 60px -24px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--border);
+  --shadow-modal: 0 30px 60px -24px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--border);
+  --shadow-accent: 0 4px 10px -4px rgba(0, 0, 0, 0.7);
+  --term-edge: inset 0 2px 6px rgba(0, 0, 0, 0.25), inset 0 0 0 1px rgba(140, 108, 80, 0.3);
+}
+
+/* 毛玻璃：亮色（docs/design/fd-03-glass.html）：黄昏湖面渐变壁纸上叠毛玻璃面板，烟色玻璃终端。
    设计稿透明度滑条 --a 默认 0.55，这里对应 --alpha = 1：玻璃色 alpha = 0.55 × --alpha；壁纸各层颜色也乘 --alpha，窗口半透明时整张壁纸随之变淡、透出桌面 */
-:root[data-theme="glass"] {
+:root[data-theme="glass-light"] {
   color-scheme: light;
   --bg-rgb: 246 248 253;            /* 输入框 / 开关等需要不透明底色处 */
   --surface-rgb: 250 251 255;       /* 设计稿 --glass */
@@ -193,6 +424,333 @@
     linear-gradient(160deg, rgb(111 143 191 / var(--alpha)) 0%, rgb(180 155 192 / var(--alpha)) 45%, rgb(229 184 160 / var(--alpha)) 100%);
 }
 
+/* 毛玻璃：暗色。沿用 fd-03 的结构（160° 底色渐变 + 三团光晕 + 两个模糊色斑 + 窗口玻璃层），颜色取原版 03-glass.html 暗色的壁纸 / 玻璃 / 文字色，
+   调成“夜色湖面”：深靛 → 暗紫 → 暗砖红；玻璃为深蓝灰烟晶，强调色为提亮的湖蓝。透明度规则同亮色 */
+:root[data-theme="glass-dark"] {
+  color-scheme: dark;
+  --bg-rgb: 22 27 38;               /* 输入框 / 开关等需要不透明底色处 */
+  --surface-rgb: 24 30 44;          /* 玻璃（原版暗色 --glass-rgb 偏蓝） */
+  --surface-hover-rgb: 44 52 70;
+  --raised-rgb: 40 48 66;
+  --border: rgba(255, 255, 255, 0.12); /* 原版暗色 --edge */
+  --text: #e3e8f2;
+  --text-2: #a2adc2;
+  --text-3: #6f7a90;
+  --accent: #5fb0cf;                /* fd-03 --lake 提亮 */
+  --accent-strong: #82c4dd;
+  --accent-soft: rgba(95, 176, 207, 0.16);
+  --accent-muted: #2f7f9c;
+  --on-accent: #0b1620;
+  --success: #5fd08f;               /* 原版暗色 --done 等 */
+  --success-text: #6fd89b;
+  --success-soft: rgba(95, 208, 143, 0.14);
+  --warning: #f0b44a;
+  --warning-text: #f2c06a;
+  --warning-soft: rgba(240, 180, 74, 0.16);
+  --danger: #ff7d65;
+  --danger-soft: rgba(255, 125, 101, 0.16);
+  --special: #4fd1b8;
+  --special-soft: rgba(79, 209, 184, 0.14);
+  --status-thinking: #a89cff;
+  --status-thinking-bg: rgba(168, 156, 255, 0.16);
+  --status-waiting: #f0b44a;
+  --status-waiting-bg: rgba(240, 180, 74, 0.16);
+  --status-background: #4fd1b8;
+  --status-background-bg: rgba(79, 209, 184, 0.14);
+  --status-done: #5fd08f;
+  --status-done-bg: rgba(95, 208, 143, 0.14);
+  --chart-1: #a89cff;
+  --chart-2: var(--accent);
+  --chart-3: #f0b44a;
+  --term-bg-rgb: 8 12 20;           /* 原版暗色 --term-rgb 偏蓝 */
+  --term-inner: transparent;
+  --term-fg: #d8dee9;
+  --code-bg: #151925;
+  --code-fg: #d8dee9;
+  --selection: rgba(95, 176, 207, 0.28);
+  --scrim: rgba(0, 0, 0, 0.45);
+  --sb-thumb: rgba(255, 255, 255, 0.18);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.32);
+  --sb-thumb-idle: rgba(255, 255, 255, 0.06);
+  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 4px rgba(0, 0, 0, 0.3);
+  --shadow-soft: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-pop: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-modal: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 64px rgba(0, 0, 0, 0.6);
+  --shadow-accent: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 8px rgba(95, 176, 207, 0.3);
+  /* 以下覆盖“与主题无关的 token”：玻璃面板在不透明窗口下也是半透明的 */
+  --surface: rgb(24 30 44 / calc(0.55 * var(--alpha)));
+  --surface-hover: rgb(255 255 255 / 0.08);
+  --raised: rgb(40 48 66 / calc(0.73 * var(--alpha)));
+  --popover: rgb(28 34 48 / calc(0.88 * var(--alpha-strong)));
+  --popover-surface: rgb(var(--surface-hover-rgb) / calc(0.88 * var(--alpha-strong)));
+  --term-bg: rgb(var(--term-bg-rgb) / calc(0.45 + 0.55 * var(--alpha) * 0.5));
+  --r-xl: 12px;
+  --r-lg: 10px;
+  --r-md: 8px;
+  --r-sm: 6px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --side-bg: var(--surface);
+  --side-inset: 8px;
+  --panel-edge: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --glass-filter: blur(28px) saturate(1.4);
+  /* 壁纸：层次同亮色；月光色斑代替暖白色斑，深色色斑更深 */
+  --wallpaper:
+    linear-gradient(rgb(10 14 22 / calc(0.35 * var(--alpha))), rgb(10 14 22 / calc(0.35 * var(--alpha)))),
+    radial-gradient(circle at calc(90% - 210px) calc(6% + 210px), rgb(120 140 190 / calc(0.28 * var(--alpha))) 90px, rgb(120 140 190 / calc(0.14 * var(--alpha))) 210px, transparent 330px),
+    radial-gradient(circle at calc(8% + 260px) calc(100% - 140px), rgb(5 8 16 / calc(0.5 * var(--alpha))) 140px, rgb(5 8 16 / calc(0.25 * var(--alpha))) 260px, transparent 380px),
+    radial-gradient(60% 55% at 18% 22%, rgb(36 64 106 / var(--alpha)) 0%, transparent 70%),
+    radial-gradient(50% 50% at 82% 30%, rgb(74 42 60 / var(--alpha)) 0%, transparent 72%),
+    radial-gradient(70% 55% at 60% 95%, rgb(74 53 36 / var(--alpha)) 0%, transparent 70%),
+    linear-gradient(160deg, rgb(27 34 64 / var(--alpha)) 0%, rgb(42 35 56 / var(--alpha)) 45%, rgb(58 37 35 / var(--alpha)) 100%);
+}
+
+/* 北欧莫兰迪：亮色（docs/design/fd-04-morandi.html）。亚麻窗口、抬升面板，石墨板深色终端；雾蓝 / 豆沙 / 灰绿 / 燕麦四色状态 */
+:root[data-theme="morandi-light"] {
+  color-scheme: light;
+  --bg-rgb: 231 228 223;            /* 设计稿 --linen（窗口） */
+  --surface-rgb: 239 237 233;       /* 设计稿 --linen-2（抬升面） */
+  --surface-hover-rgb: 222 218 212;
+  --raised-rgb: 246 245 242;
+  --border: #cbc6be;                /* 设计稿 --line */
+  --text: #3d4246;                  /* 设计稿 --ink */
+  --text-2: #6e7175;
+  --text-3: #9a9893;
+  --accent: #6f8292;                /* 设计稿 --fog 加深（白字可读） */
+  --accent-strong: #5b6d7c;
+  --accent-soft: #dce1e5;
+  --accent-muted: #a9b6c0;
+  --on-accent: #f5f4f1;
+  --success: #8f9c8a;               /* 设计稿 --sage */
+  --success-text: #5f6d5a;
+  --success-soft: #dde2d9;
+  --warning: #be9993;               /* 设计稿 --bean（等待确认） */
+  --warning-text: #8e625b;
+  --warning-soft: #eddcd8;
+  --danger: #a8645a;
+  --danger-soft: #ebd6d2;
+  --special: #a57f6c;               /* 设计稿 --clay */
+  --special-soft: #eadfd8;
+  --status-thinking: #5c6e7b;       /* 设计稿 .st-think 等 */
+  --status-thinking-bg: #dce1e5;
+  --status-waiting: #8e625b;
+  --status-waiting-bg: #eddcd8;
+  --status-background: #5f6d5a;
+  --status-background-bg: #dde2d9;
+  --status-done: #7a6e5c;
+  --status-done-bg: #e2dcd2;
+  --chart-1: #8899a6;
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 51 57 58;          /* 设计稿 --term-bg */
+  --term-inner: transparent;
+  --term-fg: #d5d1c8;
+  --code-bg: #33393a;
+  --code-fg: #d5d1c8;
+  --selection: rgba(136, 153, 166, 0.28);
+  --scrim: rgba(54, 58, 60, 0.32);  /* 设计稿 .scrim */
+  --sb-thumb: rgba(61, 66, 70, 0.22);
+  --sb-thumb-hover: rgba(61, 66, 70, 0.38);
+  --sb-thumb-idle: rgba(61, 66, 70, 0.07);
+  --shadow: 0 1px 2px rgba(61, 66, 70, 0.08), 0 0 0 1px rgba(61, 66, 70, 0.06);
+  --shadow-soft: 0 1px 2px rgba(61, 66, 70, 0.1);
+  --shadow-pop: 0 12px 28px -12px rgba(61, 66, 70, 0.4), 0 0 0 1px var(--border);
+  --shadow-modal: 0 30px 60px -20px rgba(40, 44, 46, 0.5);
+  --shadow-accent: 0 2px 6px -2px rgba(61, 66, 70, 0.4);
+  --r-xl: 12px;
+  --r-lg: 10px;
+  --r-md: 8px;
+  --r-sm: 6px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* 北欧莫兰迪：暗色（原版 docs/design/04-morandi.html 暗色：--win 窗口、--panel 面板、--term 终端） */
+:root[data-theme="morandi-dark"] {
+  color-scheme: dark;
+  --bg-rgb: 39 42 44;               /* 原版暗色 --win */
+  --surface-rgb: 44 47 49;          /* 原版暗色 --panel */
+  --surface-hover-rgb: 54 58 60;    /* 原版暗色 --line-soft */
+  --raised-rgb: 49 52 55;           /* 原版暗色 --paper */
+  --border: #3e4245;
+  --text: #e2dfd8;
+  --text-2: #b6b4ae;
+  --text-3: #878985;
+  --accent: #9fb0c1;                /* 原版暗色 --fog */
+  --accent-strong: #b6c4d2;
+  --accent-soft: #353d45;
+  --accent-muted: #6f8090;
+  --on-accent: #1f2224;
+  --success: #a5b59f;
+  --success-text: #a5b59f;
+  --success-soft: #353e35;
+  --warning: #c9a4a5;               /* 原版暗色 --rose（对应豆沙） */
+  --warning-text: #d6b5b6;
+  --warning-soft: #443738;
+  --danger: #d4978b;
+  --danger-soft: #4a3532;
+  --special: #cf9f88;               /* 原版暗色 --clay */
+  --special-soft: #45372f;
+  --status-thinking: #9fb0c1;
+  --status-thinking-bg: #353d45;
+  --status-waiting: #d6b5b6;
+  --status-waiting-bg: #443738;
+  --status-background: #a5b59f;
+  --status-background-bg: #353e35;
+  --status-done: #cfc5b4;
+  --status-done-bg: #3d3a34;
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 28 30 32;          /* 原版暗色 --term */
+  --term-inner: transparent;
+  --term-fg: #d6d3cc;
+  --code-bg: #1c1e20;
+  --code-fg: #d6d3cc;
+  --selection: rgba(159, 176, 193, 0.3);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --sb-thumb: rgba(226, 223, 216, 0.16);
+  --sb-thumb-hover: rgba(226, 223, 216, 0.3);
+  --sb-thumb-idle: rgba(226, 223, 216, 0.05);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 18px 40px -24px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--border);
+  --shadow-modal: 0 30px 60px -20px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--border);
+  --shadow-accent: 0 2px 6px -2px rgba(0, 0, 0, 0.6);
+  --r-xl: 12px;
+  --r-lg: 10px;
+  --r-md: 8px;
+  --r-sm: 6px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* 现代暗色：亮色（推导，见 theme-utils.ts / 报告）：沿用暗色版“冷灰分层 + 1px 描边 + 靛紫发光强调”，
+   层次按亮度反转——窗口冷灰、面板更白、终端为纯白阅读面；强调与状态色加深到白底可读 */
+:root[data-theme="modern-light"] {
+  color-scheme: light;
+  --bg-rgb: 241 242 245;
+  --surface-rgb: 248 249 251;
+  --surface-hover-rgb: 230 232 238;
+  --raised-rgb: 255 255 255;
+  --border: #dfe1e7;
+  --text: #14161c;
+  --text-2: #4f5463;
+  --text-3: #868b99;
+  --accent: #5b63f0;
+  --accent-strong: #4249d6;
+  --accent-soft: rgba(91, 99, 240, 0.1);
+  --accent-muted: #9b6bf2;
+  --on-accent: #ffffff;
+  --success: #1f9d66;
+  --success-text: #1a8a59;
+  --success-soft: rgba(31, 157, 102, 0.1);
+  --warning: #c98a1b;
+  --warning-text: #a36f10;
+  --warning-soft: rgba(201, 138, 27, 0.12);
+  --danger: #e0445f;
+  --danger-soft: rgba(224, 68, 95, 0.1);
+  --special: #1e9cc4;
+  --special-soft: rgba(30, 156, 196, 0.1);
+  --status-thinking: #a36f10;
+  --status-thinking-bg: rgba(201, 138, 27, 0.1);
+  --status-waiting: #e0445f;
+  --status-waiting-bg: rgba(224, 68, 95, 0.09);
+  --status-background: #1a8ab0;
+  --status-background-bg: rgba(30, 156, 196, 0.09);
+  --status-done: #1a8a59;
+  --status-done-bg: rgba(31, 157, 102, 0.09);
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 255 255 255;
+  --term-inner: transparent;
+  --term-fg: #2a2e38;
+  --code-bg: #f1f2f5;
+  --code-fg: #2a2e38;
+  --selection: rgba(91, 99, 240, 0.18);
+  --scrim: rgba(20, 22, 28, 0.28);
+  --sb-thumb: rgba(20, 22, 28, 0.18);
+  --sb-thumb-hover: rgba(20, 22, 28, 0.32);
+  --sb-thumb-idle: rgba(20, 22, 28, 0.06);
+  --shadow: 0 1px 2px rgba(20, 22, 40, 0.06), 0 0 0 1px rgba(20, 22, 40, 0.03);
+  --shadow-soft: 0 1px 3px rgba(20, 22, 40, 0.08);
+  --shadow-pop: 0 16px 40px -10px rgba(20, 22, 40, 0.22), 0 0 0 1px var(--border);
+  --shadow-modal: 0 30px 70px -10px rgba(20, 22, 40, 0.3), 0 0 0 1px var(--border);
+  --shadow-accent: 0 0 14px -4px rgba(91, 99, 240, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  --r-xl: 10px;
+  --r-lg: 8px;
+  --r-md: 7px;
+  --r-sm: 6px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 设计稿：侧栏是 --layer1 面板，面板与终端卡片都有 1px 描边 */
+  --side-bg: var(--surface);
+  --side-inset: 8px;
+  --panel-edge: 0 0 0 1px var(--border);
+  --term-edge: inset 0 0 0 1px var(--border);
+}
+
+/* 现代暗色：暗色（docs/design/fd-05-dark.html）。炭黑分层（底 / 面板 / 卡片 / 悬停）+ 1px 描边，靛紫发光强调，终端最深 */
+:root[data-theme="modern-dark"] {
+  color-scheme: dark;
+  --bg-rgb: 15 16 19;               /* 设计稿 --base */
+  --surface-rgb: 20 21 26;          /* 设计稿 --layer1 */
+  --surface-hover-rgb: 34 37 45;    /* 设计稿 --layer3 */
+  --raised-rgb: 26 28 34;           /* 设计稿 --layer2 */
+  --border: #24262d;                /* 设计稿 --line */
+  --text: #e4e6eb;
+  --text-2: #a3a7b1;
+  --text-3: #6b707c;
+  --accent: #8b93ff;
+  --accent-strong: #a5acff;
+  --accent-soft: rgba(139, 147, 255, 0.14);
+  --accent-muted: #b58cff;          /* 设计稿 --accent-2 */
+  --on-accent: #0d0e1a;             /* 设计稿 .btn.primary 文字 */
+  --success: #57d69b;               /* 设计稿 --done */
+  --success-text: #57d69b;
+  --success-soft: rgba(87, 214, 155, 0.1);
+  --warning: #f0b65a;               /* 设计稿 --think */
+  --warning-text: #f0b65a;
+  --warning-soft: rgba(240, 182, 90, 0.1);
+  --danger: #f2677e;                /* 设计稿 --wait */
+  --danger-soft: rgba(242, 103, 126, 0.1);
+  --special: #5bc6e8;               /* 设计稿 --agent */
+  --special-soft: rgba(91, 198, 232, 0.1);
+  --status-thinking: #f0b65a;       /* 设计稿 .status.* */
+  --status-thinking-bg: rgba(240, 182, 90, 0.07);
+  --status-waiting: #f2677e;
+  --status-waiting-bg: rgba(242, 103, 126, 0.08);
+  --status-background: #5bc6e8;
+  --status-background-bg: rgba(91, 198, 232, 0.07);
+  --status-done: #57d69b;
+  --status-done-bg: rgba(87, 214, 155, 0.06);
+  --chart-1: var(--accent);
+  --chart-2: var(--warning);
+  --chart-3: var(--success);
+  --term-bg-rgb: 11 12 15;          /* 设计稿 --term-bg */
+  --term-inner: transparent;
+  --term-fg: #c9cdd6;
+  --code-bg: #0b0c0f;
+  --code-fg: #c9cdd6;
+  --selection: rgba(139, 147, 255, 0.3);
+  --scrim: rgba(6, 7, 9, 0.55);     /* 设计稿 .scrim */
+  --sb-thumb: rgba(255, 255, 255, 0.12);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.22);
+  --sb-thumb-idle: rgba(255, 255, 255, 0.04);
+  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px -10px rgba(0, 0, 0, 0.7);
+  --shadow-soft: 0 4px 12px -6px rgba(0, 0, 0, 0.6);
+  --shadow-pop: 0 16px 40px -10px rgba(0, 0, 0, 0.7), 0 0 0 1px #2f323b;
+  --shadow-modal: 0 30px 70px -10px rgba(0, 0, 0, 0.85), 0 0 0 1px #2f323b;
+  --shadow-accent: 0 0 14px -4px rgba(139, 147, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  --r-xl: 10px;
+  --r-lg: 8px;
+  --r-md: 7px;
+  --r-sm: 6px;
+  --f-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 设计稿：侧栏是 --layer1 面板，面板与终端卡片都有 1px 描边 */
+  --side-bg: var(--surface);
+  --side-inset: 8px;
+  --panel-edge: 0 0 0 1px var(--border);
+  --term-edge: inset 0 0 0 1px var(--border);
+}
+
 /* ================= 与主题无关的 token ================= */
 :root {
   --alpha: 1;
@@ -206,12 +764,14 @@
   --popover-surface: rgb(var(--surface-rgb) / var(--alpha-strong));
   /* 终端卡片叠在奶白窗口底色上，若与窗口同 alpha，半透明时奶白会透进来把深底冲淡、浅色文字难读；故卡片 alpha 收窄到 0.5–1 区间 */
   --term-bg: rgb(var(--term-bg-rgb) / calc(0.5 + var(--alpha) * 0.5));
-  /* 玻璃主题用的钩子，默认值等同于不启用：窗口底色可换成壁纸、侧栏可成面板、面板描边与背景模糊 */
+  /* 毛玻璃主题用的钩子，默认值等同于不启用：窗口底色可换成壁纸、侧栏可成面板、面板描边与背景模糊 */
   --wallpaper: var(--bg);
   --side-bg: none;
   --side-inset: 0px;
   --panel-edge: none;
   --glass-filter: none;
+  /* 终端卡片的描边 / 凹槽（极简、奶油风、现代暗色用） */
+  --term-edge: none;
 
   --r-xl: 22px;
   --r-lg: 16px;
@@ -457,7 +1017,7 @@ li:hover .close, li.active .close { visibility: visible; }
 /* 主机信息状态条在终端卡片下方：显示时终端卡片 / 空状态 / 预览底部上移 */
 #terminals:has(> #host-info:not([hidden])) { --bottom: calc(30px + var(--gap)); }
 #terminals.banner, #terminals:has(> #daemon-banner:not([hidden])) { --top: calc(var(--card-head) + var(--banner-h) + 2 * var(--gap)); }
-#terminals::before { content: ""; position: absolute; inset: var(--top) 0 var(--bottom) 0; background: var(--term-bg); border-radius: var(--r-xl); }
+#terminals::before { content: ""; position: absolute; inset: var(--top) 0 var(--bottom) 0; background: var(--term-bg); border-radius: var(--r-xl); box-shadow: var(--term-edge); }
 
 /* 卡片头：图标块 + 会话名 / 目录 · shell + Claude 状态 */
 #card-head {
@@ -857,3 +1417,82 @@ body.detached #sidebar, body.detached #files, body.detached #host-info { display
 body.detached #terminals:has(> #host-info) { --bottom: 0px; }
 
 @media (prefers-reduced-motion: reduce) { *, *::after { animation: none !important; transition: none !important; } }
+
+/* ================= git：分支菜单 / 提交历史（git-panel.ts） ================= */
+/* 卡片头分支可点击；只加横向内边距（以负外边距抵消），不改变卡片头高度 */
+#ch-branch { margin: 0 -5px; padding: 0 5px; border-radius: 6px; cursor: pointer; }
+#ch-branch:hover { color: var(--accent-strong); background: var(--surface-hover); }
+
+#git-menu { position: fixed; z-index: 40; display: flex; flex-direction: column; width: 300px; max-height: min(460px, calc(100vh - 120px)); padding: 6px; background: var(--popover); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); }
+#git-menu.busy .gm-item { pointer-events: none; opacity: 0.55; }
+.gm-filter { flex-shrink: 0; height: 30px; margin: 2px 2px 6px; padding: 0 10px; font: inherit; font-size: 12.5px; color: var(--text); background: rgb(var(--surface-rgb) / var(--alpha-strong)); border: 1px solid var(--border); border-radius: 9px; outline: none; }
+.gm-filter:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.gm-filter::placeholder { color: var(--text-3); }
+.gm-item { display: flex; align-items: center; gap: 8px; flex-shrink: 0; width: 100%; padding: 6px 10px; font-size: 13px; font-weight: 600; color: var(--text); text-align: left; background: none; border: none; border-radius: 10px; cursor: pointer; }
+.gm-item:hover { background: var(--popover-surface); }
+.gm-item svg.i { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-3); }
+.gm-list { min-height: 0; margin-top: 4px; padding-top: 4px; overflow-y: auto; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--border); }
+.gm-sec { padding: 8px 10px 3px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-3); }
+.gm-branch { font-family: var(--f-mono); font-size: 12px; font-weight: 500; }
+.gm-branch .gm-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gm-branch.current { font-weight: 700; color: var(--accent-strong); cursor: default; }
+.gm-branch.current svg.i { color: var(--accent-strong); }
+.gm-empty { padding: 8px 10px; }
+.gm-status { flex-shrink: 0; max-height: 140px; margin: 6px 2px 2px; padding: 7px 10px; overflow: auto; font-family: var(--f-mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text-2); background: rgb(var(--surface-rgb) / var(--alpha-strong)); border-radius: 9px; }
+.gm-status.err { color: var(--danger); background: var(--danger-soft); }
+
+#git-panel { position: absolute; inset: var(--top) 0 var(--bottom) 0; z-index: 6; display: flex; flex-direction: column; overflow: hidden; background: var(--popover); border-radius: var(--r-xl); box-shadow: var(--shadow-modal); }
+#terminals:has(> #git-panel:not([hidden])) > .term { visibility: hidden; }
+#git-menu, #git-panel { backdrop-filter: var(--glass-filter); }
+#gp-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--border); }
+#gp-ico { display: grid; color: var(--accent); }
+#gp-title { font-size: 14px; font-weight: 800; }
+#gp-branch { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--f-mono); font-size: 12px; color: var(--text-3); }
+#gp-body { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
+#gp-body:has(> #gp-detail:not([hidden])) { grid-template-rows: minmax(0, 2fr) minmax(0, 3fr); }
+#gp-list { overflow: auto; padding: 6px 0; outline: none; }
+.gp-row { display: flex; align-items: center; gap: 10px; height: 22px; padding: 0 16px; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.gp-row:hover { background: var(--popover-surface); }
+.gp-row.on { background: var(--accent-soft); }
+.gp-row.graph-only { cursor: default; background: none; }
+.gp-graph { flex-shrink: 0; width: var(--gw); overflow: hidden; font-family: var(--f-mono); font-size: 13px; line-height: 22px; white-space: pre; color: var(--text-3); }
+.gp-graph .ln0 { color: var(--accent); }
+.gp-graph .ln1 { color: var(--success); }
+.gp-graph .ln2 { color: var(--special); }
+.gp-graph .ln3 { color: var(--warning); }
+.gp-graph .ln4 { color: var(--danger); }
+.gp-graph .ln5 { color: var(--text-2); }
+.gp-hash { flex-shrink: 0; font-family: var(--f-mono); font-size: 12px; color: var(--accent-strong); }
+.gp-subj { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.gp-ref { display: inline-block; margin-right: 6px; padding: 0 6px; font-family: var(--f-mono); font-size: 11px; font-weight: 700; line-height: 16px; vertical-align: 1px; color: var(--text-2); background: rgb(var(--surface-rgb) / var(--alpha-strong)); border: 1px solid var(--border); border-radius: 99px; }
+.gp-ref.head { color: var(--accent-strong); background: var(--accent-soft); border-color: transparent; }
+.gp-ref.tag { color: var(--warning-text); background: var(--warning-soft); border-color: transparent; }
+.gp-author { flex-shrink: 0; width: 110px; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.gp-time { flex-shrink: 0; width: 72px; text-align: right; color: var(--text-3); }
+.gp-note { padding: 10px 18px; font-size: 12px; color: var(--text-3); }
+pre.gp-note { margin: 0; font-family: var(--f-mono); white-space: pre-wrap; word-break: break-word; }
+.gp-note.err { color: var(--danger); }
+.gp-note.warn { font-weight: 700; color: var(--warning-text); }
+
+#gp-detail { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--border); }
+.gp-dhead { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 8px 16px; background: rgb(var(--surface-rgb) / var(--alpha-strong)); }
+.gp-copy { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; height: 24px; padding: 0 9px; font-family: var(--f-mono); font-size: 12px; font-weight: 700; color: var(--accent-strong); background: var(--accent-soft); border: none; border-radius: 99px; cursor: pointer; }
+.gp-copy:hover { color: var(--on-accent); background: var(--accent); }
+.gp-copy svg.i { width: 12px; height: 12px; }
+.gp-dsubj { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 700; }
+.gp-dmeta { flex-shrink: 0; font-size: 12px; color: var(--text-3); }
+.gp-dscroll { flex: 1; min-height: 0; overflow: auto; }
+.gp-files { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.gp-file { display: flex; align-items: center; gap: 10px; width: 100%; padding: 3px 8px; font-family: var(--f-mono); font-size: 12px; color: var(--text); text-align: left; background: none; border: none; border-radius: 7px; cursor: pointer; }
+.gp-file:hover { background: var(--popover-surface); }
+.gp-path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gp-add { color: var(--success-text); }
+.gp-del { color: var(--danger); }
+.gp-bin { color: var(--text-3); }
+/* diff 宽于面板时整体横向滚动，背景色铺满最长行 */
+.gp-diff { width: max-content; min-width: 100%; padding: 6px 0 12px; font-family: var(--f-mono); font-size: 12px; line-height: 18px; }
+.dl { padding: 0 16px; white-space: pre; tab-size: 4; color: var(--text-2); }
+.dl.meta { font-weight: 700; color: var(--text-3); }
+.dl.hunk { color: var(--special); background: var(--special-soft); }
+.dl.add { color: var(--text); background: var(--success-soft); }
+.dl.del { color: var(--text); background: var(--danger-soft); }
