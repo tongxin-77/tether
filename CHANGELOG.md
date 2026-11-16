@@ -4,6 +4,30 @@
 
 ## [未发布]
 
+## [0.5.1] - 2026-11-16
+
+### ✨ 新增
+
+- **新增「玻璃」主题**
+  - 渐变壁纸背景，侧栏、卡片与文件栏为半透明毛玻璃
+  - 可在设置或侧栏底部切换；窗口半透明时壁纸随透明度变淡
+- **会话卡片头部显示 git 分支**
+  - 显示会话启动目录的当前分支，如 `⎇ main`；分离 HEAD 显示提交号前 7 位
+  - 切换会话、窗口获得焦点时刷新，并每 4 秒自动刷新
+  - 仅本地会话，目录不在 git 仓库时不显示
+- **文件栏宽度可拖动调整**
+  - 拖动文件栏左边缘，宽度 200–640px，自动记住
+
+### 🐛 修复
+
+- **Claude Code 画面不再错乱叠影**
+  - 本地会话按 Windows ConPTY 处理终端尺寸变化，最大化、拖大窗口后不再出现重复的状态行
+  - 拖动窗口或文件栏时尺寸变化合并处理，停下后才通知程序；窗口最小化时不再把终端压成极小尺寸
+  - 切回会话、hub 接管结束时重新同步终端尺寸
+- **Claude Code 中按 `Tab` 不再填入 Tether 自己的命令补全**
+  - Claude Code 运行或全屏程序中不再弹出补全框
+- **Claude Code 输出的表格可以拖选复制了**
+
 ## [0.5.0] - 2026-11-15
 
 ### 新增
@@ -104,7 +128,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.0...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/tongxin-77/tether/releases/tag/v0.5.1
 [0.5.0]: https://github.com/tongxin-77/tether/releases/tag/v0.5.0
 [0.4.1]: https://github.com/tongxin-77/tether/releases/tag/v0.4.1
 [0.4.0]: https://github.com/tongxin-77/tether/releases/tag/v0.4.0
