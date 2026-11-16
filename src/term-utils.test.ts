@@ -1,0 +1,153 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, shouldFit, wasReleased, windowsPtyFor } from "./term-utils";
+
+describe("completionEnabled", () => {
+  it("无 Claude、普通 buffer 时启用", () => {
+    expect(completionEnabled(undefined, "normal")).toBe(true);
+    expect(completionEnabled(null, "normal")).toBe(true);
+  });
+  it("Claude 运行中时禁用", () => {
+    expect(completionEnabled({ state: "idle", at: 0 }, "normal")).toBe(false);
+  });
+  it("全屏程序（alternate buffer）时禁用", () => {
+    expect(completionEnabled(undefined, "alternate")).toBe(false);
+    expect(completionEnabled({ state: "busy", at: 0 }, "alternate")).toBe(false);
+  });
+});
+
+describe("windowsPtyFor", () => {
+  it("本地会话且有 build 号时给出 conpty", () => {
+    expect(windowsPtyFor(null, 26200)).toEqual({ backend: "conpty", buildNumber: 26200 });
+  });
+  it("远程会话为 undefined", () => {
+    expect(windowsPtyFor("server-1", 26200)).toBeUndefined();
+    expect(windowsPtyFor("", 26200)).toBeUndefined();
+  });
+  it("build 号未知（null / 0）时为 undefined", () => {
+    expect(windowsPtyFor(null, null)).toBeUndefined();
+    expect(windowsPtyFor(null, 0)).toBeUndefined();
+  });
+});
+
+describe("clampFilesWidth", () => {
+  it("范围内原样（取整）", () => {
+    expect(clampFilesWidth(300, 1600)).toBe(300);
+    expect(clampFilesWidth(300.6, 1600)).toBe(301);
+  });
+  it("下限 200", () => {
+    expect(clampFilesWidth(50, 1600)).toBe(200);
+    expect(clampFilesWidth(-100, 1600)).toBe(200);
+  });
+  it("上限 640", () => {
+    expect(clampFilesWidth(1000, 2000)).toBe(640);
+  });
+  it("上限为窗口宽的一半", () => {
+    expect(clampFilesWidth(600, 1000)).toBe(500);
+    expect(clampFilesWidth(600, 999)).toBe(500); // 499.5 取整
+  });
+  it("窗口过窄时下限优先", () => {
+    expect(clampFilesWidth(300, 300)).toBe(200);
+  });
+});
+
+describe("shouldFit", () => {
+  it("尺寸足够时 fit", () => {
+    expect(shouldFit(800, 600)).toBe(true);
+    expect(shouldFit(100, 50)).toBe(true);
+  });
+  it("宽或高低于阈值时跳过", () => {
+    expect(shouldFit(99, 600)).toBe(false);
+    expect(shouldFit(800, 49)).toBe(false);
+    expect(shouldFit(0, 0)).toBe(false);
+  });
+});
+
+describe("debounce", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("连续触发只在最后一次之后执行一次", () => {
+    vi.useFakeTimers();
+    const fn = vi.fn();
+    const d = debounce(fn, 120);
+    d();
+    vi.advanceTimersByTime(100);
+    d();
+    vi.advanceTimersByTime(100);
+    d();
+    expect(fn).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(119);
+    expect(fn).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("最后一次生效：执行时读到的是最新状态", () => {
+    vi.useFakeTimers();
+    let size = 0;
+    const seen: number[] = [];
+    const d = debounce(() => seen.push(size), 120);
+    for (let i = 1; i <= 5; i++) {
+      size = i;
+      d();
+      vi.advanceTimersByTime(50);
+    }
+    vi.advanceTimersByTime(120);
+    expect(seen).toEqual([5]);
+  });
+
+  it("间隔超过延时后再次触发会再次执行", () => {
+    vi.useFakeTimers();
+    const fn = vi.fn();
+    const d = debounce(fn, 120);
+    d();
+    vi.advanceTimersByTime(120);
+    d();
+    vi.advanceTimersByTime(120);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("不触发则不执行", () => {
+    vi.useFakeTimers();
+    const fn = vi.fn();
+    debounce(fn, 120);
+    vi.advanceTimersByTime(1000);
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("wasReleased", () => {
+  it("接管 → 未接管时为 true", () => {
+    expect(wasReleased(true, false)).toBe(true);
+    expect(wasReleased(true, undefined)).toBe(true);
+  });
+  it("持续接管或持续未接管时为 false", () => {
+    expect(wasReleased(true, true)).toBe(false);
+    expect(wasReleased(undefined, undefined)).toBe(false);
+    expect(wasReleased(false, false)).toBe(false);
+  });
+  it("开始接管时为 false", () => {
+    expect(wasReleased(undefined, true)).toBe(false);
+  });
+});
+
+describe("branchDir", () => {
+  it("本地会话查启动目录", () => {
+    expect(branchDir(null, "C:\workspace\tether")).toBe("C:\workspace\tether");
+  });
+  it("远程会话或目录为空时不查", () => {
+    expect(branchDir("server-1", "/home/u")).toBeNull();
+    expect(branchDir(null, "")).toBeNull();
+  });
+});
+
+describe("branchLabel", () => {
+  it("有分支时带 ⎇ 前缀，保留斜杠", () => {
+    expect(branchLabel("main")).toBe("⎇ main");
+    expect(branchLabel("feature/x")).toBe("⎇ feature/x");
+  });
+  it("无分支时为空串", () => {
+    expect(branchLabel(null)).toBe("");
+    expect(branchLabel(undefined)).toBe("");
+    expect(branchLabel("")).toBe("");
+  });
+});

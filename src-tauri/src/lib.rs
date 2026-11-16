@@ -144,6 +144,54 @@ fn clipboard_seq() -> u32 {
     unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
 }
 
+/// Windows build 号（注册表 CurrentBuildNumber），供本地会话的 xterm 设置 windowsPty；读取失败为 None
+#[tauri::command]
+fn windows_build() -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, name) = (wide(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"), wide("CurrentBuildNumber"));
+    let mut buf = [0u16; 32];
+    // 传入缓冲区字节数，返回写入的字节数（含结尾的 0）
+    let mut len = size_of_val(&buf) as u32;
+    let r = unsafe {
+        RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
+    };
+    if r != 0 {
+        return None;
+    }
+    String::from_utf16_lossy(&buf[..len as usize / 2]).trim_end_matches('\0').parse().ok()
+}
+
+/// 目录所在 git 仓库的当前分支（分离 HEAD 时为提交哈希前 7 位）；不在仓库里或读取失败为 None。
+/// 只读 .git 下的文件，不调用 git 进程
+#[tauri::command]
+async fn git_branch(dir: String) -> Option<String> {
+    find_branch(std::path::Path::new(&dir))
+}
+
+/// 从 dir 向上查找 `.git`（目录或 worktree / submodule 的 gitdir 文件），读其 HEAD 解析分支
+fn find_branch(dir: &std::path::Path) -> Option<String> {
+    let dot = dir.ancestors().map(|d| d.join(".git")).find(|p| p.exists())?;
+    let git_dir = if dot.is_dir() { dot } else { parse_gitdir(&std::fs::read_to_string(&dot).ok()?, dot.parent()?)? };
+    parse_head(&std::fs::read_to_string(git_dir.join("HEAD")).ok()?)
+}
+
+/// HEAD 内容：`ref: refs/heads/<name>` 为分支名；十六进制提交哈希为分离 HEAD，取前 7 位；其它为 None
+fn parse_head(content: &str) -> Option<String> {
+    let s = content.trim();
+    if let Some(name) = s.strip_prefix("ref: refs/heads/") {
+        return (!name.is_empty()).then(|| name.to_string());
+    }
+    (s.len() >= 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| s[..7].to_string())
+}
+
+/// `.git` 文件内容 `gitdir: <path>`；相对路径相对于该文件所在目录 base 解析
+fn parse_gitdir(content: &str, base: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = content.trim().strip_prefix("gitdir:")?.trim();
+    // join 遇到绝对路径时直接取该路径
+    (!path.is_empty()).then(|| base.join(path))
+}
+
 /// 系统剪贴板中资源管理器复制的文件路径（CF_HDROP）及当前序号；没有文件时为空列表
 #[tauri::command]
 fn clipboard_files() -> (u32, Vec<String>) {
@@ -237,7 +285,94 @@ pub fn run() {
                 win.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files])
+        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, windows_build, git_branch])
         .run(context)
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_windows_build() {
+        assert!(super::windows_build().is_some_and(|b| b > 0));
+    }
+
+    #[test]
+    fn parses_head_branch() {
+        assert_eq!(super::parse_head("ref: refs/heads/main\n").as_deref(), Some("main"));
+        assert_eq!(super::parse_head("ref: refs/heads/feature/x\r\n").as_deref(), Some("feature/x"));
+    }
+
+    #[test]
+    fn parses_detached_head() {
+        assert_eq!(super::parse_head("9897eda1234567890abcdef1234567890abcdef0\n").as_deref(), Some("9897eda"));
+    }
+
+    #[test]
+    fn rejects_invalid_head() {
+        for s in ["", "\n", "ref: refs/heads/", "ref: refs/tags/v1", "not a hash", "abc12"] {
+            assert_eq!(super::parse_head(s), None, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn parses_gitdir() {
+        use std::path::Path;
+        let base = Path::new(r"C:\repo\sub");
+        assert_eq!(super::parse_gitdir("gitdir: ../.git/modules/sub\n", base), Some(base.join("../.git/modules/sub")));
+        assert_eq!(super::parse_gitdir("gitdir: C:/repo/.git/worktrees/wt\r\n", base), Some(Path::new("C:/repo/.git/worktrees/wt").into()));
+        assert_eq!(super::parse_gitdir("nonsense", base), None);
+        assert_eq!(super::parse_gitdir("gitdir: ", base), None);
+    }
+
+    /// 在临时目录下构造假仓库；每个用例独立子目录
+    fn temp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tether-git-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn finds_branch_in_git_dir_and_parents() {
+        let d = temp("dir");
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+        std::fs::create_dir_all(d.join("a/b")).unwrap();
+        assert_eq!(super::find_branch(&d).as_deref(), Some("dev"));
+        assert_eq!(super::find_branch(&d.join("a/b")).as_deref(), Some("dev"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn finds_branch_via_gitdir_file() {
+        let d = temp("file");
+        std::fs::create_dir_all(d.join("real/worktrees/wt")).unwrap();
+        std::fs::write(d.join("real/worktrees/wt/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+        std::fs::create_dir_all(d.join("wt/src")).unwrap();
+        // 相对路径
+        std::fs::write(d.join("wt/.git"), "gitdir: ../real/worktrees/wt\n").unwrap();
+        assert_eq!(super::find_branch(&d.join("wt/src")).as_deref(), Some("feature/x"));
+        // 绝对路径
+        std::fs::write(d.join("wt/.git"), format!("gitdir: {}\n", d.join("real/worktrees/wt").display())).unwrap();
+        assert_eq!(super::find_branch(&d.join("wt")).as_deref(), Some("feature/x"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn none_outside_repo() {
+        // 临时目录本身不在仓库里；.git 存在但没有 HEAD 也是 None
+        let d = temp("none");
+        assert_eq!(super::find_branch(&d), None);
+        std::fs::create_dir_all(d.join("x/.git")).unwrap();
+        assert_eq!(super::find_branch(&d.join("x")), None);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn finds_this_repo_branch() {
+        // 仓库根（src-tauri 的上一级）；分支随检出变化，只要求能读出
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert!(super::find_branch(root).is_some());
+    }
 }

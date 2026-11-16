@@ -356,14 +356,21 @@ function render() {
 
 /** 为一个终端启用补全：container 为弹出层的定位容器（#terminals），input 发送补全文本。
  *  返回自定义按键处理（返回 false 表示已消费），由调用方与其它按键处理组合 */
-export function attachClaudeComplete(term: Terminal, container: HTMLElement, input: (data: string) => void, shell: () => ShellKind) {
+/** enabled 为 false 时（如 Claude Code 在前台）不计算、不显示补全 */
+export function attachClaudeComplete(
+  term: Terminal,
+  container: HTMLElement,
+  input: (data: string) => void,
+  shell: () => ShellKind,
+  enabled: () => boolean,
+) {
   let lastInput = 0;
   /** Esc 关闭时的行文本：行内容变化前不再弹出 */
   let dismissed: string | undefined;
 
   const update = () => {
     const el = term.element;
-    if (!el || !el.contains(document.activeElement) || Date.now() - lastInput > TYPING_WINDOW) {
+    if (!el || !enabled() || !el.contains(document.activeElement) || Date.now() - lastInput > TYPING_WINDOW) {
       if (owner === term) hide();
       return;
     }

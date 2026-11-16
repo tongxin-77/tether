@@ -26,6 +26,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
+import { TERMINAL_OPTIONS, branchDir, branchLabel, completionEnabled, debounce, shouldFit, wasReleased, windowsPtyFor } from "./term-utils";
 import { applyTheme, currentTheme, getThemes, nextTheme, registerTerminal, setTransparent, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -170,6 +171,8 @@ interface View {
 }
 
 const views = new Map<number, View>();
+/** 本机 Windows build 号（读取失败为 null），本地会话的 xterm 据此设置 windowsPty */
+const windowsBuild = invoke<number | null>("windows_build");
 let activeId: number | undefined;
 /** 独立窗口模式（URL ?detached=<id>）：只显示这一个会话，不连接 daemon（共用主窗口建立的连接），不处理配置 / 提示等 */
 const detachedId = (() => {
@@ -421,10 +424,17 @@ initPreview({
 $("empty-new").addEventListener("click", createSession);
 // 空状态显示期间每分钟刷新一次相对时间
 setInterval(() => !emptyPanel.hidden && renderEmpty(), 60_000);
+// 定时刷新当前会话的 git 分支，反映终端里的 git checkout（窗口隐藏时跳过）
+setInterval(() => !document.hidden && refreshBranch(), 4000);
 
 // 容器尺寸变化时重新 fit 当前会话（含文件树展开 / 收起导致的宽度变化）；fit 改变行列后由 term.onResize 同步给 daemon
 // 主机信息状态条显示 / 隐藏时终端卡片高度变化，同样需要 fit
-const fitObserver = new ResizeObserver(() => activeView()?.fit.fit());
+// 尾沿防抖：拖动窗口边缘 / 文件栏宽度期间不逐帧改 pty 尺寸，停下后只 fit 一次；容器过小（最小化等）时跳过，免得 pty 被缩成 2 列 1 行
+const fitObserver = new ResizeObserver(
+  debounce(() => {
+    if (shouldFit(terminals.clientWidth, terminals.clientHeight)) activeView()?.fit.fit();
+  }, 120),
+);
 fitObserver.observe(terminals);
 fitObserver.observe($("host-info"));
 
@@ -435,6 +445,7 @@ window.addEventListener("focus", () => {
   clearTimeout(blurTimer);
   reportFocus();
   emit("gui-focus");
+  refreshBranch();
 });
 window.addEventListener("blur", () => {
   clearTimeout(blurTimer);
@@ -883,6 +894,8 @@ function syncSessions(sessions: SessionInfo[]) {
     if (info.command === PWSH_INSTALL_CMD && info.status === "exited" && v.info.status !== "exited" && !settings.open) {
       send({ type: "getConfig" });
     }
+    // hub 接管结束（网页 detach / 本地收回 / 连接断开）时 pty 还停在网页尺寸，补发一次本地尺寸
+    if (wasReleased(v.info.takenOver, info.takenOver)) send({ type: "resize", id: info.id, cols: v.term.cols, rows: v.term.rows });
     v.info = info;
     if (!v.nameEl.querySelector("input")) v.nameEl.textContent = info.name;
     v.hostEl.textContent = info.host ?? "";
@@ -918,6 +931,7 @@ function renderCardHead() {
   cwd.innerHTML = s ? icon(s.host ? "globe" : "folder") : "";
   if (s) cwd.append(s.host ? `${s.host}:${s.cwd}` : s.cwd);
   cwd.title = s?.cwd ?? "";
+  $("ch-branch").textContent = s && branch?.id === s.id ? branch.text : "";
   renderClaude($("ch-claude"), s?.claude);
   // 当前会话被 hub 接管时显示提示条与「收回」
   const taken = !!s?.takenOver;
@@ -926,6 +940,21 @@ function renderCardHead() {
     banner.hidden = !taken;
     syncBannerSpace();
   }
+}
+
+/** 当前会话启动目录的 git 分支文字（只缓存激活会话的一份） */
+let branch: { id: number; text: string } | undefined;
+
+/** 查询激活会话的 git 分支并更新卡片头；仅本地会话，不在仓库里时为空 */
+async function refreshBranch() {
+  const s = activeView()?.info;
+  if (!s) return;
+  const dir = branchDir(s.host, s.cwd);
+  const b = dir ? await invoke<string | null>("git_branch", { dir }).catch(() => null) : null;
+  // 查询期间切换了会话则丢弃
+  if (activeId !== s.id) return;
+  branch = { id: s.id, text: branchLabel(b) };
+  $("ch-branch").textContent = branch.text;
 }
 
 /** Claude 状态胶囊：圆点 + 状态文字（思考中圆点呼吸），等待确认时悬停显示消息；无状态时隐藏 */
@@ -1072,6 +1101,7 @@ function relativeTime(ms: number) {
 
 function addView(info: SessionInfo): View {
   const term = new Terminal({
+    ...TERMINAL_OPTIONS,
     fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace',
     fontSize: 14,
     cursorBlink: true,
@@ -1081,6 +1111,13 @@ function addView(info: SessionInfo): View {
     // 配色来自 themes.ts 的当前主题（cursorAccent 显式给出，背景透明时块光标下的字符仍可见）
     theme: xtermTheme(),
   });
+  // 本地会话走 ConPTY：告知 xterm 以匹配其增行 / reflow 行为（build 号 >= 21376 时保留 reflow）；SSH 会话不设
+  if (info.host === null) {
+    void windowsBuild.then((build) => {
+      const pty = windowsPtyFor(info.host, build);
+      if (pty) term.options.windowsPty = pty;
+    });
+  }
   registerTerminal(term);
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -1103,6 +1140,8 @@ function addView(info: SessionInfo): View {
     terminals,
     (data) => send({ type: "input", id, data }),
     () => shellKind(views.get(id)?.info ?? info),
+    // Claude Code 运行中（退出 / SessionEnd 后 daemon 清空 claude）或全屏程序（alternate buffer）时不弹，按键交给程序自己
+    () => completionEnabled((views.get(id)?.info ?? info).claude, term.buffer.active.type),
   );
   term.attachCustomKeyEventHandler(
     (ev) =>
@@ -1237,8 +1276,10 @@ function activate(id: number) {
   const v = views.get(id)!;
   v.item.classList.remove("unread");
   renderCardHead();
-  // 隐藏期间容器尺寸为 0，显示后再 fit
+  refreshBranch();
+  // 隐藏期间容器尺寸为 0，显示后再 fit；行列未变时 onResize 不触发，无条件补发一次，覆盖 hub 网页留下的尺寸
   v.fit.fit();
+  send({ type: "resize", id, cols: v.term.cols, rows: v.term.rows });
   v.term.focus();
   reportFocus();
   showFiles();

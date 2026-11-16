@@ -43,9 +43,39 @@ const WARM_ANSI: ITheme = {
   scrollbarSliderActiveBackground: "rgba(239, 226, 207, 0.42)",
 };
 
+/** 玻璃（docs/design/fd-03-glass.html）：烟色玻璃终端。注明“设计稿”的取自其 .term / .t-* 示例色，其余为按冷色调补齐 */
+const GLASS_XTERM: ITheme = {
+  background: "#606574", // 设计稿：--smoke 叠在壁纸上的合成色
+  foreground: "#d8dee9", // 设计稿 .term
+  cursor: "#d8dee9", // 设计稿 .cursor
+  cursorAccent: "#606574",
+  selectionBackground: "rgba(127, 180, 202, 0.3)", // 补齐：取 .t-ps 色
+  black: "#353b4c", // 补齐
+  red: "#ff8a8a", // 设计稿 .t-red
+  green: "#9fd89a", // 设计稿 .t-grn
+  yellow: "#f2cc8f", // 设计稿 .t-yel
+  blue: "#7fb4ca", // 设计稿 .t-ps
+  magenta: "#c9a7e8", // 设计稿 .t-box
+  cyan: "#7fd1c7", // 设计稿 .t-cy
+  white: "#d8dee9", // 设计稿 .term
+  brightBlack: "#8a93a6", // 设计稿 .t-dim
+  brightRed: "#ffa8a8", // 补齐
+  brightGreen: "#b6e6b1", // 补齐
+  brightYellow: "#f7dcaa", // 补齐
+  brightBlue: "#a3cbe0", // 补齐
+  brightMagenta: "#b8a9ff", // 设计稿 .t-vio
+  brightCyan: "#a0e0d8", // 补齐
+  brightWhite: "#f2f4f8", // 设计稿 .t-cmd
+  // 设计稿 .term 滚动条
+  scrollbarSliderBackground: "rgba(255, 255, 255, 0.15)",
+  scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.28)",
+  scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.42)",
+};
+
 const THEMES: ThemeDef[] = [
   { id: "cream", label: "奶油", dark: false, xterm: { ...WARM_ANSI, background: "#3a2d24", cursorAccent: "#3a2d24" } },
   { id: "cream-night", label: "奶咖夜", dark: true, xterm: { ...WARM_ANSI, background: "#2e231b", cursorAccent: "#2e231b" } },
+  { id: "glass", label: "玻璃", dark: false, xterm: GLASS_XTERM },
 ];
 
 const KEY = "tether.theme";

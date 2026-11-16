@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { showPreview } from "./preview";
 import { icon } from "./icons";
+import { clampFilesWidth } from "./term-utils";
 
 // 与 proto crate 的文件树协议保持一致
 export interface FsEntry {
@@ -82,6 +83,7 @@ export type MenuItem = [string, () => void, boolean?] | null;
 type Conflict = "overwrite" | "skip" | "keep";
 
 const STORE_KEY = "tether.files.open";
+const WIDTH_KEY = "tether.files.width";
 const FOLDER_SVG = icon("folder", "fs-icon");
 const FOLDER_OPEN_SVG = icon("folder-open", "fs-icon");
 const FILE_SVG = icon("file", "fs-icon");
@@ -120,6 +122,7 @@ export function initFiles(d: Deps) {
     opened = localStorage.getItem(STORE_KEY) !== "0";
   } catch {}
   applyOpened();
+  initResize();
 
   toggleBtn.addEventListener("click", () => {
     opened = !opened;
@@ -230,6 +233,39 @@ export function showFiles() {
 /** 会话关闭后丢弃其浏览状态 */
 export function forgetFiles(id: number) {
   trees.delete(id);
+}
+
+/** 拖动左缘调整文件栏宽度，记住上次宽度 */
+function initResize() {
+  const handle = $("fs-resize");
+  const apply = (w: number) => {
+    const px = clampFilesWidth(w, window.innerWidth);
+    panel.style.setProperty("--files-w", `${px}px`);
+    return px;
+  };
+  try {
+    const saved = Number(localStorage.getItem(WIDTH_KEY));
+    if (saved) apply(saved);
+  } catch {}
+  handle.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    handle.setPointerCapture(ev.pointerId);
+    const startX = ev.clientX;
+    const startW = panel.offsetWidth;
+    let w = startW;
+    const move = (e: PointerEvent) => (w = apply(startW + startX - e.clientX));
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      try {
+        localStorage.setItem(WIDTH_KEY, String(w));
+      } catch {}
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  });
 }
 
 function applyOpened() {
