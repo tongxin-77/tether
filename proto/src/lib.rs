@@ -385,8 +385,13 @@ pub enum ClientMsg {
         #[serde(default)]
         command: Option<String>,
     },
-    /// daemon 回 snapshot，之后持续推送该会话 output
-    Attach { id: u32 },
+    /// daemon 回 snapshot，之后持续推送该会话 output；重复 attach 只重发 snapshot。
+    /// history 为 true 时 snapshot 前拼上推出屏幕的历史（hub 接管结束后 GUI 清空终端重取）
+    Attach {
+        id: u32,
+        #[serde(default)]
+        history: bool,
+    },
     Input { id: u32, data: String },
     Resize { id: u32, cols: u16, rows: u16 },
     Rename { id: u32, name: String },
@@ -606,6 +611,14 @@ mod tests {
         assert!(matches!(shutdown, super::ClientMsg::Shutdown));
         let reply: super::ServerMsg = serde_json::from_str(r#"{"type":"hello","version":"0.1.1","proto":1}"#).unwrap();
         assert!(matches!(reply, super::ServerMsg::Hello { proto: 1, .. }));
+    }
+
+    #[test]
+    fn attach_history_defaults_false() {
+        let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"attach","id":3}"#).unwrap();
+        assert!(matches!(msg, super::ClientMsg::Attach { id: 3, history: false }));
+        let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"attach","id":3,"history":true}"#).unwrap();
+        assert!(matches!(msg, super::ClientMsg::Attach { id: 3, history: true }));
     }
 
     #[test]

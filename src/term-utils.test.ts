@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, shouldFit, wasReleased, windowsPtyFor } from "./term-utils";
+import { branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -127,6 +127,28 @@ describe("wasReleased", () => {
   });
   it("开始接管时为 false", () => {
     expect(wasReleased(undefined, true)).toBe(false);
+  });
+});
+
+describe("takeoverStale / needsRefresh", () => {
+  it("从未接管：不标记、不刷新", () => {
+    expect(takeoverStale(false, undefined)).toBe(false);
+    expect(takeoverStale(false, false)).toBe(false);
+    expect(needsRefresh(false, undefined)).toBe(false);
+  });
+  it("接管中：标记，但不刷新", () => {
+    expect(takeoverStale(false, true)).toBe(true);
+    expect(needsRefresh(true, true)).toBe(false);
+  });
+  it("接管结束未刷新：保持标记，需要刷新", () => {
+    expect(takeoverStale(true, false)).toBe(true);
+    expect(takeoverStale(true, undefined)).toBe(true);
+    expect(needsRefresh(true, false)).toBe(true);
+    expect(needsRefresh(true, undefined)).toBe(true);
+  });
+  it("刷新后（标记清除）再切换：不再刷新", () => {
+    expect(needsRefresh(false, false)).toBe(false);
+    expect(takeoverStale(false, false)).toBe(false);
   });
 });
 

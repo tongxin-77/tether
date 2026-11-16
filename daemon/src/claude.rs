@@ -58,13 +58,15 @@ pub(crate) fn event_msg(session: u32, stdin: &str, arg: Option<String>) -> Optio
     let input: Value = serde_json::from_str(stdin.trim_start_matches('\u{feff}')).unwrap_or(Value::Null);
     let text = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
     let event = arg.or_else(|| text("hook_event_name"))?;
-    // background_tasks（Stop / SubagentStop 携带，父会话视角）中未结束的后台任务数：子代理、shell、monitor、teammate 等都算，
-    // session_crons（定时唤醒）不算；SubagentStop 时列表里还带着该子代理自己（id 即 agent_id，状态仍为 running），不计
+    // background_tasks（Stop / SubagentStop 携带，父会话视角）中未结束的后台代理数：只算子代理与 teammate；
+    // 后台 shell、monitor（如长期运行的开发服务）不算，session_crons（定时唤醒）也不算；
+    // SubagentStop 时列表里还带着该子代理自己（id 即 agent_id，状态仍为 running），不计
     let agent_id = text("agent_id");
     let own = |t: &Value| agent_id.is_some() && t.get("id").and_then(Value::as_str) == agent_id.as_deref();
     let finished = |t: &Value| matches!(t.get("status").and_then(Value::as_str), Some("completed" | "failed" | "killed" | "stopped"));
+    let agent = |t: &Value| matches!(t.get("type").and_then(Value::as_str), Some("subagent" | "teammate"));
     let background = input.get("background_tasks").and_then(Value::as_array).map(|tasks| {
-        tasks.iter().filter(|t| !own(t) && !finished(t)).count() as u32
+        tasks.iter().filter(|t| agent(t) && !own(t) && !finished(t)).count() as u32
     });
     let tasks = input.get("background_tasks").and_then(Value::as_array).map(|tasks| {
         let field = |t: &Value, k: &str| t.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
@@ -392,11 +394,11 @@ mod tests {
     fn hook_input_parsing() {
         let stop = "\u{feff}{\"hook_event_name\":\"Stop\",\"background_tasks\":[{\"id\":\"a\",\"type\":\"subagent\"},{\"id\":\"b\",\"type\":\"shell\"},{\"id\":\"c\",\"type\":\"subagent\"}]}";
         let ClientMsg::ClaudeEvent { session, event, background, .. } = event_msg(3, stop, None).unwrap() else { panic!() };
-        assert_eq!((session, event.as_str(), background), (3, "Stop", Some(3)));
-        // SubagentStop：不计该子代理自身；日志摘要列出各项 type:status
+        assert_eq!((session, event.as_str(), background), (3, "Stop", Some(2)));
+        // SubagentStop：不计该子代理自身，后台 shell 也不计；日志摘要列出各项 type:status
         let sub = r#"{"hook_event_name":"SubagentStop","agent_id":"a","background_tasks":[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"shell","status":"running"}]}"#;
         let ClientMsg::ClaudeEvent { background, tasks, .. } = event_msg(1, sub, None).unwrap() else { panic!() };
-        assert_eq!((background, tasks.as_deref()), (Some(1), Some("subagent:running,shell:running")));
+        assert_eq!((background, tasks.as_deref()), (Some(0), Some("subagent:running,shell:running")));
         // prompt 只转发前 20 个字符
         let ups = r#"{"hook_event_name":"UserPromptSubmit","prompt":"/hello 一二三四五六七八九十一二三四五"}"#;
         let ClientMsg::ClaudeEvent { prompt, .. } = event_msg(1, ups, None).unwrap() else { panic!() };

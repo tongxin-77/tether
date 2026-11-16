@@ -38,6 +38,16 @@ export function wasReleased(prev: boolean | undefined, next: boolean | undefined
   return !!prev && !next;
 }
 
+/** 本地终端是否因 hub 接管而待刷新：接管过即标记，刷新后由调用方清除 */
+export function takeoverStale(stale: boolean, takenOver: boolean | undefined): boolean {
+  return stale || !!takenOver;
+}
+
+/** 显示会话时是否刷新终端（清空后重取快照）：接管过且已结束 */
+export function needsRefresh(stale: boolean, takenOver: boolean | undefined): boolean {
+  return stale && !takenOver;
+}
+
 /** 查 git 分支的目录：仅本地会话（host 为 null）的启动目录，远程或目录为空时为 null */
 export function branchDir(host: string | null, cwd: string): string | null {
   return host === null && cwd ? cwd : null;

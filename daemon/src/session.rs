@@ -311,9 +311,11 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 }
             }
         }
-        ClientMsg::Attach { id } => {
+        ClientMsg::Attach { id, history } => {
             let Some(s) = st.sessions.get(&id) else { return true };
-            let data = B64.encode(s.parser.screen().state_formatted());
+            let mut data = if history { s.parser.callbacks().history.render(s.parser.screen()) } else { Vec::new() };
+            data.extend_from_slice(s.parser.screen().state_formatted().as_bytes());
+            let data = B64.encode(data);
             st.send(&ServerMsg::Snapshot { id, data });
             if let Some(g) = st.gui.as_mut() {
                 g.attached.insert(id);
@@ -1396,18 +1398,17 @@ mod tests {
     // 以下 hook JSON 取自 Claude Code 2.1.325 的真实事件（去掉无关字段）
 
     #[test]
-    fn stop_with_shell_task_is_background() {
+    fn stop_with_only_shell_task_is_done() {
         let mut s = Sim::default();
         s.feed("UserPromptSubmit", None, None);
-        // 主代理用 run_in_background 启动后台 shell 后结束本轮
+        // 主代理用 run_in_background 启动后台 shell（如开发服务）后结束本轮：shell 不算后台代理，直接完成
         let stop = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"b79id3ldq","type":"shell","status":"running"}],"session_crons":[]}"#;
-        assert_eq!(s.hook(stop), Some(Background));
-        assert_eq!(s.agents.bg, 1);
-        assert!(s.toasts.is_empty());
-        // shell 结束后 Claude 被任务通知唤起（经 UserPromptSubmit），再次 Stop 时已无后台任务
+        assert_eq!(s.hook(stop), Some(Done));
+        assert_eq!(s.agents.bg, 0);
+        assert_eq!(s.toasts.len(), 1);
+        // shell 结束后 Claude 被任务通知唤起，再次结束
         assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\n<task-id>b79id3ldq"}"#), Some(Thinking));
         assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[]}"#), Some(Done));
-        assert_eq!(s.toasts.len(), 1);
     }
 
     #[test]
@@ -1416,7 +1417,8 @@ mod tests {
         s.feed("UserPromptSubmit", None, None);
         let stop = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"teammate","status":"running"},{"id":"m1","type":"monitor","status":"running"},{"id":"x","type":"shell","status":"completed"}]}"#;
         assert_eq!(s.hook(stop), Some(Background));
-        assert_eq!(s.agents.bg, 2);
+        // 只有 teammate 计入；monitor、shell 不算
+        assert_eq!(s.agents.bg, 1);
         // session_crons 只是定时唤醒，不算后台任务
         s.feed("UserPromptSubmit", None, None);
         let cron = r#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[{"id":"c1","schedule":"0 9 * * 1-5","recurring":true}]}"#;
@@ -1437,13 +1439,11 @@ mod tests {
         // 子代理结束，但它启动的后台 shell 仍在运行；列表里还带着子代理自己（id 即 agent_id，不计）
         let sub = r#"{"hook_event_name":"SubagentStop","agent_id":"a49","agent_type":"general-purpose","background_tasks":[{"id":"a49","type":"subagent","status":"running","agent_type":"general-purpose"},{"id":"bla","type":"shell","status":"running"}]}"#;
         assert_eq!(s.hook(sub), Some(Background));
-        assert_eq!(s.agents.bg, 1);
-        // Claude 被子代理结果唤起处理，结束时 shell 仍在运行
+        // 剩下的只有后台 shell，不计数；是否完成仍以主代理的 Stop 为准
+        assert_eq!(s.agents.bg, 0);
+        // Claude 被子代理结果唤起处理，结束时只剩 shell 在运行：完成
         assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"<agent-message from=\"a49"}"#), Some(Thinking));
-        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[{"id":"bla","type":"shell","status":"running"}]}"#), Some(Background));
-        assert!(s.toasts.is_empty());
-        assert_eq!(s.hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\n<task-id>bla"}"#), Some(Thinking));
-        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[]}"#), Some(Done));
+        assert_eq!(s.hook(r#"{"hook_event_name":"Stop","background_tasks":[{"id":"bla","type":"shell","status":"running"}]}"#), Some(Done));
         assert_eq!(s.toasts, ["任务已完成"]);
     }
 
@@ -1543,5 +1543,35 @@ mod tests {
         }
         let mut s = Sim { state: Some(Thinking), ..Default::default() };
         assert_eq!(s.hook(r#"{"hook_event_name":"Notification","message":"m"}"#), Some(Waiting));
+    }
+
+    /// 重复 attach 只重发快照、不重复推 output；history 为 true 时快照前带推出屏幕的历史（接管结束后 GUI 刷新）
+    #[test]
+    fn reattach_resends_snapshot_with_history() {
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = {
+            let mut st = shared.lock().unwrap();
+            st.gui = Some(Gui::new(1, tx));
+            test_session(&mut st, 20, 3).0
+        };
+        let mut next = || serde_json::from_str::<serde_json::Value>(&rx.try_recv().unwrap()).unwrap();
+        let decode = |v: &serde_json::Value| String::from_utf8(B64.decode(v["data"].as_str().unwrap()).unwrap()).unwrap();
+        assert!(dispatch(&shared, 1, ClientMsg::Attach { id, history: false }));
+        assert_eq!(next()["type"], "snapshot");
+        // 3 行屏幕上输出 5 行：old 0、old 1 被推出屏幕进入历史
+        assert!(on_output(&shared, id, b"old 0\r\nold 1\r\nold 2\r\nold 3\r\nold 4"));
+        assert_eq!(next()["type"], "output");
+        assert!(dispatch(&shared, 1, ClientMsg::Attach { id, history: false }));
+        let plain = decode(&next());
+        assert!(!plain.contains("old 0") && plain.contains("old 4"), "{plain:?}");
+        assert!(dispatch(&shared, 1, ClientMsg::Attach { id, history: true }));
+        let full = decode(&next());
+        assert!(full.starts_with("\x1b[mold 0\r\n\x1b[mold 1"), "{full:?}");
+        assert!(full.ends_with(&plain), "{full:?}");
+        // 已 attach 多次，之后的输出仍只推一次
+        assert!(on_output(&shared, id, b"x"));
+        assert_eq!(next()["type"], "output");
+        assert!(rx.try_recv().is_err());
     }
 }

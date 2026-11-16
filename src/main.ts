@@ -26,7 +26,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, branchDir, branchLabel, completionEnabled, debounce, shouldFit, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, branchDir, branchLabel, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { applyTheme, currentTheme, getThemes, nextTheme, registerTerminal, setTransparent, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -137,7 +137,8 @@ interface Appearance {
 type ClientMsg =
   | { type: "list" }
   | { type: "create"; target: Target; cols: number; rows: number; command?: string }
-  | { type: "attach" | "close"; id: number }
+  | { type: "attach"; id: number; history?: boolean }
+  | { type: "close"; id: number }
   | { type: "input"; id: number; data: string }
   | { type: "resize"; id: number; cols: number; rows: number }
   | { type: "rename"; id: number; name: string }
@@ -168,9 +169,13 @@ interface View {
   cwdEl: HTMLSpanElement;
   claudeEl: HTMLSpanElement;
   takenEl: HTMLSpanElement;
+  /** 经历过 hub 接管、尚未刷新（接管期间按网页尺寸写入的内容错乱） */
+  stale: boolean;
 }
 
 const views = new Map<number, View>();
+/** 已请求刷新、等待快照的会话：快照到达时先清空终端 */
+const refreshing = new Set<number>();
 /** 本机 Windows build 号（读取失败为 null），本地会话的 xterm 据此设置 windowsPty */
 const windowsBuild = invoke<number | null>("windows_build");
 let activeId: number | undefined;
@@ -496,7 +501,7 @@ async function init() {
         return syncSessions(m.sessions);
       case "snapshot":
       case "output":
-        return views.get(m.id)?.term.write(decode(m.data));
+        return writeData(m);
       case "notify":
         if (m.id !== activeId) views.get(m.id)?.item.classList.add("unread");
         return;
@@ -575,6 +580,20 @@ async function init() {
   initUpdater(() => views.size + detached.size, syncBannerSpace);
 }
 
+/** 写入会话输出 / 快照；刷新中的会话收到快照时先清空终端，丢弃清空前已写入的内容 */
+function writeData(m: { type: "snapshot" | "output"; id: number; data: string }) {
+  const term = views.get(m.id)?.term;
+  if (m.type === "snapshot" && refreshing.delete(m.id)) term?.reset();
+  term?.write(decode(m.data));
+}
+
+/** hub 接管结束后刷新终端：重取带历史的快照（调用前已按本地尺寸 resize） */
+function refreshView(v: View) {
+  v.stale = false;
+  refreshing.add(v.info.id);
+  send({ type: "attach", id: v.info.id, history: true });
+}
+
 /** 独立窗口只处理自己会话的消息；交互提示、错误提示、设置面板等由主窗口处理 */
 function onDetachedMsg(m: ServerMsg) {
   switch (m.type) {
@@ -590,7 +609,7 @@ function onDetachedMsg(m: ServerMsg) {
     }
     case "snapshot":
     case "output":
-      return views.get(m.id)?.term.write(decode(m.data));
+      return writeData(m);
     case "activate":
       if (m.id === detachedId) focusSession(m.id);
       return;
@@ -896,6 +915,9 @@ function syncSessions(sessions: SessionInfo[]) {
     }
     // hub 接管结束（网页 detach / 本地收回 / 连接断开）时 pty 还停在网页尺寸，补发一次本地尺寸
     if (wasReleased(v.info.takenOver, info.takenOver)) send({ type: "resize", id: info.id, cols: v.term.cols, rows: v.term.rows });
+    // 接管期间终端按网页宽度写入：正显示的会话接管结束即刷新，其余切换过去时再刷新
+    v.stale = takeoverStale(v.stale, info.takenOver);
+    if (info.id === activeId && needsRefresh(v.stale, info.takenOver)) refreshView(v);
     v.info = info;
     if (!v.nameEl.querySelector("input")) v.nameEl.textContent = info.name;
     v.hostEl.textContent = info.host ?? "";
@@ -1217,7 +1239,7 @@ function addView(info: SessionInfo): View {
   });
   list.appendChild(item);
 
-  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl };
+  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl, stale: false };
   views.set(id, v);
   return v;
 }
@@ -1280,6 +1302,7 @@ function activate(id: number) {
   // 隐藏期间容器尺寸为 0，显示后再 fit；行列未变时 onResize 不触发，无条件补发一次，覆盖 hub 网页留下的尺寸
   v.fit.fit();
   send({ type: "resize", id, cols: v.term.cols, rows: v.term.rows });
+  if (needsRefresh(v.stale, v.info.takenOver)) refreshView(v);
   v.term.focus();
   reportFocus();
   showFiles();
