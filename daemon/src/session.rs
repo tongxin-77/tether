@@ -200,7 +200,7 @@ impl State {
     }
 
     pub fn push_sessions(&self) {
-        let sessions = self.sessions.values().map(|s| s.info.clone()).collect();
+        let sessions = self.sessions.values().map(|s| SessionInfo { claude_session: s.resume.as_ref().map(|r| r.id.clone()), ..s.info.clone() }).collect();
         self.send(&ServerMsg::Sessions { sessions });
         // hub 常驻连接据此防抖上报（未启用时无人等待，只留一个许可）
         self.hub.changed.notify_one();
@@ -288,7 +288,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 None => st.send(&ServerMsg::Error { message: format!("未找到主机 {host_id}") }),
             }
         }
-        ClientMsg::Create { target: Target::Local { cwd }, cols, rows, command } => {
+        ClientMsg::Create { target: Target::Local { cwd }, cols, rows, command, resume } => {
             // 自动模式每次新建时现场探测，安装 PowerShell 7 后无需重启 daemon
             let shell = command.unwrap_or_else(|| config::resolve_shell(&st.config.shell));
             // 未指定目录（“+ 新建 → 本地”）时进用户主目录
@@ -299,6 +299,9 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             // 启动 PTY 较慢，不持锁
             drop(guard);
             let result = spawn(state, &shell, cwd, cols, rows);
+            if let (Ok(id), Some(r)) = (&result, resume) {
+                resume_claude(state, *id, r);
+            }
             let st = state.lock().unwrap();
             match result {
                 Ok(id) => {
@@ -642,7 +645,20 @@ fn spawn(state: &Shared, shell: &str, cwd: String, cols: u16, rows: u16) -> Resu
 /// 构造新会话的元信息，id 由 register 分配
 pub fn new_info(name: String, cwd: String, command: String, host: Option<String>) -> SessionInfo {
     let now = now_ms();
-    SessionInfo { id: 0, name, cwd, command, status: Status::Running, started_at: now, last_activity_at: now, host, host_id: None, claude: None, taken_over: false }
+    SessionInfo {
+        id: 0,
+        name,
+        cwd,
+        command,
+        status: Status::Running,
+        started_at: now,
+        last_activity_at: now,
+        host,
+        host_id: None,
+        claude: None,
+        taken_over: false,
+        claude_session: None,
+    }
 }
 
 /// 分配 id 并登记会话
@@ -727,6 +743,19 @@ pub fn restore_remote(state: &Shared, st: &mut State) {
             None => log!("恢复远程会话失败：未找到主机 {host_id}"),
         }
     }
+}
+
+/// 在新建的会话中恢复 Claude 对话（GUI「恢复 Claude 对话」）：与 daemon 重启后的恢复相同，记下对话并在 shell 就绪后输入
+/// 带权限模式的 `claude --resume`；id 含意外字符时什么都不做
+fn resume_claude(state: &Shared, id: u32, r: proto::ClaudeResume) {
+    let mut st = state.lock().unwrap();
+    let Some(s) = st.sessions.get_mut(&id) else { return };
+    let resume = saved::Resume { id: r.id, cwd: s.info.cwd.clone(), permission_mode: r.permission_mode, bypass: r.bypass };
+    let Some(cmd) = saved::resume_command(&resume) else { return };
+    s.resume = Some(resume);
+    st.save_sessions();
+    drop(st);
+    type_when_ready(state, id, cmd);
 }
 
 /// 恢复的会话：等 shell 有输出后静默 500ms（提示符已显示）再输入命令，最多等 15 秒
@@ -1543,6 +1572,33 @@ mod tests {
         }
         let mut s = Sim { state: Some(Thinking), ..Default::default() };
         assert_eq!(s.hook(r#"{"hook_event_name":"Notification","message":"m"}"#), Some(Waiting));
+    }
+
+    /// 恢复 Claude 对话：会话列表带上 claudeSession，shell 有输出并静默后输入带权限模式的 resume 命令
+    #[test]
+    fn resume_claude_reports_session_and_types_command() {
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (id, mut cmds) = {
+            let mut st = shared.lock().unwrap();
+            st.gui = Some(Gui::new(1, tx));
+            test_session(&mut st, 80, 24)
+        };
+        let r = |id: &str| proto::ClaudeResume { id: id.into(), permission_mode: Some("plan".into()), bypass: false };
+        resume_claude(&shared, id, r("a1"));
+        shared.lock().unwrap().push_sessions();
+        let v: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(v["sessions"][0]["claudeSession"], "a1");
+        thread::sleep(Duration::from_millis(5));
+        assert!(on_output(&shared, id, b"PS> "));
+        thread::sleep(Duration::from_millis(900));
+        let Ok(ssh::Cmd::Data(data)) = cmds.try_recv() else { panic!("未输入命令") };
+        assert_eq!(data, b"claude --resume a1 --permission-mode plan\r");
+        // id 含意外字符：不记录、不输入
+        let (id2, mut cmds2) = test_session(&mut shared.lock().unwrap(), 80, 24);
+        resume_claude(&shared, id2, r("x; rm"));
+        assert!(shared.lock().unwrap().sessions[&id2].resume.is_none());
+        assert!(cmds2.try_recv().is_err());
     }
 
     /// 重复 attach 只重发快照、不重复推 output；history 为 true 时快照前带推出屏幕的历史（接管结束后 GUI 刷新）

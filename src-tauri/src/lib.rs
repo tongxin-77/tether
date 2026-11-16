@@ -1,5 +1,7 @@
 //! GUI 只是查看器：会话全部由后台进程 tetherd 持有，本进程通过命名管道收发协议消息。
 
+mod claude_history;
+
 use std::{
     io::ErrorKind,
     os::windows::{io::AsRawHandle, process::CommandExt},
@@ -308,6 +310,20 @@ async fn git_show(dir: String, hash: String) -> Result<(String, String, bool), S
     blocking(move || show_commit(&dir, &hash)).await
 }
 
+/// 目录 dir 的 Claude Code 历史对话（只读其 jsonl），按修改时间倒序
+#[tauri::command]
+async fn claude_history(dir: String) -> Result<Vec<serde_json::Value>, String> {
+    blocking(move || {
+        let root = claude_history::projects_dir().ok_or("未找到用户目录")?;
+        let items = claude_history::list(&root, &dir).into_iter().map(|c| {
+            let s = c.summary;
+            serde_json::json!({ "id": c.id, "title": s.title, "mtime": c.mtime, "messages": s.messages, "permissionMode": s.permission_mode, "bypass": s.bypass })
+        });
+        Ok(items.collect())
+    })
+    .await
+}
+
 /// 系统剪贴板中资源管理器复制的文件路径（CF_HDROP）及当前序号；没有文件时为空列表
 #[tauri::command]
 fn clipboard_files() -> (u32, Vec<String>) {
@@ -401,7 +417,7 @@ pub fn run() {
                 win.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, windows_build, git_branch, git_refs, git_switch, git_log, git_show])
+        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, windows_build, git_branch, git_refs, git_switch, git_log, git_show, claude_history])
         .run(context)
         .expect("error while running tauri application");
 }

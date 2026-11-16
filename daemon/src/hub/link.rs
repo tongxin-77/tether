@@ -729,6 +729,7 @@ mod tests {
             host_id: None,
             claude: None,
             taken_over: false,
+            claude_session: None,
         };
         let v = serde_json::to_value(Up::Sessions { sessions: vec![info] }).unwrap();
         assert_eq!(v["type"], "sessions");

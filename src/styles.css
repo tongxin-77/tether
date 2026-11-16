@@ -1311,6 +1311,21 @@ dialog .actions button:first-child.danger:hover { filter: brightness(0.92); }
 .m-head .ch-ico { width: 36px; height: 36px; background: rgb(var(--surface-rgb)); }
 dialog .m-x { position: absolute; top: 2px; right: 0; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; color: var(--text-2); background: none; border-radius: 11px; }
 dialog .m-x:hover { color: var(--text); background: rgb(var(--surface-rgb)); }
+
+/* 恢复 Claude 对话：目录 + 过滤框固定，列表滚动 */
+#cc-history { width: 560px; }
+#cc-history form { display: flex; flex-direction: column; max-height: calc(100vh - 92px); }
+.cch-dir { display: flex; align-items: center; gap: 8px; margin: -6px 0 10px; font-size: 12px; color: var(--text-3); }
+#cch-dir { flex: 1; min-width: 0; overflow: hidden; font-family: var(--f-mono); white-space: nowrap; text-overflow: ellipsis; }
+dialog .cch-dir button { flex-shrink: 0; height: 26px; padding: 0 12px; font-size: 12px; }
+#cch-filter { flex-shrink: 0; }
+#cch-list { flex: 1; min-height: 0; margin: 10px -8px 0; padding: 0 8px; overflow-y: auto; list-style: none; }
+#cch-list li { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; border-radius: var(--r-md); cursor: pointer; transition: background-color var(--motion); }
+#cch-list li:hover { background: rgb(var(--surface-rgb)); }
+.cch-title { overflow: hidden; font-size: 13.5px; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.cch-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 600; color: var(--text-3); }
+.cch-meta .tag.open { color: var(--accent-strong); background: var(--accent-soft); }
+#cch-empty { margin: 18px 0 6px; text-align: center; }
 .rows { display: flex; flex-direction: column; gap: 8px; }
 .rows > .row { display: flex; flex-direction: row; align-items: center; gap: 12px; padding: 12px 14px; font-size: 13px; color: var(--text); background: rgb(var(--surface-rgb)); border-radius: var(--r-lg); }
 .rows > .row .rt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }

@@ -6,6 +6,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { showPreview } from "./preview";
 import { icon } from "./icons";
 import { clampFilesWidth } from "./term-utils";
+import { claudeMentions } from "./claude-paths";
 
 // 与 proto crate 的文件树协议保持一致
 export interface FsEntry {
@@ -53,6 +54,10 @@ interface Deps {
   /** 当前激活会话 */
   active: () => FsSession | undefined;
   newSession: (target: NewTarget) => void;
+  /** 向当前激活会话粘贴文字（不回车） */
+  paste: (text: string) => void;
+  /** 拖放落在文件树之外（CSS 像素坐标） */
+  dropElsewhere: (x: number, y: number, paths: string[]) => void;
 }
 
 /** 每个会话各自的浏览状态 */
@@ -199,13 +204,16 @@ export function initFiles(d: Deps) {
   });
   window.addEventListener("blur", () => (menu.hidden = true));
 
-  // 从资源管理器拖入：坐标为相对 webview 的物理像素，需按 devicePixelRatio 换算为 CSS 像素
+  // 从资源管理器拖入：坐标为相对 webview 的物理像素，需按 devicePixelRatio 换算为 CSS 像素；落在文件树上为上传，其余交给 dropElsewhere
   getCurrentWebview().onDragDropEvent(({ payload: p }) => {
     if (p.type === "leave") return highlight(undefined);
-    const target = dropTarget(p.position.x / devicePixelRatio, p.position.y / devicePixelRatio);
+    const [x, y] = [p.position.x / devicePixelRatio, p.position.y / devicePixelRatio];
+    const target = dropTarget(x, y);
     if (p.type !== "drop") return highlight(target?.el);
     highlight(undefined);
-    if (target && p.paths.length) upload(target.s, target.dir, p.paths);
+    if (!p.paths.length) return;
+    if (target) upload(target.s, target.dir, p.paths);
+    else deps.dropElsewhere(x, y, p.paths);
   });
 }
 
@@ -228,6 +236,13 @@ export function showFiles() {
   if (id === shownId) return;
   shownId = id;
   render();
+}
+
+/** 文件栏当前浏览目录：仅本地会话，盘符列表除外 */
+export function filesDir(): string | undefined {
+  const s = deps.active();
+  if (!s || isRemote(s)) return undefined;
+  return tree(s).root || undefined;
 }
 
 /** 会话关闭后丢弃其浏览状态 */
@@ -509,6 +524,7 @@ function menuItems(s: FsSession, t: Tree, row: HTMLElement | undefined, pasteCou
   }
   const path = row.dataset.path!;
   const common: MenuItem[] = [
+    [n > 1 ? `发给 Claude（${n} 项）` : "发给 Claude", () => sendToClaude(s, t)],
     ["下载到…", () => download(s, path)],
     null,
     copyItem,
@@ -666,6 +682,12 @@ async function upload(s: FsSession, dir: string, paths: string[]) {
   const t = tree(s);
   if (dir !== t.root) t.expanded.add(dir);
   refreshDir(s, t, dir);
+}
+
+/** 把显示中的选中项（按显示顺序）以 @ 引用粘贴到当前会话；远程会话用远程路径 */
+function sendToClaude(s: FsSession, t: Tree) {
+  const paths = [...treeEl.querySelectorAll<HTMLElement>(".fs-row")].map((r) => r.dataset.path!).filter((p) => t.selected.has(p));
+  if (paths.length) deps.paste(claudeMentions(paths, s.cwd, isRemote(s)));
 }
 
 function newSessionAt(s: FsSession, dir: string) {

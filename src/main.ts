@@ -19,6 +19,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { type FsClientMsg, type FsServerMsg, ask, forgetFiles, initFiles, onFsMessage, openPathQuiet, showFiles, showMenu } from "./files";
 import { attachFileLinks } from "./file-links";
+import { dropText } from "./claude-paths";
+import { type ClaudeResume, initClaudeHistory, openClaudeHistory } from "./claude-history";
 import { attachTableSelect, cellSelectionText, clearCellSelection } from "./table-select";
 import { closePreview, initPreview } from "./preview";
 import { closeGitPanel, initGitPanel } from "./git-panel";
@@ -57,6 +59,8 @@ interface SessionInfo {
   claude?: ClaudeState;
   /** 正被 hub 远程接管（未接管时不带该字段） */
   takenOver?: boolean;
+  /** 会话中 Claude Code 对话的 session_id */
+  claudeSession?: string;
 }
 
 interface Host {
@@ -137,7 +141,7 @@ interface Appearance {
 
 type ClientMsg =
   | { type: "list" }
-  | { type: "create"; target: Target; cols: number; rows: number; command?: string }
+  | { type: "create"; target: Target; cols: number; rows: number; command?: string; resume?: ClaudeResume }
   | { type: "attach"; id: number; history?: boolean }
   | { type: "close"; id: number }
   | { type: "input"; id: number; data: string }
@@ -278,7 +282,7 @@ document.getElementById("new-btn")!.addEventListener("click", (ev) => {
     newMenu.hidden = true;
     return;
   }
-  const item = (ico: "folder-open" | "server", text: string, sub: string, action: () => void) => {
+  const item = (ico: "folder-open" | "server" | "history", text: string, sub: string, action: () => void) => {
     const b = document.createElement("button");
     b.innerHTML = `<span class="mi-ico">${icon(ico)}</span><span class="mi-text"></span>`;
     const t = b.querySelector(".mi-text")!;
@@ -293,6 +297,11 @@ document.getElementById("new-btn")!.addEventListener("click", (ev) => {
   newMenu.replaceChildren(
     item("folder-open", "本地目录", "选择一个文件夹打开", createSession),
     ...hosts.map((h) => item("server", h.name, `${h.user}@${h.host}`, () => createRemote(h))),
+    // 当前为本地会话时列出其启动目录的对话，否则先选目录
+    item("history", "恢复 Claude 对话…", "本地目录的 Claude Code 历史对话", () => {
+      const s = activeView()?.info;
+      openClaudeHistory(s && !s.host ? s.cwd : undefined);
+    }),
   );
   newMenu.hidden = false;
 });
@@ -418,7 +427,23 @@ promptDialog.addEventListener("close", () => {
   else activeView()?.term.focus();
 });
 
-initFiles({ send, active: () => activeView()?.info, newSession: createAt });
+initFiles({
+  send,
+  active: () => activeView()?.info,
+  newSession: createAt,
+  paste: (text) => {
+    const t = activeView()?.term;
+    t?.paste(text);
+    t?.focus();
+  },
+  dropElsewhere: dropOnTerminal,
+});
+initClaudeHistory({
+  openedIn: (cid) => [...views.values()].find((v) => v.info.claudeSession === cid && v.info.status !== "exited")?.info.id,
+  activate,
+  resume: (cwd, r) => createAt({ kind: "local", cwd }, undefined, r),
+  relativeTime,
+});
 initHostInfo({ send, active: () => activeView()?.info });
 initHub({ send });
 initPreview({
@@ -735,11 +760,11 @@ function createRemote(h: Host) {
   createAt({ kind: "remote", hostId: h.id });
 }
 
-/** command 仅本地会话有效：代替配置的 shell 运行 */
-function createAt(target: Target, command?: string) {
+/** command 仅本地会话有效：代替配置的 shell 运行；resume 仅本地会话有效：shell 就绪后恢复该 Claude 对话 */
+function createAt(target: Target, command?: string, resume?: ClaudeResume) {
   // 初始尺寸取当前终端，attach 时会按实际 fit 结果再 resize
   const t = activeView()?.term;
-  send({ type: "create", target, cols: t?.cols ?? 80, rows: t?.rows ?? 24, command });
+  send({ type: "create", target, cols: t?.cols ?? 80, rows: t?.rows ?? 24, command, resume });
 }
 
 /** 设置面板主机列表：Tether 管理的可编辑 / 删除；~/.ssh/config 的可编辑（存为覆盖项），有覆盖项时可恢复默认 */
@@ -1027,6 +1052,17 @@ function shellLabel(s: SessionInfo) {
   const prog = m?.[1] ?? m?.[2] ?? "";
   const base = (prog.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").toLowerCase();
   return SHELL_NAMES[base] ?? base;
+}
+
+/** 从资源管理器拖到终端：插入路径（Claude 运行中为 @ 引用），走 term.paste、不回车。
+ *  远程会话不插入：本机路径在远程主机上无意义，提示改拖到文件树上传 */
+function dropOnTerminal(x: number, y: number, paths: string[]) {
+  const v = activeView();
+  const hit = document.elementFromPoint(x, y);
+  if (!v || !hit || !v.box.contains(hit)) return;
+  if (v.info.host !== null) return alert("远程会话不能插入本机路径；要上传文件请拖到右侧文件树");
+  v.term.paste(dropText(paths, v.info.cwd, !!v.info.claude));
+  v.term.focus();
 }
 
 /** 复制选区（优先表格单元格选区）到系统剪贴板并短暂提示“已复制”；无选区返回 false */

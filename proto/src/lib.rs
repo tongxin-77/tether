@@ -49,6 +49,21 @@ pub struct SessionInfo {
     /// 正被 hub 远程接管（GUI 据此显示标识与「收回」按钮）；未接管时不写出
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub taken_over: bool,
+    /// 会话中 Claude Code 对话的 session_id（GUI 历史对话列表据此标注“已打开”），没有时不写出
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_session: Option<String>,
+}
+
+/// 新建本地会话后恢复的 Claude Code 对话：shell 就绪后输入 `claude --resume`，带上原来的权限模式
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeResume {
+    pub id: String,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// 对话中出现过 bypassPermissions
+    #[serde(default)]
+    pub bypass: bool,
 }
 
 /// Claude Code 在会话中的状态
@@ -377,13 +392,16 @@ pub struct GpuStats {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ClientMsg {
     List,
-    /// command 仅对本地会话有效：指定时代替配置的 shell 运行该命令行（如安装 PowerShell 7 的 winget 命令）
+    /// command 仅对本地会话有效：指定时代替配置的 shell 运行该命令行（如安装 PowerShell 7 的 winget 命令）；
+    /// resume 仅对本地会话有效：在 shell 中恢复该 Claude 对话
     Create {
         target: Target,
         cols: u16,
         rows: u16,
         #[serde(default)]
         command: Option<String>,
+        #[serde(default)]
+        resume: Option<ClaudeResume>,
     },
     /// daemon 回 snapshot，之后持续推送该会话 output；重复 attach 只重发 snapshot。
     /// history 为 true 时 snapshot 前拼上推出屏幕的历史（hub 接管结束后 GUI 清空终端重取）
@@ -619,6 +637,29 @@ mod tests {
         assert!(matches!(msg, super::ClientMsg::Attach { id: 3, history: false }));
         let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"attach","id":3,"history":true}"#).unwrap();
         assert!(matches!(msg, super::ClientMsg::Attach { id: 3, history: true }));
+    }
+
+    #[test]
+    fn create_resume_json() {
+        let json = r#"{"type":"create","target":{"kind":"local","cwd":"C:\\p"},"cols":80,"rows":24,"resume":{"id":"a1","permissionMode":"plan","bypass":true}}"#;
+        let msg: super::ClientMsg = serde_json::from_str(json).unwrap();
+        let super::ClientMsg::Create { resume: Some(r), .. } = msg else { panic!() };
+        assert_eq!((r.id.as_str(), r.permission_mode.as_deref(), r.bypass), ("a1", Some("plan"), true));
+        // 不带 resume / 权限字段时为空
+        let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"create","target":{"kind":"local","cwd":""},"cols":80,"rows":24}"#).unwrap();
+        assert!(matches!(msg, super::ClientMsg::Create { resume: None, .. }));
+        let r: super::ClaudeResume = serde_json::from_str(r#"{"id":"a1"}"#).unwrap();
+        assert_eq!((r.permission_mode, r.bypass), (None, false));
+    }
+
+    #[test]
+    fn session_info_claude_session() {
+        let mut info: super::SessionInfo =
+            serde_json::from_str(r#"{"id":1,"name":"p","cwd":"C:\\p","command":"pwsh","status":"running","startedAt":0,"lastActivityAt":0}"#).unwrap();
+        assert_eq!(info.claude_session, None);
+        assert!(!serde_json::to_string(&info).unwrap().contains("claudeSession"));
+        info.claude_session = Some("a1".into());
+        assert!(serde_json::to_string(&info).unwrap().contains(r#""claudeSession":"a1""#));
     }
 
     #[test]
