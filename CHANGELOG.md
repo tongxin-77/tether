@@ -4,6 +4,20 @@
 
 ## [未发布]
 
+## [0.5.2] - 2026-11-16
+
+### 🔧 变更
+
+- **后台 shell 不再算作「后台运行中」**
+  - 只有子代理与 teammate 计入后台任务数
+  - Claude Code 用后台 shell / monitor 启动开发服务等长期进程后，结束本轮即显示「已完成」并通知
+
+### 🐛 修复
+
+- **hub 接管结束后终端内容不再挤成一团**
+  - 切到被手机等窄屏接管过的会话、或当前会话接管结束时，自动清空并重新载入画面与回看历史
+  - 接管期间按窄屏输出的部分历史行回看时仍可能是窄的
+
 ## [0.5.1] - 2026-11-16
 
 ### ✨ 新增
@@ -128,7 +142,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.1...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/tongxin-77/tether/releases/tag/v0.5.2
 [0.5.1]: https://github.com/tongxin-77/tether/releases/tag/v0.5.1
 [0.5.0]: https://github.com/tongxin-77/tether/releases/tag/v0.5.0
 [0.4.1]: https://github.com/tongxin-77/tether/releases/tag/v0.4.1
