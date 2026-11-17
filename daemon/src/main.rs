@@ -28,6 +28,7 @@ mod fs;
 mod history;
 mod hub;
 mod image;
+mod memory;
 mod notify;
 mod recent;
 mod saved;
@@ -113,6 +114,8 @@ async fn serve(state: Shared) {
     hub::restart(&state, &mut state.lock().unwrap());
     // 网页贴图保存的临时文件：启动时及每小时清理超过 24 小时的
     image::start_cleanup();
+    // 会话卡片的内存占用：有 GUI 连接时周期采样推送
+    memory::start(state.clone());
     let mut conn = 0u64;
     loop {
         let connected = server.connect().await;

@@ -32,4 +32,5 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 uuid = { version = "1.29.2", features = ["v4"] }
 # 保持进程 MTA（CoIncrementMTAUsage，见 notify.rs）、播放提示音（PlaySoundW）与崩溃日志（SetUnhandledExceptionFilter，见 crash.rs）；
 # 主机信息卡片的本机采样（GetSystemTimes / GlobalMemoryStatusEx / GetIfTable2 / PDH，见 stats.rs）
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Performance", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis"] }
+# 会话进程树内存（CreateToolhelp32Snapshot / GetProcessMemoryInfo，见 memory.rs）
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Performance", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus"] }

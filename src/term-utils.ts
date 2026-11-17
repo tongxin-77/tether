@@ -75,3 +75,17 @@ export function oscLinkTarget(uri: string): { url: string } | { path: string } |
   if (u.protocol === "file:") return { path: decodeURIComponent(u.pathname).replace(/^\/(?=[A-Za-z]:)/, "").replace(/\//g, "\\") };
   return undefined;
 }
+
+const MIB = 1024 ** 2;
+const GIB = 1024 ** 3;
+
+/** 会话内存占用显示：不足 1 GB 按 MB 取整（如 812 MB），否则按 GB 保留一位（如 1.3 GB） */
+export function formatMemory(bytes: number): string {
+  const mb = Math.round(bytes / MIB);
+  return mb < 1024 ? `${mb} MB` : `${(bytes / GIB).toFixed(1)} GB`;
+}
+
+/** 内存占用超过 1 GB 时用警示色标出 */
+export function memoryHigh(bytes: number): boolean {
+  return bytes > GIB;
+}

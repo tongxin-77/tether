@@ -29,7 +29,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, branchDir, branchLabel, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -108,7 +108,9 @@ type ServerMsg =
   | FsServerMsg
   | HostStatsServerMsg
   | HubServerMsg
-  | { type: "testHost"; reqId: number; elapsedMs: number | null; error: string | null };
+  | { type: "testHost"; reqId: number; elapsedMs: number | null; error: string | null }
+  /** 本地会话进程树内存（字节）全量，旧 daemon 不发 */
+  | { type: "memory"; items: { id: number; bytes: number }[] };
 
 interface ShellOption {
   name: string;
@@ -174,6 +176,8 @@ interface View {
   cwdEl: HTMLSpanElement;
   claudeEl: HTMLSpanElement;
   takenEl: HTMLSpanElement;
+  /** 内存占用（仅本地会话，收到 memory 推送后显示） */
+  memEl: HTMLSpanElement;
   /** 经历过 hub 接管、尚未刷新（接管期间按网页尺寸写入的内容错乱） */
   stale: boolean;
 }
@@ -603,6 +607,8 @@ async function init() {
       case "hubStatus":
       case "testHub":
         return onHubMessage(m);
+      case "memory":
+        return renderMemory(m.items);
     }
   });
   // 独立窗口：daemon 断开后会话已不存在，直接关闭；连接由主窗口建立，这里只取状态
@@ -986,6 +992,18 @@ function syncSessions(sessions: SessionInfo[]) {
   showHostInfo();
 }
 
+/** 会话列表上的内存占用：daemon 每次推送全量，不在其中的会话（远程 / 已退出）隐藏 */
+function renderMemory(items: { id: number; bytes: number }[]) {
+  const bytes = new Map(items.map((i) => [i.id, i.bytes]));
+  for (const [id, v] of views) {
+    const b = bytes.get(id);
+    v.memEl.hidden = b === undefined;
+    if (b === undefined) continue;
+    v.memEl.textContent = formatMemory(b);
+    v.memEl.classList.toggle("high", memoryHigh(b));
+  }
+}
+
 /** 卡片标题行：当前会话名 · shell（远程为 ssh user@host） */
 function renderCardHead() {
   const s = activeView()?.info;
@@ -1254,12 +1272,13 @@ function addView(info: SessionInfo): View {
   });
 
   const item = document.createElement("li");
-  item.innerHTML = `<span class="ico">${icon(info.host ? "server" : "terminal")}<span class="dot"></span></span><div class="row"><span class="name"></span><span class="close" title="关闭">${icon("x")}</span></div><div class="sub"><span class="host" hidden></span><span class="cc" hidden></span><span class="tag taken" hidden>hub 接管中</span><span class="cwd"></span></div>`;
+  item.innerHTML = `<span class="ico">${icon(info.host ? "server" : "terminal")}<span class="dot"></span></span><div class="row"><span class="name"></span><span class="close" title="关闭">${icon("x")}</span></div><div class="sub"><span class="host" hidden></span><span class="cc" hidden></span><span class="tag taken" hidden>hub 接管中</span><span class="tag mem" title="进程树内存（专用工作集）" hidden></span><span class="cwd"></span></div>`;
   const nameEl = item.querySelector(".name") as HTMLSpanElement;
   const hostEl = item.querySelector(".host") as HTMLSpanElement;
   const cwdEl = item.querySelector(".cwd") as HTMLSpanElement;
   const claudeEl = item.querySelector(".cc") as HTMLSpanElement;
   const takenEl = item.querySelector(".taken") as HTMLSpanElement;
+  const memEl = item.querySelector(".mem") as HTMLSpanElement;
   item.addEventListener("click", () => activate(id));
   nameEl.addEventListener("dblclick", () => rename(id));
   // 右键：从该会话的启动目录新建（daemon 不跟踪 cd）；远程会话用同一主机
@@ -1303,7 +1322,7 @@ function addView(info: SessionInfo): View {
   });
   list.appendChild(item);
 
-  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl, stale: false };
+  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl, memEl, stale: false };
   views.set(id, v);
   return v;
 }

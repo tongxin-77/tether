@@ -610,6 +610,16 @@ pub enum ServerMsg {
     HubStatus { state: HubState, error: Option<String> },
     /// TestHub 的结果：成功时 elapsed_ms 为耗时（毫秒）、hub_version 为 hub 版本；失败时 error 为按阶段区分的原因
     TestHub { req_id: u64, elapsed_ms: Option<u64>, hub_version: Option<String>, error: Option<String> },
+    /// 本地会话进程树的内存占用（专用工作集，字节）全量，有 GUI 连接时周期采样、变化才推送；
+    /// 不在列表中的会话不显示。旧 GUI 不认识此类型，解析失败即丢弃
+    Memory { items: Vec<SessionMemory> },
+}
+
+/// 单个本地会话的内存占用
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionMemory {
+    pub id: u32,
+    pub bytes: u64,
 }
 
 #[cfg(test)]
@@ -776,5 +786,11 @@ mod tests {
         assert!(!off.sound);
         let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"playSound"}"#).unwrap();
         assert!(matches!(msg, super::ClientMsg::PlaySound));
+    }
+
+    #[test]
+    fn memory_json() {
+        let msg = super::ServerMsg::Memory { items: vec![super::SessionMemory { id: 2, bytes: 1 << 30 }] };
+        assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"memory","items":[{"id":2,"bytes":1073741824}]}"#);
     }
 }

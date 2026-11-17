@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { oscLinkTarget, terminalFontSize, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { oscLinkTarget, terminalFontSize, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -199,5 +199,20 @@ describe("oscLinkTarget", () => {
   it("其它协议忽略", () => {
     expect(oscLinkTarget("javascript:alert(1)")).toBeUndefined();
     expect(oscLinkTarget("not a url")).toBeUndefined();
+  });
+});
+
+describe("formatMemory / memoryHigh", () => {
+  it("不足 1 GB 按 MB 取整，否则按 GB 保留一位", () => {
+    expect(formatMemory(0)).toBe("0 MB");
+    expect(formatMemory(812 * 1024 ** 2 + 300_000)).toBe("812 MB");
+    expect(formatMemory(1023.4 * 1024 ** 2)).toBe("1023 MB");
+    expect(formatMemory(1023.6 * 1024 ** 2)).toBe("1.0 GB");
+    expect(formatMemory(1.3 * 1024 ** 3)).toBe("1.3 GB");
+  });
+  it("超过 1 GB 才警示", () => {
+    expect(memoryHigh(1024 ** 3)).toBe(false);
+    expect(memoryHigh(1024 ** 3 + 1)).toBe(true);
+    expect(memoryHigh(500 * 1024 ** 2)).toBe(false);
   });
 });

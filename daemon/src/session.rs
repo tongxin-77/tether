@@ -92,6 +92,8 @@ pub enum Backend {
         master: Box<dyn MasterPty + Send>,
         writer: Box<dyn Write + Send>,
         killer: Box<dyn ChildKiller + Send + Sync>,
+        /// shell 进程 pid（内存占用据此统计进程树），取不到为 None
+        pid: Option<u32>,
     },
     /// 命令交给该 channel 的异步任务执行，持锁时不 await
     Remote(UnboundedSender<ssh::Cmd>),
@@ -540,6 +542,18 @@ pub fn history(st: &State, id: u32) -> Option<String> {
     Some(B64.encode(s.parser.callbacks().history.render(s.parser.screen())))
 }
 
+/// 未退出的本地会话及其 shell pid（内存占用采样用）
+pub fn local_pids(st: &State) -> Vec<(u32, u32)> {
+    st.sessions
+        .iter()
+        .filter(|(_, s)| s.info.status != Status::Exited)
+        .filter_map(|(&id, s)| match s.backend {
+            Backend::Local { pid: Some(pid), .. } => Some((id, pid)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// 本地会话（非 SSH）；会话不存在为 false
 pub fn is_local(st: &State, id: u32) -> bool {
     st.sessions.get(&id).is_some_and(|s| s.info.host.is_none())
@@ -612,10 +626,11 @@ fn spawn(state: &Shared, shell: &str, cwd: String, cols: u16, rows: u16) -> Resu
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
+    let pid = child.process_id();
 
     let name = cwd.split(['\\', '/']).rfind(|s| !s.is_empty()).unwrap_or(cwd.as_str()).to_string();
     let info = new_info(name, cwd, shell.into(), None);
-    register_with_id(state, id, info, Backend::Local { master: pair.master, writer, killer }, fs::Backend::Local, cols, rows);
+    register_with_id(state, id, info, Backend::Local { master: pair.master, writer, killer, pid }, fs::Backend::Local, cols, rows);
 
     // 读线程：会话被关闭（ConPTY 关闭）后读到 EOF 结束
     let out_state = state.clone();
