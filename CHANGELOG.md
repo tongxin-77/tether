@@ -4,6 +4,26 @@
 
 ## [未发布]
 
+## [0.5.5] - 2026-11-17
+
+### ✨ 新增
+
+- **会话列表显示内存占用**
+  - 统计会话中 shell 及其全部子进程（Claude、MCP 服务器等）的内存，与任务管理器「内存」列一致
+  - 每 5 秒刷新，超过 1 GB 时标为警示色；SSH 远程会话不显示
+  - 需重启后台进程后生效（更新后点提示条中的「重启后台」）
+- **更新提示显示所有未安装版本的说明**
+  - 跨多个版本更新时，列出当前版本之后每个版本的更新内容
+  - 更新说明按 Markdown 排版显示（标题、加粗、列表）
+
+### 🐛 修复
+
+- **Claude 输出的链接可单击打开**
+  - 网页链接用默认浏览器打开，本地文件链接用对应程序打开
+  - 之前单击会被拦截，没有反应
+- **链接和文件路径可拖选复制**
+  - 之前在链接上拖选、松开鼠标时会被当成单击，导致无法复制
+
 ## [0.5.4] - 2026-11-16
 
 ### ✨ 新增
@@ -179,7 +199,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.4...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/tongxin-77/tether/releases/tag/v0.5.5
 [0.5.4]: https://github.com/tongxin-77/tether/releases/tag/v0.5.4
 [0.5.3]: https://github.com/tongxin-77/tether/releases/tag/v0.5.3
 [0.5.2]: https://github.com/tongxin-77/tether/releases/tag/v0.5.2
