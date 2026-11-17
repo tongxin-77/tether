@@ -36,7 +36,8 @@ export function attachFileLinks(term: Terminal, cwd: () => { dir: string; remote
           text: m[0],
           range: { start: { x: colOf[start] + 1, y }, end: { x: colOf[end] + 1, y } },
           activate: (ev) => {
-            if (ev.button === 0) open(resolve(path, cwd()));
+            // 拖选结束在路径上时不打开，保证路径可选中复制
+            if (ev.button === 0 && !term.hasSelection()) open(resolve(path, cwd()));
           },
         });
       }

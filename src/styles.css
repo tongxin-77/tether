@@ -1422,7 +1422,15 @@ dialog #h-test { margin-right: auto; }
 
 /* 更新对话框 */
 #update-dialog { width: 520px; }
-#upd-notes { max-height: 280px; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; font: 12px/1.6 var(--f-ui); background: rgb(var(--surface-rgb)); border-radius: var(--r-md); }
+#upd-notes { max-height: 280px; overflow: auto; margin: 0; padding: 10px 12px; font: 12px/1.6 var(--f-ui); background: rgb(var(--surface-rgb)); border-radius: var(--r-md); }
+#upd-notes > :first-child { margin-top: 0; }
+#upd-notes > :last-child { margin-bottom: 0; }
+#upd-notes h1, #upd-notes h2, #upd-notes h3, #upd-notes h4 { margin: 10px 0 4px; font-size: 13px; font-weight: 800; }
+#upd-notes h2 { margin-top: 14px; font-size: 14px; color: var(--accent-strong); }
+#upd-notes p { margin: 4px 0; }
+#upd-notes ul, #upd-notes ol { margin: 4px 0; padding-left: 20px; }
+#upd-notes code { padding: 0 4px; font-family: var(--f-mono); font-size: 11.5px; background: var(--surface); border-radius: 4px; }
+#upd-notes a { color: var(--accent-strong); pointer-events: none; }
 #upd-progress { width: 100%; margin-top: 8px; accent-color: var(--accent); }
 
 /* 会话项拖动中（拖出窗口外松开即成为独立窗口） */

@@ -62,3 +62,16 @@ export function branchLabel(branch: string | null | undefined): string {
 export function terminalFontSize(screenWidth: number, dpr: number): number {
   return screenWidth * dpr >= 3840 ? 14 : 13;
 }
+
+/** 终端 OSC 8 超链接（Claude Code 等输出）的打开目标：http(s) → 浏览器；file:// → 本机路径；其它协议忽略 */
+export function oscLinkTarget(uri: string): { url: string } | { path: string } | undefined {
+  let u: URL;
+  try {
+    u = new URL(uri);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol === "http:" || u.protocol === "https:") return { url: uri };
+  if (u.protocol === "file:") return { path: decodeURIComponent(u.pathname).replace(/^\/(?=[A-Za-z]:)/, "").replace(/\//g, "\\") };
+  return undefined;
+}

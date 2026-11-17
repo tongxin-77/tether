@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { terminalFontSize, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { oscLinkTarget, terminalFontSize, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -184,5 +184,20 @@ describe("terminalFontSize", () => {
     expect(terminalFontSize(1920, 1)).toBe(13);
     expect(terminalFontSize(2560, 1)).toBe(13); // 2K
     expect(terminalFontSize(1536, 1.25)).toBe(13); // 1080p 125% 缩放
+  });
+});
+
+describe("oscLinkTarget", () => {
+  it("http(s) 链接交给浏览器", () => {
+    expect(oscLinkTarget("https://example.com/a?b=1")).toEqual({ url: "https://example.com/a?b=1" });
+    expect(oscLinkTarget("http://localhost:3000")).toEqual({ url: "http://localhost:3000" });
+  });
+  it("file:// 转为本机路径", () => {
+    expect(oscLinkTarget("file:///C:/work/a%20b/x.ts")).toEqual({ path: "C:\\work\\a b\\x.ts" });
+    expect(oscLinkTarget("file://localhost/C:/x.ts")).toEqual({ path: "C:\\x.ts" });
+  });
+  it("其它协议忽略", () => {
+    expect(oscLinkTarget("javascript:alert(1)")).toBeUndefined();
+    expect(oscLinkTarget("not a url")).toBeUndefined();
   });
 });

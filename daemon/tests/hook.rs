@@ -30,6 +30,8 @@ fn exits_silently_without_env() {
 
 #[test]
 fn exits_silently_when_daemon_missing() {
+    // 同上：先预热一次再计时，避免新编译的 exe 首次启动被杀毒软件扫描导致超时误报
+    run_hook(&[]);
     let (out, ms) = run_hook(&[("TETHER_SESSION", "1"), ("TETHER_PIPE", r"\\.\pipe\tether-test-no-such-pipe")]);
     assert!(out.status.success());
     assert!(out.stdout.is_empty() && out.stderr.is_empty());

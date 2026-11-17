@@ -6,6 +6,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask } from "./files";
+import { renderMarkdown } from "./markdown";
+import { notesSince } from "./update-notes";
 
 const AUTO_KEY = "tether.update.auto"; // "0" 为关闭启动时自动检查
 const SKIP_KEY = "tether.update.skip"; // 用户跳过的版本号
@@ -86,7 +88,8 @@ function showDialog(update: Update) {
   const dlg = $<HTMLDialogElement>("update-dialog");
   if (dlg.open) return;
   $("upd-title").textContent = `发现新版本 ${update.version}`;
-  $("upd-notes").textContent = update.body?.trim() || "（无更新说明）";
+  // 更新说明取自 CHANGELOG.md（含历次版本段），只显示当前版本之后的各版本，按 Markdown 渲染
+  $("upd-notes").innerHTML = renderMarkdown(notesSince(update.body?.trim() ?? "", update.currentVersion) || "（无更新说明）");
   $("upd-progress").hidden = true;
   for (const b of dlg.querySelectorAll("button")) b.disabled = false;
   dlg.returnValue = "";

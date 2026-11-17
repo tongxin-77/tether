@@ -29,7 +29,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, terminalFontSize, branchDir, branchLabel, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, branchDir, branchLabel, completionEnabled, debounce, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -1228,6 +1228,16 @@ function addView(info: SessionInfo): View {
       ),
   );
   attachTableSelect(term, box);
+  // OSC 8 超链接（Claude Code 输出的链接）：xterm 默认用 confirm + window.open，在 webview 中被拦截；
+  // 改为左键单击时 http(s) 交给默认浏览器、file:// 在本地会话中按路径打开。拖选结束在链接上时不打开，保证链接文字可选中复制
+  term.options.linkHandler = {
+    activate: (ev, uri) => {
+      if (ev.button !== 0 || term.hasSelection()) return;
+      const target = oscLinkTarget(uri);
+      if (target && "url" in target) send({ type: "openUrl", url: target.url });
+      else if (target && (views.get(id)?.info ?? info).host === null) openPathQuiet(views.get(id)?.info ?? info, target.path);
+    },
+  };
   // 输出中的文件路径可单击打开；相对路径按会话目录（daemon 只记录启动目录，不跟踪 cd）解析
   attachFileLinks(
     term,
