@@ -4,6 +4,24 @@
 
 ## [未发布]
 
+## [0.5.6] - 2026-11-19
+
+### ✨ 新增
+
+- **hub 网页可在本机新建会话**（需 tether-hub 0.5.0）
+  - 支持本地会话、SSH 会话，以及恢复 Claude 历史对话
+  - 建好后网页直接打开该会话，桌面端侧栏同步出现但不切换过去
+  - 需本机允许 hub 远程接管；SSH 需要密码或确认指纹时直接失败，不在桌面弹窗
+- **界面字号可调**
+  - 默认整体字号缩小 2 号，可在设置中调整界面字号与终端字号
+  - 鼠标在终端上时按 `Ctrl` + 滚轮可直接调整终端字号
+
+### 🔧 变更
+
+- **Claude 中 `Ctrl+V` 贴图明显变快**
+  - 本地会话运行 Claude 时，由 Tether 直接把剪贴板图片存为临时文件并粘贴路径，不再等 Claude 读剪贴板
+  - SSH 会话或保存失败时仍按原方式处理
+
 ## [0.5.5] - 2026-11-17
 
 ### ✨ 新增
@@ -199,7 +217,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.5...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/tongxin-77/tether/releases/tag/v0.5.6
 [0.5.5]: https://github.com/tongxin-77/tether/releases/tag/v0.5.5
 [0.5.4]: https://github.com/tongxin-77/tether/releases/tag/v0.5.4
 [0.5.3]: https://github.com/tongxin-77/tether/releases/tag/v0.5.3
