@@ -4,6 +4,17 @@
 
 ## [未发布]
 
+## [0.5.8] - 2026-11-19
+
+### 🐛 修复
+
+- **Claude 异常退出后终端恢复正常**
+  - Claude 进程意外结束（未正常退出）时，约 10 秒内自动清除侧栏的 Claude 状态
+  - 终端自动退出 Claude 全屏画面并关闭鼠标模式，移动鼠标不再向 shell 输入乱码
+  - hub 网页接管中的终端同样复位；对话仍可恢复
+- **全屏程序运行时隐藏终端滚动条**
+  - Claude 全屏界面、vim 等程序没有可回看的历史，右侧滚动条不再显示；回到 shell 后恢复
+
 ## [0.5.7] - 2026-11-19
 
 ### ✨ 新增
@@ -232,7 +243,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.7...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/tongxin-77/tether/releases/tag/v0.5.8
 [0.5.7]: https://github.com/tongxin-77/tether/releases/tag/v0.5.7
 [0.5.6]: https://github.com/tongxin-77/tether/releases/tag/v0.5.6
 [0.5.5]: https://github.com/tongxin-77/tether/releases/tag/v0.5.5
