@@ -4,6 +4,21 @@
 
 ## [未发布]
 
+## [0.5.7] - 2026-11-19
+
+### ✨ 新增
+
+- **SSH 文件面板可提权为 root**
+  - 文件面板标题栏的盾牌按钮切换「以 root 浏览」，按 SSH 连接生效，断开后恢复普通身份
+  - 依次尝试免密 sudo、该主机已保存的登录密码，仍不行时弹窗输入 sudo 密码
+  - 提权时面板显示 root 标记与警示，删除、上传等操作以 root 执行
+  - 终端提示符变为 root（如 `sudo -i` 后）时提示是否同步提权，不自动切换
+- **终端 GPU 加速渲染**
+  - 使用 WebGL 渲染当前终端，Claude 大量输出、滚动时更流畅
+  - 设置「外观」中可关闭；GPU 不可用或出错时自动退回原渲染方式
+- **设置中可重启后台**
+  - 「关于与更新」显示后台进程版本，并提供「重启后台」按钮
+
 ## [0.5.6] - 2026-11-19
 
 ### ✨ 新增
@@ -217,7 +232,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.6...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.7...HEAD
+[0.5.7]: https://github.com/tongxin-77/tether/releases/tag/v0.5.7
 [0.5.6]: https://github.com/tongxin-77/tether/releases/tag/v0.5.6
 [0.5.5]: https://github.com/tongxin-77/tether/releases/tag/v0.5.5
 [0.5.4]: https://github.com/tongxin-77/tether/releases/tag/v0.5.4
