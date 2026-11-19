@@ -627,6 +627,9 @@ pub enum ServerMsg {
     /// 本地会话进程树的内存占用（专用工作集，字节）全量，有 GUI 连接时周期采样、变化才推送；
     /// 不在列表中的会话不显示。旧 GUI 不认识此类型，解析失败即丢弃
     Memory { items: Vec<SessionMemory> },
+    /// 会话中的 Claude Code 异常退出（进程已不在、未触发 SessionEnd）：GUI 复位该会话 xterm 的鼠标跟踪 / 备用缓冲等模式
+    /// （只写给本地 xterm，不发给 pty）。旧 GUI 不认识此类型，解析失败即丢弃
+    ResetModes { id: u32 },
 }
 
 /// 单个本地会话的内存占用

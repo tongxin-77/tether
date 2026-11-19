@@ -2,6 +2,7 @@
 //! 与任务管理器“内存”列一致。
 //!
 //! 有 GUI 连接时每 5 秒采样一次，结果与上次推送的不同（或换了 GUI 连接）才以 ServerMsg::Memory 全量推送。
+//! 采样时顺带检查进程树中是否还有 Claude 进程，交给 session::check_claude 发现异常退出（GUI 未连接时不检测，下次采样再纠正）。
 
 use std::{collections::HashSet, time::Duration};
 
@@ -27,8 +28,10 @@ pub fn start(state: Shared) {
                 }
                 session::local_pids(&st)
             };
-            let Ok(items) = tokio::task::spawn_blocking(move || sample(&roots)).await else { continue };
-            let st = state.lock().unwrap();
+            let Ok(sampled) = tokio::task::spawn_blocking(move || sample(&roots)).await else { continue };
+            let mut st = state.lock().unwrap();
+            session::check_claude(&mut st, &sampled.iter().map(|(m, claude)| (m.id, *claude)).collect::<Vec<_>>());
+            let items: Vec<_> = sampled.into_iter().map(|(m, _)| m).collect();
             let Some(conn) = st.gui.as_ref().map(|g| g.conn) else { continue };
             if last.as_ref().is_some_and(|(c, v)| *c == conn && *v == items) {
                 continue;
@@ -39,13 +42,26 @@ pub fn start(state: Shared) {
     });
 }
 
-/// 采样各会话（会话 id, shell pid）的进程树内存；shell 已不存在（或无权访问）的会话不出现在结果中
-fn sample(roots: &[(u32, u32)]) -> Vec<SessionMemory> {
+/// 采样各会话（会话 id, shell pid）的进程树内存，及树中是否有 Claude 进程；shell 已不存在（或无权访问）的会话不出现在结果中。
+/// Claude 进程：claude.exe（原生安装），或 Claude Code 写有 `<配置目录>\sessions\<pid>.json` 的进程（npm 安装时为 node）
+fn sample(roots: &[(u32, u32)]) -> Vec<(SessionMemory, bool)> {
     if roots.is_empty() {
         return Vec::new();
     }
-    let procs = snapshot();
-    roots.iter().filter_map(|&(id, pid)| tree_sum(&procs, pid, query).map(|bytes| SessionMemory { id, bytes })).collect()
+    let (procs, claude) = snapshot();
+    let dir = crate::claude::settings_path().and_then(|p| Some(p.parent()?.join("sessions")));
+    let is_claude = |pid: u32| claude.contains(&pid) || dir.as_ref().is_some_and(|d| d.join(format!("{pid}.json")).is_file());
+    roots
+        .iter()
+        .filter_map(|&(id, pid)| {
+            let mut found = false;
+            let bytes = tree_sum(&procs, pid, |p| {
+                found |= is_claude(p);
+                query(p)
+            })?;
+            Some((SessionMemory { id, bytes }, found))
+        })
+        .collect()
 }
 
 /// 进程树求和：从 root 起沿 (pid, ppid) 向下遍历，info 给出进程的 (创建时间, 字节)，取不到的进程连同其子树跳过。
@@ -72,28 +88,37 @@ pub fn tree_sum(procs: &[(u32, u32)], root: u32, mut info: impl FnMut(u32) -> Op
     Some(total)
 }
 
-/// 枚举全部进程的 (pid, ppid)
-fn snapshot() -> Vec<(u32, u32)> {
+/// 进程映像名是否为 claude.exe（不区分大小写；szExeFile 以 0 结尾）
+fn is_claude_exe(name: &[u16]) -> bool {
+    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("claude.exe")
+}
+
+/// 枚举全部进程的 (pid, ppid)，及其中 claude.exe 的 pid
+fn snapshot() -> (Vec<(u32, u32)>, HashSet<u32>) {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
         System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS},
     };
-    let mut out = Vec::new();
+    let (mut out, mut claude) = (Vec::new(), HashSet::new());
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap == INVALID_HANDLE_VALUE {
-            return out;
+            return (out, claude);
         }
         let mut e: PROCESSENTRY32W = std::mem::zeroed();
         e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
         let mut ok = Process32FirstW(snap, &mut e);
         while ok != 0 {
             out.push((e.th32ProcessID, e.th32ParentProcessID));
+            if is_claude_exe(&e.szExeFile) {
+                claude.insert(e.th32ProcessID);
+            }
             ok = Process32NextW(snap, &mut e);
         }
         CloseHandle(snap);
     }
-    out
+    (out, claude)
 }
 
 /// 单个进程的 (创建时间, 专用工作集字节)；专用工作集取不到（PROCESS_MEMORY_COUNTERS_EX2 需较新的 Windows）时退回 PrivateUsage
@@ -170,10 +195,20 @@ mod tests {
         let pid = std::process::id();
         let (_, bytes) = query(pid).expect("取不到当前进程内存");
         assert!(bytes > 0);
-        let procs = snapshot();
+        let (procs, _) = snapshot();
         assert!(procs.iter().any(|&(p, _)| p == pid));
         let items = sample(&[(1, pid)]);
         eprintln!("当前进程树内存：{items:?}");
-        assert!(items[0].bytes > 0);
+        assert!(items[0].0.bytes > 0);
+    }
+
+    #[test]
+    fn claude_exe_name() {
+        let w = |s: &str| s.encode_utf16().chain([0, 'x' as u16]).collect::<Vec<_>>();
+        assert!(is_claude_exe(&w("claude.exe")));
+        assert!(is_claude_exe(&w("Claude.EXE")));
+        assert!(!is_claude_exe(&w("claude.cmd")));
+        assert!(!is_claude_exe(&w("node.exe")));
+        assert!(!is_claude_exe(&w("myclaude.exe")));
     }
 }

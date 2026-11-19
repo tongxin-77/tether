@@ -76,6 +76,7 @@
 | D-4.4 | Notification 与 Stop 按 D-3.2 条件弹 toast（标题 `<会话名> · Claude`），`idle_prompt` 不重复通知 | 一次任务完成只弹一条“任务已完成” | 已实现 |
 | D-4.5 | 去重：会话有 Claude 状态或 5 秒内收到过 hook 事件时，抑制其 OSC 9 / BEL 通知；远程会话（hook 回不到本机）仍以 OSC 9 / BEL 为准 | 启用集成后本地会话不出现双通知 | 已实现 |
 | D-4.6 | 后台任务：Stop 时 `background_tasks` 中仍有未结束的任务（任何类型，不含 session_crons）→ Background（带计数，不通知），SubagentStop 按其 `background_tasks`（不含自身）刷新计数、不改状态，下一次无后台任务的 Stop 才 Done + 通知（旧版无该字段时 SubagentStop 计数减一、减到 0 转 Thinking）；忽略 `agent_type` 为空的内部代理；Stop 报 0 个时清空登记，旧版无该字段时按登记计数且 30 分钟过期；SessionStart / SessionEnd / 退出重置 | 后台子代理未结束时不显示已完成、不弹通知；漏掉 SubagentStop 不会永久卡住 | 已实现 |
+| D-4.7 | Claude 异常退出（未触发 SessionEnd）：内存采样（仅 GUI 连接时，每 5 秒）顺带检查本地会话进程树中是否有 Claude 进程（`claude.exe`，或 `<配置目录>\sessions\<pid>.json` 存在的进程）；有 Claude 状态却连续两次不见即按 SessionEnd（reason other，保留 resume）清除状态，复位 vt100 的鼠标跟踪 / 备用缓冲 / 光标 / 焦点上报 / DECCKM（保留 bracketed paste），并发 `ResetModes` 让 GUI 复位 xterm（只写本地，不发给 pty）；SSH 会话不检测 | Claude 被强制结束后侧栏状态约 10 秒内消失，鼠标移动不再回显上报序列 | 已实现未实测 |
 
 ### 3.5 SSH 远程会话
 
@@ -130,7 +131,7 @@
 
 - 传输：本机命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），每行一条 JSON，`type` 字段区分消息，终端数据 base64。类型定义在 `proto/src/lib.rs`，GUI（Rust 侧透传 + TS 类型）与 daemon 共用。
 - **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy / FsRoot）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
-- **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsResult、Transfer、Recent、ClaudeHooks、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
+- **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsResult、Transfer、Recent、ClaudeHooks、ResetModes、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
 - 文件类请求以 `reqId` 关联回复；Prompt 以 `reqId` 关联 PromptReply，`value=null` 表示取消。
 - 版本策略：GUI 与 daemon 同包发布，但更新时只替换 GUI、旧 daemon 继续运行，因此新 GUI 须兼容上一版 daemon（新增消息旧 daemon 会记日志后忽略）；连接时以 Hello 交换版本（`proto::PROTO_VERSION`，0.1.0 视为 0），不一致时提示重启后台。
 

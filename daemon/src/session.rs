@@ -74,6 +74,8 @@ pub struct Session {
     agents: Agents,
     /// 会话中的 Claude Code 对话，daemon 重启后据此 `claude --resume`
     resume: Option<saved::Resume>,
+    /// 有 Claude 状态但进程树中连续不见 Claude 进程的采样次数（检测异常退出）
+    claude_missing: u8,
 }
 
 /// Claude 子代理 / 后台任务跟踪：running 为 SubagentStart 登记、SubagentStop 移除的子代理（id → 登记时间）；
@@ -554,6 +556,57 @@ pub fn local_pids(st: &State) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// 关闭鼠标跟踪（各模式与编码）、显示光标、关闭焦点上报、恢复 DECCKM；不动 bracketed paste（PSReadLine 自己会开）
+const MODE_RESET: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?25h\x1b[?1004l\x1b[?1l";
+
+/// 内存采样时顺带检查 Claude 进程：alive 为（会话 id, 进程树中是否有 Claude 进程）。有 Claude 状态却连续两次不见 Claude 进程
+/// 视为异常退出（未触发 SessionEnd）：按 SessionEnd（reason 为 other，保留 resume 以便恢复）清除状态，复位 vt100 的终端模式
+/// （之后的快照不再带鼠标跟踪 / 备用缓冲），并让 GUI 复位 xterm
+pub fn check_claude(st: &mut State, alive: &[(u32, bool)]) {
+    let mut changed = false;
+    for &(id, present) in alive {
+        let Some(s) = st.sessions.get_mut(&id).filter(|s| s.info.status != Status::Exited) else { continue };
+        if !claude_gone(&mut s.claude_missing, s.info.claude.is_some(), present) {
+            continue;
+        }
+        log!("会话 #{id}：Claude 进程已不在（未收到 SessionEnd），清除 Claude 状态并复位终端模式");
+        // 同 step 的 SessionEnd：保留 session，该对话迟到的事件仍按过期丢弃
+        s.agents = Agents { session: s.agents.session.take(), ..Agents::default() };
+        s.info.claude = None;
+        let mut reset = Vec::new();
+        if s.parser.screen().alternate_screen() {
+            reset.extend_from_slice(b"\x1b[?1049l");
+        }
+        reset.extend_from_slice(MODE_RESET);
+        history::process(&mut s.parser, &reset);
+        if let Some(g) = &st.gui {
+            g.send(&ServerMsg::ResetModes { id });
+        }
+        // hub 网页终端只镜像 pty 输出，缓冲区状态与 daemon 的 parser 一致，直接下发同一段复位序列
+        if s.info.taken_over {
+            st.hub.output(id, &reset);
+        }
+        changed = true;
+    }
+    if changed {
+        st.push_sessions();
+    }
+}
+
+/// 连续缺失计数：Claude 运行中且进程树中不见 Claude 进程时加一，满两次（防竞态：如 hook 先于进程出现在快照中）返回 true；其它情况清零
+fn claude_gone(missing: &mut u8, running: bool, present: bool) -> bool {
+    if !running || present {
+        *missing = 0;
+        return false;
+    }
+    *missing += 1;
+    if *missing < 2 {
+        return false;
+    }
+    *missing = 0;
+    true
+}
+
 /// 未退出的会话正在运行的 Claude 对话 id（hub 网页列 Claude 历史时标记 open，同桌面端）
 pub fn claude_sessions(st: &State) -> HashSet<String> {
     st.sessions.values().filter(|s| s.info.status != Status::Exited).filter_map(|s| s.resume.as_ref().map(|r| r.id.clone())).collect()
@@ -735,6 +788,7 @@ fn new_session(info: SessionInfo, backend: Backend, fs: fs::Backend, cols: u16, 
         hook_at: None,
         agents: Agents::default(),
         resume: None,
+        claude_missing: 0,
     }
 }
 
@@ -1380,6 +1434,47 @@ mod tests {
             permission_mode: mode.map(Into::into),
             source: None,
         }
+    }
+
+    #[test]
+    fn claude_gone_needs_two_misses() {
+        let mut n = 0;
+        // 没有 Claude 状态：不判定
+        assert!(!claude_gone(&mut n, false, false));
+        assert!(!claude_gone(&mut n, false, false));
+        // 缺失一次后又出现（如 hook 先于进程进快照）：清零重计
+        assert!(!claude_gone(&mut n, true, false));
+        assert!(!claude_gone(&mut n, true, true));
+        assert!(!claude_gone(&mut n, true, false));
+        // 连续第二次缺失才判定，判定后清零
+        assert!(claude_gone(&mut n, true, false));
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn check_claude_clears_state_and_resets_modes() {
+        let mut st = State::default();
+        let (id, _rx) = test_session(&mut st, 80, 24);
+        let s = st.sessions.get_mut(&id).unwrap();
+        s.info.claude = Some(claude_state(Background, None, Some(1)));
+        s.agents.session = Some("a".into());
+        s.resume = Some(saved::Resume { id: "a".into(), ..Default::default() });
+        s.parser.process(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[?1h\x1b[?2004h");
+        check_claude(&mut st, &[(id, false)]);
+        assert!(st.sessions[&id].info.claude.is_some());
+        check_claude(&mut st, &[(id, false)]);
+        let s = &st.sessions[&id];
+        assert!(s.info.claude.is_none());
+        // 同 SessionEnd（reason other）：resume 与对话 id 保留
+        assert_eq!(s.resume.as_ref().map(|r| r.id.as_str()), Some("a"));
+        assert_eq!(s.agents.session.as_deref(), Some("a"));
+        let screen = s.parser.screen();
+        assert!(!screen.alternate_screen());
+        assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert_eq!(screen.mouse_protocol_encoding(), vt100::MouseProtocolEncoding::Default);
+        assert!(!screen.hide_cursor());
+        assert!(!screen.application_cursor());
+        assert!(screen.bracketed_paste());
     }
 
     #[test]

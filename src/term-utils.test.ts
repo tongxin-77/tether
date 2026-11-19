@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）
 import { readFileSync } from "node:fs";
-import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -335,5 +335,17 @@ describe("nextRootSeen", () => {
     expect(nextRootSeen(true, "user")).toEqual({ seen: false, hint: false });
     expect(nextRootSeen(true, null)).toEqual({ seen: true, hint: false });
     expect(nextRootSeen(false, null)).toEqual({ seen: false, hint: false });
+  });
+});
+describe("modeResetSeq", () => {
+  it("关闭鼠标跟踪、显示光标、关闭焦点上报、恢复 DECCKM，不动 bracketed paste", () => {
+    const s = modeResetSeq("normal");
+    for (const m of ["1000", "1002", "1003", "1005", "1006", "1015", "1004", "1"]) expect(s).toContain(`\x1b[?${m}l`);
+    expect(s).toContain("\x1b[?25h");
+    expect(s).not.toContain("2004");
+  });
+  it("仅备用缓冲时退出备用缓冲", () => {
+    expect(modeResetSeq("normal")).not.toContain("1049");
+    expect(modeResetSeq("alternate")).toContain("\x1b[?1049l");
   });
 });

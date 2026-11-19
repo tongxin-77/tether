@@ -30,7 +30,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -114,7 +114,8 @@ type ServerMsg =
   | HubServerMsg
   | { type: "testHost"; reqId: number; elapsedMs: number | null; error: string | null }
   /** 本地会话进程树内存（字节）全量，旧 daemon 不发 */
-  | { type: "memory"; items: { id: number; bytes: number }[] };
+  | { type: "memory"; items: { id: number; bytes: number }[] }
+  | { type: "resetModes"; id: number };
 
 interface ShellOption {
   name: string;
@@ -748,6 +749,8 @@ async function init() {
         return onHubMessage(m);
       case "memory":
         return renderMemory(m.items);
+      case "resetModes":
+        return resetModes(m.id);
     }
   });
   // 独立窗口：daemon 断开后会话已不存在，直接关闭；连接由主窗口建立，这里只取状态
@@ -779,6 +782,12 @@ function writeData(m: { type: "snapshot" | "output"; id: number; data: string })
     clearTimeout(v.promptTimer);
     v.promptTimer = setTimeout(() => checkPrompt(v), PROMPT_SETTLE);
   }
+}
+
+/** 会话中的 Claude Code 异常退出：复位该终端的鼠标跟踪 / 备用缓冲等模式（只写给本地 xterm，不发给 pty） */
+function resetModes(id: number) {
+  const term = views.get(id)?.term;
+  term?.write(modeResetSeq(term.buffer.active.type));
 }
 
 /** 回车后输出停顿这么久（毫秒）才检查提示符 */
@@ -823,6 +832,8 @@ function onDetachedMsg(m: ServerMsg) {
     case "activate":
       if (m.id === detachedId) focusSession(m.id);
       return;
+    case "resetModes":
+      return resetModes(m.id);
     case "config":
       defaultShell = m.config.shell;
       setCustomCompletions(m.config.completions);
@@ -1402,6 +1413,8 @@ function addView(info: SessionInfo): View {
   box.className = "term";
   terminals.appendChild(box);
   term.open(box);
+  // 备用缓冲区（全屏程序，如 Claude Code 全屏界面）没有回滚历史，滚动条无用，隐藏
+  term.buffer.onBufferChange((b) => box.classList.toggle("alt-buf", b.type === "alternate"));
   // 可见时 fit 出实际行列，先同步尺寸再 attach，使快照与当前窗口一致
   fit.fit();
   box.classList.add("hidden");

@@ -9,6 +9,13 @@ export function completionEnabled(claude: unknown, bufferType: string): boolean 
   return claude == null && bufferType !== "alternate";
 }
 
+/** Claude Code 异常退出后复位 xterm 模式的序列：关闭鼠标跟踪（各模式与编码），当前为备用缓冲时退出，显示光标、关闭焦点上报、
+ * 恢复 DECCKM；不关 bracketed paste（PSReadLine 自己会开）。普通缓冲下不发 1049l，免得恢复光标位置 */
+export function modeResetSeq(bufferType: string): string {
+  const mouse = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l";
+  return mouse + (bufferType === "alternate" ? "\x1b[?1049l" : "") + "\x1b[?25h\x1b[?1004l\x1b[?1l";
+}
+
 /** 本地会话（host 为 null）走 ConPTY 的 windowsPty 选项；远程会话或 build 号未知时为 undefined */
 export function windowsPtyFor(host: string | null, build: number | null): IWindowsPty | undefined {
   return host === null && build ? { backend: "conpty", buildNumber: build } : undefined;

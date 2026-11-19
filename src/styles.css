@@ -818,6 +818,7 @@ svg.i { width: 16px; height: 16px; flex: none; }
 *:not(:hover)::-webkit-scrollbar-thumb { background-color: var(--sb-thumb-idle); }
 ::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background-color: var(--sb-thumb-hover); }
 .xterm .xterm-scrollable-element > .scrollbar > .slider { border-radius: 99px; }
+.term.alt-buf .xterm-scrollable-element > .scrollbar.vertical { display: none; }
 /* xterm 6 不再给 .xterm-viewport 写内联背景，xterm.css 默认的 #000 会盖住透明主题；底色改由 xterm-scrollable-element 上的 theme.background 提供 */
 .xterm .xterm-viewport { background-color: transparent; }
 
