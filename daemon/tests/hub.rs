@@ -159,6 +159,7 @@ fn session(id: u32, name: &str) -> SessionInfo {
         claude: None,
         taken_over: false,
         claude_session: None,
+        fs_root: false,
     }
 }
 

@@ -103,6 +103,7 @@
 | D-6.5 | 上传 / 下载：递归、同名覆盖、文件夹合并，推送累计字节进度 | 进度事件单调递增至 total | 已实现 |
 | D-6.6 | `OpenUrl` 仅接受 http(s)，其它协议忽略 | `file:` / `javascript:` 链接不被打开 | 已实现 |
 | D-6.7 | `FsCopy`：源为本地或 hostId（经连接池复用 / 重连，传完释放），目标为会话后端；远程 → 远程按块流式中转、不落临时文件；`keepBoth` 项在目标已有同名项时改名 `name (n).ext`（隐藏文件 / 文件夹不拆扩展名，同批次互不冲突），其余同名覆盖、文件夹合并 | 四种方向递归复制正确，进度推送至 total | 已实现 |
+| D-6.8 | `FsRoot`（仅 SSH 会话）：文件树以 root 浏览，按 SSH 连接生效、连接断开即恢复。同一连接上开 exec channel 经 sudo 启动 sftp-server（依次尝试常见路径）代替 sftp 子系统，提权会话与普通会话分开缓存，关闭即丢弃；先 `sudo -n` 探测，需要密码时先试凭据管理器中保存的登录密码、再以 Prompt（`sudo`，不保存）询问最多 3 次，用 `sudo -k -S` 单独验证后再开 sftp channel；密码只经 stdin，不进命令行 / 日志 / 错误信息；失败按 sudo stderr 分类报错（需要密码 / 密码错误 / 不在 sudoers / requiretty / 无 sudo / 找不到 sftp-server），保持普通身份；状态以 `SessionInfo.fsRoot` 推送（只发 GUI） | 免密 / 密码 sudo 均可切换为 root 浏览，删除 / 上传以 root 执行；关闭或重连后恢复普通身份 | 已实现未实测 |
 
 ### 3.7 hub 客户端（第二阶段）
 
@@ -128,7 +129,7 @@
 ## 4. 接口：GUI ↔ daemon 管道协议
 
 - 传输：本机命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），每行一条 JSON，`type` 字段区分消息，终端数据 base64。类型定义在 `proto/src/lib.rs`，GUI（Rust 侧透传 + TS 类型）与 daemon 共用。
-- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
+- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy / FsRoot）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
 - **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsResult、Transfer、Recent、ClaudeHooks、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
 - 文件类请求以 `reqId` 关联回复；Prompt 以 `reqId` 关联 PromptReply，`value=null` 表示取消。
 - 版本策略：GUI 与 daemon 同包发布，但更新时只替换 GUI、旧 daemon 继续运行，因此新 GUI 须兼容上一版 daemon（新增消息旧 daemon 会记日志后忽略）；连接时以 Hello 交换版本（`proto::PROTO_VERSION`，0.1.0 视为 0），不一致时提示重启后台。

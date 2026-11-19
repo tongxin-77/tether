@@ -17,7 +17,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 // WebView2 中 navigator.clipboard.readText 会弹权限询问，统一走剪贴板插件
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { type FsClientMsg, type FsServerMsg, ask, forgetFiles, initFiles, onFsMessage, openPathQuiet, showFiles, showMenu } from "./files";
+import { type FsClientMsg, type FsServerMsg, ask, forgetFiles, initFiles, onFsMessage, openPathQuiet, showFiles, showMenu, suggestRoot } from "./files";
 import { attachFileLinks } from "./file-links";
 import { dropText } from "./claude-paths";
 import { type ClaudeResume, initClaudeHistory, openClaudeHistory } from "./claude-history";
@@ -29,7 +29,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, pastedPath, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -61,6 +61,8 @@ interface SessionInfo {
   takenOver?: boolean;
   /** 会话中 Claude Code 对话的 session_id */
   claudeSession?: string;
+  /** SSH 会话的文件树正以 root 浏览（未提权时不带该字段） */
+  fsRoot?: boolean;
 }
 
 interface Host {
@@ -78,7 +80,8 @@ interface Host {
 type PromptMsg = {
   type: "prompt";
   reqId: number;
-  kind: "password" | "passphrase" | "hostKey";
+  /** sudo：文件树以 root 浏览时的 sudo 密码（不提供保存） */
+  kind: "password" | "passphrase" | "hostKey" | "sudo";
   host: string;
   message: string;
   fingerprint?: string;
@@ -180,6 +183,11 @@ interface View {
   memEl: HTMLSpanElement;
   /** 经历过 hub 接管、尚未刷新（接管期间按网页尺寸写入的内容错乱） */
   stale: boolean;
+  /** 用户回车后等待新提示符出现，据此判断终端是否变为 root（远程会话） */
+  promptCheck: boolean;
+  promptTimer?: number;
+  /** 终端提示符当前为 root */
+  rootSeen: boolean;
 }
 
 const views = new Map<number, View>();
@@ -708,9 +716,31 @@ async function init() {
 
 /** 写入会话输出 / 快照；刷新中的会话收到快照时先清空终端，丢弃清空前已写入的内容 */
 function writeData(m: { type: "snapshot" | "output"; id: number; data: string }) {
-  const term = views.get(m.id)?.term;
+  const v = views.get(m.id);
+  const term = v?.term;
   if (m.type === "snapshot" && refreshing.delete(m.id)) term?.reset();
   term?.write(decode(m.data));
+  // 回车后输出停顿时检查光标行是否为新提示符
+  if (v?.promptCheck) {
+    clearTimeout(v.promptTimer);
+    v.promptTimer = setTimeout(() => checkPrompt(v), PROMPT_SETTLE);
+  }
+}
+
+/** 回车后输出停顿这么久（毫秒）才检查提示符 */
+const PROMPT_SETTLE = 300;
+
+/** 远程会话：光标行为 root 提示符（变为 root 时仅一次）且文件树未提权时，在文件栏提示同步提权；无法判断时等下一段输出 */
+function checkPrompt(v: View) {
+  if (views.get(v.info.id) !== v || v.info.host === null) return;
+  const b = v.term.buffer.active;
+  if (b.type !== "normal") return;
+  const kind = promptKind(b.getLine(b.baseY + b.cursorY)?.translateToString(false, 0, b.cursorX) ?? "");
+  if (kind === null) return;
+  v.promptCheck = false;
+  const r = nextRootSeen(v.rootSeen, kind);
+  v.rootSeen = r.seen;
+  if (r.hint && !v.info.fsRoot) suggestRoot(v.info.id);
 }
 
 /** hub 接管结束后刷新终端：重取带历史的快照（调用前已按本地尺寸 resize） */
@@ -1010,10 +1040,10 @@ function renderPasswordRow() {
   $("h-pw-clear").hidden = !saved;
 }
 
-/** 显示队首的交互提示：密码（可保存）/ 私钥口令 / 主机指纹确认 */
+/** 显示队首的交互提示：密码（可保存）/ 私钥口令 / 主机指纹确认 / sudo 密码 */
 function showPrompt() {
   const p = (currentPrompt = promptQueue.shift()!);
-  const titles = { password: "输入密码", passphrase: "输入私钥口令", hostKey: "确认主机指纹" };
+  const titles = { password: "输入密码", passphrase: "输入私钥口令", hostKey: "确认主机指纹", sudo: "输入 sudo 密码" };
   $("p-title").textContent = titles[p.kind];
   $("p-host").textContent = p.host;
   $("p-message").textContent = p.message;
@@ -1325,7 +1355,11 @@ function addView(info: SessionInfo): View {
   send({ type: "resize", id, cols: term.cols, rows: term.rows });
   send({ type: "attach", id });
 
-  term.onData((data) => send({ type: "input", id, data }));
+  term.onData((data) => {
+    send({ type: "input", id, data });
+    const v = views.get(id);
+    if (v && data.includes("\r")) v.promptCheck = true;
+  });
   term.onResize(({ cols, rows }) => send({ type: "resize", id, cols, rows }));
   // claude 补全弹出层可见时消费 ↑ / ↓ / Tab / Esc，其余交给复制粘贴处理
   const completeKey = attachClaudeComplete(
@@ -1418,7 +1452,7 @@ function addView(info: SessionInfo): View {
   });
   list.appendChild(item);
 
-  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl, memEl, stale: false };
+  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl, memEl, stale: false, promptCheck: false, rootSeen: false };
   views.set(id, v);
   return v;
 }

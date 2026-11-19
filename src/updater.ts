@@ -49,6 +49,7 @@ export async function initUpdater(count: () => number, banner: () => void) {
   auto.addEventListener("change", () => store(AUTO_KEY, auto.checked ? "1" : "0"));
   $("update-badge").addEventListener("click", () => found && showDialog(found));
   $("daemon-restart").addEventListener("click", restartDaemon);
+  $("daemon-restart-settings").addEventListener("click", restartDaemon);
   if (await invoke<boolean>("is_debug")) {
     $<HTMLButtonElement>("update-check").disabled = true;
     $("update-status").textContent = "开发版不检查更新";
@@ -145,6 +146,7 @@ export function afterConnect() {
 export async function onHello(daemonVersion: string | null, proto: number) {
   clearTimeout(helloTimer);
   daemon = { version: daemonVersion, proto };
+  $("daemon-version").textContent = daemonVersion ?? "0.1.0 或更早";
   const own = await version;
   const banner = $("daemon-old-banner");
   const show = daemonVersion !== own;

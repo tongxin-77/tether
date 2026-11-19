@@ -58,6 +58,9 @@ pub struct SessionInfo {
     /// 会话中 Claude Code 对话的 session_id（GUI 历史对话列表据此标注“已打开”），没有时不写出
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_session: Option<String>,
+    /// SSH 会话所属连接的文件树正以 root 浏览（FsRoot 开启，连接断开即恢复）；只发给 GUI，未提权时不写出
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fs_root: bool,
 }
 
 /// 新建本地会话后恢复的 Claude Code 对话：shell 就绪后输入 `claude --resume`，带上原来的权限模式
@@ -322,6 +325,8 @@ pub enum PromptKind {
     Passphrase,
     /// 未知主机指纹确认，回复 value=Some("yes") 表示信任
     HostKey,
+    /// 文件树以 root 浏览时的 sudo 密码（不保存）
+    Sudo,
 }
 
 /// daemon 探测到的可选 shell，供设置面板下拉选择
@@ -462,6 +467,9 @@ pub enum ClientMsg {
     /// 文件树复制粘贴：source 上的文件 / 文件夹复制到会话侧目录 dest_dir（未改名的同名文件覆盖、文件夹合并）；
     /// 两端都是远程时经 daemon 流式中转（不落临时文件）；过程中推送 Transfer
     FsCopy { req_id: u64, session_id: u32, source: FsSource, items: Vec<CopyItem>, dest_dir: String },
+    /// SSH 会话所属连接的文件树以 root 浏览（enabled，经 sudo 启动 sftp-server，需要密码时先用已保存的登录密码、再以 Prompt 询问）
+    /// 或恢复普通身份；同一连接上的会话一并生效，状态见 SessionInfo.fs_root。回 FsResult
+    FsRoot { req_id: u64, session_id: u32, enabled: bool },
     /// 用默认浏览器打开 http(s) 链接（Markdown 预览中的外链），其它协议忽略；失败时回 Error
     OpenUrl { url: String },
     /// 删除一条最近关闭记录（按 target 匹配）；daemon 回 Recent
@@ -798,5 +806,18 @@ mod tests {
     fn memory_json() {
         let msg = super::ServerMsg::Memory { items: vec![super::SessionMemory { id: 2, bytes: 1 << 30 }] };
         assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"memory","items":[{"id":2,"bytes":1073741824}]}"#);
+    }
+
+    #[test]
+    fn fs_root_json() {
+        let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"fsRoot","reqId":1,"sessionId":2,"enabled":true}"#).unwrap();
+        assert!(matches!(msg, super::ClientMsg::FsRoot { req_id: 1, session_id: 2, enabled: true }));
+        assert_eq!(serde_json::to_value(super::PromptKind::Sudo).unwrap(), "sudo");
+        // 未提权时不写出 fsRoot（hub 收到的会话列表不变）
+        let mut info: super::SessionInfo =
+            serde_json::from_str(r#"{"id":1,"name":"p","cwd":"/","command":"ssh","status":"running","startedAt":0,"lastActivityAt":0}"#).unwrap();
+        assert!(!serde_json::to_string(&info).unwrap().contains("fsRoot"));
+        info.fs_root = true;
+        assert!(serde_json::to_string(&info).unwrap().contains(r#""fsRoot":true"#));
     }
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）
 import { readFileSync } from "node:fs";
-import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, pastedPath, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -294,5 +294,37 @@ describe("pastedPath", () => {
   it("含空格时加双引号，否则原样", () => {
     expect(pastedPath("C:\\Temp\\tether-img\\a.png")).toBe("C:\\Temp\\tether-img\\a.png");
     expect(pastedPath("C:\\Users\\A B\\tether-img\\a.png")).toBe('"C:\\Users\\A B\\tether-img\\a.png"');
+  });
+});
+
+describe("promptKind", () => {
+  it("以 # 结尾为 root", () => {
+    expect(promptKind("root@srv:~# ")).toBe("root");
+    expect(promptKind("[root@srv ~]#")).toBe("root");
+    expect(promptKind("# ")).toBe("root");
+  });
+  it("以 $ / % / ❯ 结尾为普通用户", () => {
+    expect(promptKind("me@srv:~$ ")).toBe("user");
+    expect(promptKind("me@srv ~ % ")).toBe("user");
+    expect(promptKind("~/p ❯ ")).toBe("user");
+  });
+  it("无法判断时为 null：已输入命令、续行提示、空行、多个空格、过长", () => {
+    expect(promptKind("root@srv:~# ls")).toBeNull();
+    expect(promptKind("> ")).toBeNull();
+    expect(promptKind("")).toBeNull();
+    expect(promptKind("abc #  ")).toBeNull();
+    expect(promptKind("x".repeat(300) + "# ")).toBeNull();
+  });
+});
+
+describe("nextRootSeen", () => {
+  it("变为 root 时提示一次，之后不再提示", () => {
+    expect(nextRootSeen(false, "root")).toEqual({ seen: true, hint: true });
+    expect(nextRootSeen(true, "root")).toEqual({ seen: true, hint: false });
+  });
+  it("回到普通用户后再变 root 才再次提示；无法判断时保持", () => {
+    expect(nextRootSeen(true, "user")).toEqual({ seen: false, hint: false });
+    expect(nextRootSeen(true, null)).toEqual({ seen: true, hint: false });
+    expect(nextRootSeen(false, null)).toEqual({ seen: false, hint: false });
   });
 });

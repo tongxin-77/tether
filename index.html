@@ -121,11 +121,16 @@
         <div id="files-head">
           <svg class="i fs-head-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/></svg>
           <span id="fs-title">文件</span>
+          <span id="fs-root-tag" hidden>root</span>
+          <button id="fs-root" class="fs-btn" hidden></button>
           <button id="fs-up" class="fs-btn" title="上一级"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
           <button id="fs-refresh" class="fs-btn" title="刷新"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
           <button id="fs-toggle" class="fs-btn"></button>
         </div>
         <div id="fs-path"></div>
+        <!-- SSH 会话“以 root 浏览”时的警示，与终端已是 root 时的提权提示（files.ts 控制显示） -->
+        <div id="fs-root-banner" hidden>正以 root 身份浏览：删除、覆盖、上传等操作均以 root 执行</div>
+        <div id="fs-root-hint" hidden><span>终端已是 root，是否同步提权文件面板？</span><button type="button" id="fs-root-hint-ok" class="pill-primary">提权</button><button type="button" id="fs-root-hint-no">忽略</button></div>
         <div id="fs-tree" tabindex="0"></div>
         <div id="fs-transfers"></div>
       </section>
@@ -250,6 +255,10 @@
             <span class="rt"><b>启动时自动检查更新</b></span>
             <input type="checkbox" class="switch" id="update-auto" />
           </label>
+          <div class="row">
+            <span class="rt"><b>后台进程 <span id="daemon-version"></span></b><small>重启后台以启用新版后台或排除故障；会话会在原目录重开</small></span>
+            <button type="button" id="daemon-restart-settings">重启后台</button>
+          </div>
         </div>
         <div class="section-head">主机<button type="button" id="host-add">+ 添加</button></div>
         <ul id="host-list"></ul>

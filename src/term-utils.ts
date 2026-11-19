@@ -133,6 +133,23 @@ export function memoryHigh(bytes: number): boolean {
   return bytes > GIB;
 }
 
+/** 按光标所在行光标之前的文字判断 shell 提示符身份：以 `#`（可带一个空格）结尾为 root；以 `$` / `%` / `❯` 结尾为普通用户；
+ *  其它（含续行提示 `> `、过长的行）无法判断，返回 null。只应在用户回车、输出停顿后调用，以免把命令输出误认作提示符 */
+export function promptKind(beforeCursor: string): "root" | "user" | null {
+  const t = beforeCursor.replace(/ $/, "");
+  if (!t || t.length > 200 || /\s$/.test(t)) return null;
+  if (t.endsWith("#")) return "root";
+  if (/[$%❯]$/.test(t)) return "user";
+  return null;
+}
+
+/** “终端已是 root”提示的状态：seen 为终端当前处于 root；仅在变为 root 时提示一次（hint），回到普通用户后再变为 root 才再次提示 */
+export function nextRootSeen(seen: boolean, kind: "root" | "user" | null): { seen: boolean; hint: boolean } {
+  if (kind === "root") return { seen: true, hint: !seen };
+  if (kind === "user") return { seen: false, hint: false };
+  return { seen, hint: false };
+}
+
 /** 粘贴给 Claude Code 的图片路径：含空格时加双引号（与 daemon session::paste_path 一致） */
 export function pastedPath(path: string): string {
   return path.includes(" ") ? `"${path}"` : path;

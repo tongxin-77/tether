@@ -66,13 +66,21 @@ pub enum Cmd {
 /// 一条已认证的 SSH 连接；在 handle 上可继续开 channel（终端）或 SFTP 子系统
 pub struct Conn {
     pub handle: client::Handle<Client>,
+    /// 主机账户 `user@host:port`（凭据管理器中已保存登录密码的账户名，sudo 提权时用）
+    pub label: String,
     /// 懒创建的 SFTP 会话（异步锁，并发请求只开一次子系统）
     sftp: tokio::sync::Mutex<Option<Arc<SftpSession>>>,
+    /// 文件树“以 root 浏览”时经 sudo 启动的 SFTP 会话（见 sudo.rs），与普通会话分开缓存；None 为普通身份。
+    /// 随连接释放，重连后即恢复普通身份
+    root_sftp: Mutex<Option<Arc<SftpSession>>>,
 }
 
 impl Conn {
-    /// 取该连接上的 SFTP 会话，首次调用时开 channel + sftp 子系统
+    /// 取该连接上的 SFTP 会话：已提权时为 root 会话，否则为普通会话（首次调用时开 channel + sftp 子系统）
     pub async fn sftp(&self) -> Result<Arc<SftpSession>, String> {
+        if let Some(s) = self.root_sftp.lock().unwrap().clone() {
+            return Ok(s);
+        }
         let mut slot = self.sftp.lock().await;
         if let Some(s) = slot.as_ref() {
             return Ok(s.clone());
@@ -82,6 +90,16 @@ impl Conn {
         let sftp = Arc::new(SftpSession::new(ch.into_stream()).await.map_err(|e| format!("初始化 SFTP 失败：{e}"))?);
         *slot = Some(sftp.clone());
         Ok(sftp)
+    }
+
+    /// 文件树是否正以 root 浏览（连接已断开为 false）
+    pub fn is_root(&self) -> bool {
+        !self.handle.is_closed() && self.root_sftp.lock().unwrap().is_some()
+    }
+
+    /// 设置（Some）/ 丢弃（None）提权的 SFTP 会话
+    pub fn set_root(&self, sftp: Option<Arc<SftpSession>>) {
+        *self.root_sftp.lock().unwrap() = sftp;
     }
 }
 
@@ -168,7 +186,7 @@ async fn resolve_cwd(conn: &Conn, cwd: Option<&str>) -> String {
 }
 
 /// POSIX shell 单引号转义
-fn shell_quote(s: &str) -> String {
+pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
@@ -293,7 +311,7 @@ async fn connect(state: &Shared, host: &Host, label: &str, quiet: bool) -> Resul
     };
     authenticate(state, &mut handle, host, label, if quiet { Pw::Quiet } else { Pw::Interactive }).await?;
     log!("SSH 认证成功 {label}");
-    Ok(Conn { handle, sftp: Default::default() })
+    Ok(Conn { handle, label: label.into(), sftp: Default::default(), root_sftp: Default::default() })
 }
 
 async fn authenticate(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str, pw: Pw<'_>) -> Result<(), String> {
@@ -376,7 +394,7 @@ fn tcp_error(e: &std::io::Error, host: &str, port: u16) -> String {
 }
 
 /// 向 GUI 发交互提示并等待回复；没有 GUI、取消、GUI 断开或超时都返回 Err
-async fn ask(state: &Shared, kind: PromptKind, host: &str, message: String, fingerprint: Option<String>) -> Result<(String, bool), String> {
+pub async fn ask(state: &Shared, kind: PromptKind, host: &str, message: String, fingerprint: Option<String>) -> Result<(String, bool), String> {
     let msg = ServerMsg::Prompt { req_id: 0, kind, host: host.into(), message, fingerprint };
     let rx = state.lock().unwrap().prompt(msg).ok_or("需要输入，但没有打开的 Tether 窗口")?;
     match tokio::time::timeout(PROMPT_TIMEOUT, rx).await {

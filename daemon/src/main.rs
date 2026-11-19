@@ -35,6 +35,7 @@ mod saved;
 mod session;
 mod ssh;
 mod stats;
+mod sudo;
 
 use session::{Gui, Shared, State};
 

@@ -14,7 +14,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use proto::{ClaudeState, ClaudeStatus, ClientMsg, Config, FsSource, HostSource, RecentItem, ServerMsg, SessionInfo, Status, Target};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-use crate::{claude, config, fs, history, hub, notify, now_ms, recent, saved, ssh, stats};
+use crate::{claude, config, fs, history, hub, notify, now_ms, recent, saved, ssh, stats, sudo};
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -202,7 +202,15 @@ impl State {
     }
 
     pub fn push_sessions(&self) {
-        let sessions = self.sessions.values().map(|s| SessionInfo { claude_session: s.resume.as_ref().map(|r| r.id.clone()), ..s.info.clone() }).collect();
+        let sessions = self
+            .sessions
+            .values()
+            .map(|s| SessionInfo {
+                claude_session: s.resume.as_ref().map(|r| r.id.clone()),
+                fs_root: s.info.status != Status::Exited && s.fs.is_root(),
+                ..s.info.clone()
+            })
+            .collect();
         self.send(&ServerMsg::Sessions { sessions });
         // hub 常驻连接据此防抖上报（未启用时无人等待，只留一个许可）
         self.hub.changed.notify_one();
@@ -416,6 +424,11 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             };
             drop(tokio::spawn(fs::copy(state.clone(), req_id, dest, host, items, dest_dir)));
         }
+        ClientMsg::FsRoot { req_id, session_id, enabled } => match st.sessions.get(&session_id) {
+            // 可能要等用户输入 sudo 密码，放到异步任务中
+            Some(s) => drop(tokio::spawn(sudo::toggle(state.clone(), req_id, s.fs.clone(), enabled))),
+            None => st.send(&ServerMsg::FsResult { req_id, error: Some("会话已不存在".into()) }),
+        },
         ClientMsg::OpenUrl { url } => drop(tokio::spawn(fs::open_url(state.clone(), url))),
         ClientMsg::RemoveRecent { target } => {
             if recent::remove(&mut st.recent, &target) {
@@ -685,6 +698,7 @@ pub fn new_info(name: String, cwd: String, command: String, host: Option<String>
         claude: None,
         taken_over: false,
         claude_session: None,
+        fs_root: false,
     }
 }
 

@@ -37,6 +37,13 @@ pub enum Backend {
     Remote { conn: Weak<Conn>, label: String },
 }
 
+impl Backend {
+    /// 远程连接的文件树正以 root 浏览（sudo.rs）；本地 / 连接已释放为 false
+    pub fn is_root(&self) -> bool {
+        matches!(self, Backend::Remote { conn, .. } if conn.upgrade().is_some_and(|c| c.is_root()))
+    }
+}
+
 pub enum Op {
     List(String),
     Mkdir(String),

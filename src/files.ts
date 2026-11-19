@@ -29,7 +29,9 @@ export type FsClientMsg =
   | { type: "fsRename"; reqId: number; sessionId: number; from: string; to: string }
   | { type: "upload"; reqId: number; sessionId: number; localPaths: string[]; destDir: string }
   | { type: "download"; reqId: number; sessionId: number; paths: string[]; localDir: string }
-  | { type: "fsCopy"; reqId: number; sessionId: number; source: FsSource; items: CopyItem[]; destDir: string };
+  | { type: "fsCopy"; reqId: number; sessionId: number; source: FsSource; items: CopyItem[]; destDir: string }
+  /** SSH 会话所属连接的文件树以 root 浏览（sudo 启动 sftp-server）/ 恢复普通身份，回 fsResult */
+  | { type: "fsRoot"; reqId: number; sessionId: number; enabled: boolean };
 
 /** 复制源位置：本地，或按主机 id（源会话关闭后，主机可连接即可粘贴） */
 type FsSource = { kind: "local" } | { kind: "remote"; hostId: string };
@@ -42,6 +44,8 @@ interface FsSession {
   cwd: string;
   host: string | null;
   hostId?: string;
+  /** 文件树正以 root 浏览（按 SSH 连接，同一连接的会话一致） */
+  fsRoot?: boolean;
 }
 
 /** default：系统默认程序；browser：默认浏览器 */
@@ -73,6 +77,8 @@ interface Tree {
   /** 选中项（Ctrl 单击增减、Shift 单击同一目录内连选）；anchor 为最近单击的项，作连选起点与 Ctrl+V 目标 */
   selected: Set<string>;
   anchor?: string;
+  /** 缓存内容对应的身份（是否 root）；身份变化时清空缓存重新读取 */
+  asRoot?: boolean;
 }
 
 /** 文件树内部剪贴板：按位置 + 绝对路径记录；seq 为复制时的系统剪贴板序号，之后系统剪贴板有新的资源管理器文件则优先粘贴它们 */
@@ -108,6 +114,10 @@ const dlgMsg = $("fs-d-msg");
 const dlgInput = $<HTMLInputElement>("fs-d-input");
 const dlgOk = $<HTMLButtonElement>("fs-d-ok");
 const conflictDlg = $<HTMLDialogElement>("fs-conflict");
+const rootBtn = $<HTMLButtonElement>("fs-root");
+const rootTag = $("fs-root-tag");
+const rootBanner = $("fs-root-banner");
+const rootHint = $("fs-root-hint");
 
 const trees = new Map<number, Tree>();
 const waiting = new Map<number, (r: Reply) => void>();
@@ -118,6 +128,12 @@ let reqSeq = Math.floor(Math.random() * 2 ** 40);
 let opened = true;
 /** 上次渲染的会话，切换会话时才整体重绘 */
 let shownId: number | undefined;
+/** 上次渲染时该会话是否以 root 浏览，变化时也重绘 */
+let shownRoot = false;
+/** 终端已变为 root、待显示“同步提权”提示的会话 */
+const rootHints = new Set<number>();
+/** 提权 / 恢复请求进行中（可能在等 sudo 密码输入） */
+let rootPending = false;
 let dropEl: HTMLElement | undefined;
 let clip: Clip | undefined;
 
@@ -145,6 +161,20 @@ export function initFiles(d: Deps) {
   $("fs-refresh").addEventListener("click", () => {
     const s = deps.active();
     if (s) refreshAll(s);
+  });
+  rootBtn.innerHTML = icon("shield");
+  rootBtn.addEventListener("click", () => {
+    const s = deps.active();
+    if (s) setRoot(s, !s.fsRoot);
+  });
+  $("fs-root-hint-ok").addEventListener("click", () => {
+    const s = deps.active();
+    if (s) setRoot(s, true);
+  });
+  $("fs-root-hint-no").addEventListener("click", () => {
+    const s = deps.active();
+    if (s) rootHints.delete(s.id);
+    render();
   });
 
   treeEl.addEventListener("click", (ev) => {
@@ -232,10 +262,17 @@ export function onFsMessage(m: FsServerMsg) {
 
 /** 激活会话变化时调用（同一会话重复调用不重绘） */
 export function showFiles() {
-  const id = deps.active()?.id;
-  if (id === shownId) return;
-  shownId = id;
+  const s = deps.active();
+  if (s?.id === shownId && !!s?.fsRoot === shownRoot) return;
+  shownId = s?.id;
+  shownRoot = !!s?.fsRoot;
   render();
+}
+
+/** 终端提示符变为 root（main.ts 检测）：文件树未提权时显示“同步提权”提示，不自动切换 */
+export function suggestRoot(id: number) {
+  rootHints.add(id);
+  if (deps.active()?.id === id) render();
 }
 
 /** 文件栏当前浏览目录：仅本地会话，盘符列表除外 */
@@ -248,6 +285,7 @@ export function filesDir(): string | undefined {
 /** 会话关闭后丢弃其浏览状态 */
 export function forgetFiles(id: number) {
   trees.delete(id);
+  rootHints.delete(id);
 }
 
 /** 拖动左缘调整文件栏宽度，记住上次宽度 */
@@ -348,6 +386,17 @@ function failed(r: Reply, what: string) {
   return true;
 }
 
+/** 以 root 浏览 / 恢复普通身份；需要 sudo 密码时 daemon 弹窗询问，成功后由会话列表推送的 fsRoot 刷新界面 */
+async function setRoot(s: FsSession, enabled: boolean) {
+  if (rootPending) return;
+  rootPending = true;
+  render();
+  const r = await call({ type: "fsRoot", reqId: nextId(), sessionId: s.id, enabled });
+  rootPending = false;
+  if (!failed(r, enabled ? "以 root 浏览" : "恢复普通身份")) rootHints.delete(s.id);
+  render();
+}
+
 async function load(s: FsSession, t: Tree, dir: string, link = false) {
   if (t.loading.has(dir)) return;
   t.loading.add(dir);
@@ -405,6 +454,7 @@ function selectRange(s: FsSession, t: Tree, from: string, to: string) {
 function render() {
   if (!opened) return;
   const s = deps.active();
+  renderRoot(s);
   if (!s) {
     pathEl.textContent = "";
     pathEl.title = "";
@@ -413,12 +463,34 @@ function render() {
     return;
   }
   const t = tree(s);
+  // 身份变化（提权 / 恢复 / 连接断开）后，原缓存的目录内容与权限不再准确
+  const asRoot = !!s.fsRoot;
+  if (t.asRoot !== undefined && t.asRoot !== asRoot) {
+    t.cache.clear();
+    t.notDir.clear();
+  }
+  t.asRoot = asRoot;
   pathEl.textContent = t.root || "此电脑";
   pathEl.title = t.root || "此电脑";
   upBtn.disabled = parentOf(s, t.root) === null;
   const scroll = treeEl.scrollTop;
   treeEl.replaceChildren(...rows(s, t, t.root, 0));
   treeEl.scrollTop = scroll;
+}
+
+/** “以 root 浏览”按钮、root 标签 / 描边 / 警示条与“同步提权”提示：仅 SSH 会话显示 */
+function renderRoot(s: FsSession | undefined) {
+  const remote = !!s && isRemote(s);
+  const on = remote && !!s.fsRoot;
+  rootBtn.hidden = !remote;
+  rootBtn.disabled = rootPending;
+  rootBtn.classList.toggle("on", on);
+  rootBtn.title = on ? "恢复普通身份浏览" : "以 root 浏览（sudo）";
+  rootTag.hidden = !on;
+  rootBanner.hidden = !on;
+  panel.classList.toggle("as-root", on);
+  rootHint.hidden = !remote || on || !rootHints.has(s.id);
+  $<HTMLButtonElement>("fs-root-hint-ok").disabled = rootPending;
 }
 
 function rows(s: FsSession, t: Tree, dir: string, depth: number): HTMLElement[] {

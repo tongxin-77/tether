@@ -1166,6 +1166,18 @@ li:hover .close, li.active .close { visibility: visible; }
 #fs-title { flex: 1; min-width: 0; font-size: calc(14px + var(--font-adj)); font-weight: 800; user-select: none; }
 #fs-path { flex-shrink: 0; padding: 7px 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--f-mono); font-size: calc(11.5px + var(--font-adj)); color: var(--text-2); background: var(--raised); border-radius: 10px; }
 #fs-path:empty { display: none; }
+/* 以 root 浏览：标题旁 root 标签、面板描边与警示条用危险色 */
+#fs-root.on { color: var(--danger); background: var(--danger-soft); }
+#fs-root-tag { padding: 1px 7px; font-family: var(--f-mono); font-size: calc(11px + var(--font-adj)); font-weight: 700; color: var(--on-accent); background: var(--danger); border-radius: 99px; }
+#files.as-root .tree-panel { box-shadow: inset 0 0 0 2px var(--danger); }
+#fs-root-banner, #fs-root-hint { padding: 8px 10px; font-size: calc(12px + var(--font-adj)); line-height: 1.5; border-radius: 10px; }
+#fs-root-banner { color: var(--danger); background: var(--danger-soft); }
+#fs-root-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-2); background: var(--warning-soft); }
+#fs-root-hint[hidden], #fs-root-banner[hidden], #fs-root-tag[hidden] { display: none; }
+#fs-root-hint span { flex: 1 1 100%; }
+#fs-root-hint button { padding: 3px 10px; font-size: calc(12px + var(--font-adj)); border: none; border-radius: 99px; cursor: pointer; }
+#fs-root-hint-no { color: var(--text-2); background: none; }
+#fs-root-hint-no:hover { color: var(--text); background: var(--surface-hover); }
 
 /* 收起：只留一个展开按钮 */
 #files.collapsed { width: 44px; }
