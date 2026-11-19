@@ -29,7 +29,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, pastedPath, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -330,6 +330,83 @@ $("theme-btn").addEventListener("click", () => {
   syncThemeUi();
 });
 syncThemeUi();
+
+// 字号：界面整体偏移（styles.css 的 --font-adj）与终端字号（固定值，或无存储值时按分辨率“自动”），立即生效并记在本机；
+// 其它窗口（拖出的独立窗口）修改时经 storage 事件同步
+const FONT_ADJ_KEY = "tether.ui.fontAdj";
+const TERM_FONT_KEY = "tether.term.fontSize";
+const autoTermFont = terminalFontSize(screen.width, devicePixelRatio);
+const fontAdjSelect = $<HTMLSelectElement>("font-adj-select");
+const termFontSelect = $<HTMLSelectElement>("term-font-select");
+fontAdjSelect.replaceChildren(...FONT_ADJ_OPTIONS.map((n) => new Option(fontAdjLabel(n), String(n))));
+termFontSelect.replaceChildren(
+  new Option(`自动（${autoTermFont}）`, ""),
+  ...Array.from({ length: TERM_FONT_MAX - TERM_FONT_MIN + 1 }, (_, i) => new Option(String(TERM_FONT_MIN + i), String(TERM_FONT_MIN + i))),
+);
+/** 用户指定的终端字号；null 为自动 */
+let termFont: number | null = null;
+const readStore = (key: string) => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const writeStore = (key: string, value: string | null) => {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {}
+};
+const currentTermFont = () => termFont ?? autoTermFont;
+function loadFontAdj() {
+  const adj = parseFontAdj(readStore(FONT_ADJ_KEY));
+  document.documentElement.style.setProperty("--font-adj", `${adj}px`);
+  fontAdjSelect.value = String(adj);
+}
+/** 读存储的终端字号并应用到全部终端；当前会话立即 fit（行列变化由 term.onResize 同步给 daemon），其余会话在 activate 时 fit */
+function loadTermFont() {
+  termFont = parseTermFont(readStore(TERM_FONT_KEY));
+  termFontSelect.value = termFont === null ? "" : String(termFont);
+  for (const v of views.values()) v.term.options.fontSize = currentTermFont();
+  if (shouldFit(terminals.clientWidth, terminals.clientHeight)) activeView()?.fit.fit();
+}
+fontAdjSelect.addEventListener("change", () => {
+  writeStore(FONT_ADJ_KEY, fontAdjSelect.value);
+  loadFontAdj();
+});
+termFontSelect.addEventListener("change", () => {
+  writeStore(TERM_FONT_KEY, termFontSelect.value || null);
+  loadTermFont();
+});
+window.addEventListener("storage", (ev) => {
+  if (ev.key === FONT_ADJ_KEY) loadFontAdj();
+  if (ev.key === TERM_FONT_KEY) loadTermFont();
+});
+loadFontAdj();
+loadTermFont();
+
+// 鼠标在终端上时 Ctrl+滚轮调终端字号（作用于全部终端并记住）。捕获阶段处理并阻止默认行为：
+// 不让 WebView2 缩放整个页面，也不让 xterm 当作滚动 / 发给程序。触控板捏合同样产生 ctrlKey 的 wheel，按累计量节流
+let wheelAcc = 0;
+terminals.addEventListener(
+  "wheel",
+  (ev) => {
+    if (!ev.ctrlKey || !(ev.target as Element).closest(".term")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const r = wheelSteps(wheelAcc, ev.deltaY, ev.deltaMode);
+    wheelAcc = r.acc;
+    if (!r.steps) return;
+    const size = clampTermFont(currentTermFont() + r.steps);
+    if (size !== currentTermFont()) {
+      writeStore(TERM_FONT_KEY, String(size));
+      loadTermFont();
+    }
+    showHint(`字号 ${size}`);
+  },
+  { passive: false, capture: true },
+);
 
 // 设置对话框：打开时向 daemon 取最新配置，收到 config 消息时回填
 document.getElementById("settings-btn")!.addEventListener("click", () => {
@@ -1105,8 +1182,30 @@ async function pasteInto(term: Terminal, noText?: () => void) {
   term.focus();
 }
 
+/** Ctrl+V 剪贴板无文本时粘贴图片：本地会话中 Claude Code 运行时由 Tether 把剪贴板图片存为文件、粘贴其路径
+ *  （Claude Code 识别为 [Image #N]），比它自己经 PowerShell 读剪贴板快数秒；无图片、出错及其它情况发图片粘贴键由程序自己读。
+ *  结果写回发起时的终端（term 与 s.id），期间切换会话不影响 */
+async function pasteImage(term: Terminal, s: SessionInfo) {
+  if (s.host === null && s.claude) {
+    try {
+      const path = await invoke<string | null>("clipboard_image_file");
+      if (path) return term.paste(pastedPath(path));
+    } catch (e) {
+      console.warn("粘贴剪贴板图片失败，改由 Claude Code 读取", e);
+    }
+  }
+  // Windows 版 Claude Code 的图片粘贴键是 Alt+V（ESC v），^V 未绑定；远程会话（Linux / macOS）仍为 ^V
+  send({ type: "input", id: s.id, data: s.host !== null ? "\x16" : "\x1bv" });
+}
+
 function showCopied() {
+  showHint("已复制");
+}
+
+/** 终端区右上角的短暂提示（复制成功、Ctrl+滚轮调字号时的当前字号），1 秒后消失 */
+function showHint(text: string) {
   const el = $("copied");
+  el.textContent = text;
   el.hidden = false;
   clearTimeout(copiedTimer);
   copiedTimer = setTimeout(() => (el.hidden = true), 1000);
@@ -1197,7 +1296,7 @@ function addView(info: SessionInfo): View {
   const term = new Terminal({
     ...TERMINAL_OPTIONS,
     fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace',
-    fontSize: terminalFontSize(screen.width, devicePixelRatio),
+    fontSize: currentTermFont(),
     cursorBlink: true,
     // 窗口半透明时终端背景透明，由终端卡片提供半透明底色
     allowTransparency: true,
@@ -1240,10 +1339,7 @@ function addView(info: SessionInfo): View {
   term.attachCustomKeyEventHandler(
     (ev) =>
       completeKey(ev) &&
-      clipboardKey(term, ev, () =>
-        // Windows 版 Claude Code 的图片粘贴键是 Alt+V（ESC v），^V 未绑定；远程会话（Linux / macOS）仍为 ^V
-        send({ type: "input", id, data: (views.get(id)?.info ?? info).host !== null ? "\x16" : "\x1bv" }),
-      ),
+      clipboardKey(term, ev, () => void pasteImage(term, views.get(id)?.info ?? info)),
   );
   attachTableSelect(term, box);
   // OSC 8 超链接（Claude Code 输出的链接）：xterm 默认用 confirm + window.open，在 webview 中被拦截；

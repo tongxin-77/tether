@@ -86,7 +86,7 @@ pub async fn copy(state: Shared, req_id: u64, dest: Backend, source: Option<Host
     let result = async {
         // 传输期间持有两端连接，结束后释放（源主机已没有会话时连接随之断开）
         let src_conn = match &source {
-            Some(host) => Some(ssh::connection(&state, host).await?),
+            Some(host) => Some(ssh::connection(&state, host, false).await?),
             None => None,
         };
         let dst_conn = match dest {

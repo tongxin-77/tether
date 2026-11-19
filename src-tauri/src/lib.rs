@@ -1,7 +1,5 @@
 //! GUI 只是查看器：会话全部由后台进程 tetherd 持有，本进程通过命名管道收发协议消息。
 
-mod claude_history;
-
 use std::{
     io::ErrorKind,
     os::windows::{io::AsRawHandle, process::CommandExt},
@@ -313,6 +311,7 @@ async fn git_show(dir: String, hash: String) -> Result<(String, String, bool), S
 /// 目录 dir 的 Claude Code 历史对话（只读其 jsonl），按修改时间倒序
 #[tauri::command]
 async fn claude_history(dir: String) -> Result<Vec<serde_json::Value>, String> {
+    use proto::claude_history;
     blocking(move || {
         let root = claude_history::projects_dir().ok_or("未找到用户目录")?;
         let items = claude_history::list(&root, &dir).into_iter().map(|c| {
@@ -328,7 +327,7 @@ async fn claude_history(dir: String) -> Result<Vec<serde_json::Value>, String> {
 #[tauri::command]
 fn clipboard_files() -> (u32, Vec<String>) {
     use windows_sys::Win32::{
-        System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard},
+        System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable},
         UI::Shell::DragQueryFileW,
     };
     const CF_HDROP: u32 = 15;
@@ -338,16 +337,7 @@ fn clipboard_files() -> (u32, Vec<String>) {
         if IsClipboardFormatAvailable(CF_HDROP) == 0 {
             return (seq, files);
         }
-        // 剪贴板可能正被其它程序占用，短暂重试
-        let mut opened = false;
-        for _ in 0..5 {
-            if OpenClipboard(std::ptr::null_mut()) != 0 {
-                opened = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        if !opened {
+        if !open_clipboard() {
             return (seq, files);
         }
         let hdrop = GetClipboardData(CF_HDROP);
@@ -363,6 +353,79 @@ fn clipboard_files() -> (u32, Vec<String>) {
         CloseClipboard();
     }
     (seq, files)
+}
+
+/// 打开剪贴板；可能正被其它程序占用，短暂重试。成功后须 CloseClipboard
+fn open_clipboard() -> bool {
+    for _ in 0..5 {
+        if unsafe { windows_sys::Win32::System::DataExchange::OpenClipboard(std::ptr::null_mut()) } != 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// 剪贴板中的图片保存为 PNG 文件（`%TEMP%	ether-img`，由 daemon 定期清理），返回路径；无图片为 None。
+/// 供 Ctrl+V 把图片路径粘贴给本地 Claude Code，代替它自己经 PowerShell 读剪贴板（慢数秒）
+#[tauri::command]
+async fn clipboard_image_file() -> Result<Option<String>, String> {
+    blocking(|| {
+        let Some(png) = clipboard_png()? else { return Ok(None) };
+        let path = proto::image::save("png", &png).map_err(|e| e.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+/// 剪贴板图片的 PNG 字节：优先取已注册的 "PNG" 格式原始数据（截图工具、浏览器常放），否则读位图编码
+fn clipboard_png() -> Result<Option<Vec<u8>>, String> {
+    let png = match clipboard_raw_png().filter(|d| proto::image::magic_ok("image/png", d)) {
+        Some(d) => d,
+        None => match arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+            Ok(img) => encode_png(img.width as u32, img.height as u32, img.bytes.into_owned())?,
+            Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        },
+    };
+    if png.len() > proto::image::MAX_BYTES {
+        return Err(format!("图片超过 {} MB", proto::image::MAX_BYTES >> 20));
+    }
+    Ok(Some(png))
+}
+
+/// 剪贴板中 "PNG" 格式的原始数据；没有该格式或读取失败为 None
+fn clipboard_raw_png() -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::{
+        DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, RegisterClipboardFormatW},
+        Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+    };
+    let name: Vec<u16> = "PNG".encode_utf16().chain([0]).collect();
+    unsafe {
+        let fmt = RegisterClipboardFormatW(name.as_ptr());
+        if fmt == 0 || IsClipboardFormatAvailable(fmt) == 0 || !open_clipboard() {
+            return None;
+        }
+        let mut data = None;
+        let h = GetClipboardData(fmt);
+        if !h.is_null() {
+            let p = GlobalLock(h) as *const u8;
+            if !p.is_null() {
+                data = Some(std::slice::from_raw_parts(p, GlobalSize(h)).to_vec());
+                GlobalUnlock(h);
+            }
+        }
+        CloseClipboard();
+        data
+    }
+}
+
+/// RGBA 像素编码为 PNG
+fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+    let img = image::RgbaImage::from_raw(width, height, rgba).ok_or("剪贴板图片数据不完整")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 /// 删除旧版背景图功能留在应用数据目录下的 `background-*` 文件（该功能已移除），只删这一前缀的文件
@@ -417,13 +480,33 @@ pub fn run() {
                 win.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, windows_build, git_branch, git_refs, git_switch, git_log, git_show, claude_history])
+        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, clipboard_image_file, windows_build, git_branch, git_refs, git_switch, git_log, git_show, claude_history])
         .run(context)
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encodes_png() {
+        let png = super::encode_png(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128]).unwrap();
+        assert!(proto::image::magic_ok("image/png", &png));
+        let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap().to_rgba8();
+        assert_eq!((img.width(), img.height(), img.into_raw()), (2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128]));
+        // 像素数据与尺寸不符
+        assert!(super::encode_png(2, 2, vec![0; 4]).is_err());
+    }
+
+    /// 读真实剪贴板，手动运行：先放入一张图片再 `cargo test -p tether clipboard_image -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn clipboard_image() {
+        let t = std::time::Instant::now();
+        let png = super::clipboard_png().unwrap().expect("剪贴板中没有图片");
+        let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+        println!("{}x{} {} 字节 {:?}", img.width(), img.height(), png.len(), t.elapsed());
+    }
+
     #[test]
     fn reads_windows_build() {
         assert!(super::windows_build().is_some_and(|b| b > 0));

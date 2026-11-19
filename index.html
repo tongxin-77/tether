@@ -7,6 +7,8 @@
     <!-- 首帧前套用上次选择的主题，避免闪烁。内联脚本不能 import，逻辑须与 src/theme-utils.ts 的 parseTheme 一致（theme-utils.test.ts 会执行本脚本比对）：
          存储值为 "<风格>-light|dark"；旧值 cream / cream-night / glass 迁移；其它值保持上面的默认主题 -->
     <script>try { var t = localStorage.getItem("tether.theme"); t = { cream: "cream-light", "cream-night": "cream-dark", glass: "glass-light" }[t] || t; if (/^(cream|minimal|milk|glass|morandi|modern)-(light|dark)$/.test(t)) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+    <!-- 首帧前套用界面字号偏移（styles.css 的 --font-adj，默认 -2px）；取值规则须与 src/term-utils.ts 的 parseFontAdj 一致（term-utils.test.ts 会执行本脚本比对） -->
+    <script>try { var a = localStorage.getItem("tether.ui.fontAdj"); if (a !== null && /^(-[1-4]|[0-2])$/.test(a)) document.documentElement.style.setProperty("--font-adj", a + "px"); } catch (e) {}</script>
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
@@ -186,6 +188,14 @@
           <label class="row">
             <span class="rt"><b>主题风格</b><small>立即生效；侧栏底部的按钮切换亮色 / 暗色</small></span>
             <select id="theme-select"></select>
+          </label>
+          <label class="row">
+            <span class="rt"><b>界面字号</b><small>立即生效；相对原始字号整体调小 / 调大</small></span>
+            <select id="font-adj-select"></select>
+          </label>
+          <label class="row">
+            <span class="rt"><b>终端字号</b><small>立即生效；“自动”按屏幕分辨率选择。鼠标在终端上时 Ctrl+滚轮也可调整</small></span>
+            <select id="term-font-select"></select>
           </label>
           <label class="row range">
             <span class="rt"><b>窗口透明度</b><small>100% 为完全不透明；调低后窗口背景半透明，文字与图标不受影响</small></span>

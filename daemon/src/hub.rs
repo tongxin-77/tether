@@ -19,8 +19,9 @@ use tokio::{
 };
 
 use crate::{
-    image,
+    config, image,
     session::{self, Shared, State},
+    ssh,
 };
 
 /// 单个网页贴图上传从 imageBegin 起的最长组装时间，超时丢弃
@@ -127,6 +128,11 @@ pub fn restart(state: &Shared, st: &mut State) {
     st.hub.task = Some(task.abort_handle());
 }
 
+/// 上报给 hub 的会话列表
+fn sessions(st: &State) -> Vec<proto::SessionInfo> {
+    st.sessions.values().map(|s| s.info.clone()).collect()
+}
+
 /// 组装常驻连接：各回调持锁操作 State，generation 不匹配（已被新任务取代）的迟到回调丢弃
 fn make_link(shared: &Shared, generation: u64, endpoint: link::Endpoint, token: Secret, hello: link::Up, changed: Arc<Notify>) -> link::Link {
     let (sessions_state, status_state, conn_state, down_state) = (shared.clone(), shared.clone(), shared.clone(), shared.clone());
@@ -134,7 +140,7 @@ fn make_link(shared: &Shared, generation: u64, endpoint: link::Endpoint, token: 
         endpoint,
         token,
         hello,
-        sessions: Arc::new(move || sessions_state.lock().unwrap().sessions.values().map(|s| s.info.clone()).collect()),
+        sessions: Arc::new(move || sessions(&sessions_state.lock().unwrap())),
         changed,
         status: Arc::new(move |state, error| set_status(&mut status_state.lock().unwrap(), generation, state, error)),
         conn: Arc::new(move |conn| {
@@ -274,8 +280,138 @@ fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
                 std::thread::spawn(move || s.close());
             }
         }
+        // 网页新建（能力 create）：均复用允许接管开关
+        link::Down::CreateOptions { request_id } => {
+            let msg = if st.config.hub.allow_takeover {
+                let hosts = config::all_hosts(&st.config);
+                link::Up::CreateOptionsResult {
+                    request_id,
+                    ok: true,
+                    reason: None,
+                    home: Some(config::home().map(|h| h.display().to_string()).unwrap_or_default()),
+                    recent: Some(recent_dirs(&st.recent, &hosts)),
+                    hosts: Some(hosts.into_iter().map(|h| link::HostItem { id: h.id, name: h.name }).collect()),
+                }
+            } else {
+                link::Up::CreateOptionsResult { request_id, ok: false, reason: Some("disabled".into()), home: None, recent: None, hosts: None }
+            };
+            st.hub.up(msg);
+        }
+        link::Down::ClaudeHistory { request_id, cwd } => {
+            if !st.config.hub.allow_takeover {
+                let msg = link::Up::ClaudeHistoryResult { request_id, ok: false, reason: Some("disabled".into()), message: None, items: None };
+                return st.hub.up(msg);
+            }
+            // 读对话文件不持锁
+            let (shared, open) = (shared.clone(), session::claude_sessions(st));
+            tokio::task::spawn_blocking(move || {
+                let cwd = if cwd.trim().is_empty() { config::home().map(|h| h.display().to_string()).unwrap_or(cwd) } else { cwd };
+                let msg = match proto::claude_history::projects_dir() {
+                    Some(root) => link::Up::ClaudeHistoryResult {
+                        request_id,
+                        ok: true,
+                        reason: None,
+                        message: None,
+                        items: Some(history_items(&root, &cwd, &open)),
+                    },
+                    None => link::Up::ClaudeHistoryResult {
+                        request_id,
+                        ok: false,
+                        reason: Some("error".into()),
+                        message: Some("未找到用户目录".into()),
+                        items: None,
+                    },
+                };
+                shared.lock().unwrap().hub.up(msg);
+            });
+        }
+        // 网页新建会话：与桌面端新建相同的路径，但不发 Activate（桌面端不切换）、失败不向 GUI 报错；SSH 不弹任何提示
+        link::Down::Create { request_id, target, resume, cols, rows } => {
+            let size = |v: Option<u16>, default| v.filter(|v| (1..=1000).contains(v)).unwrap_or(default);
+            let (cols, rows) = (size(cols, 120), size(rows, 32));
+            if !st.config.hub.allow_takeover {
+                return create_result(st, request_id, Err(("disabled", "本机未允许 hub 接管".into())));
+            }
+            let shared = shared.clone();
+            match target {
+                link::CreateTarget::Local { cwd } => {
+                    // 启动 PTY 较慢且 spawn 要加锁：放到阻塞线程
+                    tokio::task::spawn_blocking(move || {
+                        let cwd = cwd.filter(|c| !c.trim().is_empty());
+                        // 桌面端从目录选择框 / 最近目录选，ConPTY 遇到不存在的目录会悄悄改用主目录；网页手填的目录需先校验
+                        let result = match &cwd {
+                            Some(c) if !Path::new(c).is_dir() => Err(format!("目录不存在：{c}")),
+                            _ => session::create_local(&shared, None, cwd.unwrap_or_default(), cols, rows, resume),
+                        };
+                        let st = shared.lock().unwrap();
+                        if result.is_ok() {
+                            st.push_sessions();
+                        }
+                        create_result(&st, request_id, result.map_err(|e| ("error", e)));
+                    });
+                }
+                link::CreateTarget::Remote { host_id, cwd } => {
+                    let Some(host) = config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) else {
+                        return create_result(st, request_id, Err(("not_found", format!("未找到主机 {host_id}"))));
+                    };
+                    let cwd = cwd.filter(|c| !c.trim().is_empty());
+                    tokio::spawn(async move {
+                        let result = ssh::create(shared.clone(), host, cwd, cols, rows, true).await;
+                        let result = result.map_err(|e| (if ssh::needs_input(&e) { "auth_required" } else { "error" }, e));
+                        create_result(&shared.lock().unwrap(), request_id, result);
+                    });
+                }
+            }
+        }
         _ => {}
     }
+}
+
+/// 回复 createResult；成功时先立即上报一次会话列表（不等防抖），hub 收到结果时列表中已有新会话
+fn create_result(st: &State, request_id: String, result: Result<u32, (&str, String)>) {
+    let msg = match result {
+        Ok(id) => {
+            log!("hub 新建会话 #{id}");
+            st.hub.up(link::Up::Sessions { sessions: sessions(st) });
+            link::Up::CreateResult { request_id, ok: true, session_id: Some(id), reason: None, message: None }
+        }
+        Err((reason, message)) => {
+            log!("hub 新建会话失败（{reason}）：{message}");
+            link::Up::CreateResult { request_id, ok: false, session_id: None, reason: Some(reason.into()), message: Some(message) }
+        }
+    };
+    st.hub.up(msg);
+}
+
+/// 新建选项的最近目录：remote 项带主机当前显示名，主机已不存在的剔除
+fn recent_dirs(recent: &[proto::RecentItem], hosts: &[proto::Host]) -> Vec<link::RecentDir> {
+    recent
+        .iter()
+        .filter_map(|r| match &r.target {
+            proto::Target::Local { cwd } => Some(link::RecentDir::Local { cwd: cwd.clone() }),
+            proto::Target::Remote { host_id, cwd } => {
+                let host = hosts.iter().find(|h| &h.id == host_id)?;
+                Some(link::RecentDir::Remote { host_id: host_id.clone(), host: host.name.clone(), cwd: cwd.clone().unwrap_or_default() })
+            }
+        })
+        .collect()
+}
+
+/// 目录 cwd 的 Claude 历史对话（同桌面端「恢复 Claude 对话…」），最多 50 条、新的在前；open 中的对话已有会话在运行
+fn history_items(projects: &Path, cwd: &str, open: &HashSet<String>) -> Vec<link::HistoryItem> {
+    proto::claude_history::list(projects, cwd)
+        .into_iter()
+        .take(50)
+        .map(|c| link::HistoryItem {
+            open: open.contains(&c.id),
+            id: c.id,
+            title: c.summary.title,
+            mtime: c.mtime,
+            messages: c.summary.messages,
+            permission_mode: c.summary.permission_mode,
+            bypass: c.summary.bypass,
+        })
+        .collect()
 }
 
 /// 网页贴图的前提：本机允许接管、该会话正被 hub 接管、本地会话（SSH 会话不支持）
@@ -612,6 +748,165 @@ mod tests {
         task.abort();
     }
 
+    /// 网页新建端到端：disabled / createOptions / claudeHistory / not_found / 目录不存在 / 本地新建成功（不向 GUI 发 Activate）
+    #[tokio::test]
+    async fn create_end_to_end() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        // 模拟已连接的桌面端 GUI：网页新建不应向它发 Activate / Error
+        let (gui_tx, mut gui_rx) = tokio::sync::mpsc::unbounded_channel();
+        {
+            let mut st = shared.lock().unwrap();
+            st.gui = Some(session::Gui::new(1, gui_tx));
+            st.config.shell = "cmd.exe".into();
+            st.config.hosts = vec![proto::Host {
+                id: "h-test".into(),
+                name: "dev".into(),
+                host: "127.0.0.1".into(),
+                port: 1,
+                user: "u".into(),
+                auth: proto::AuthKind::Password,
+                key_path: None,
+                source: proto::HostSource::Tether,
+            }];
+            st.recent = vec![
+                proto::RecentItem { target: proto::Target::Local { cwd: r"C:\a".into() }, host: None, closed_at: 3 },
+                proto::RecentItem { target: proto::Target::Remote { host_id: "h-test".into(), cwd: Some("/srv".into()) }, host: Some("旧名".into()), closed_at: 2 },
+                proto::RecentItem { target: proto::Target::Remote { host_id: "gone".into(), cwd: Some("/x".into()) }, host: None, closed_at: 1 },
+            ];
+        }
+        let changed = shared.lock().unwrap().hub.changed.clone();
+        let endpoint = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
+        let hello = link::hello("mid".into(), "PC", "0.0.1");
+        let task = tokio::spawn(link::run(make_link(&shared, 0, endpoint, Secret("t".into()), hello, changed)));
+        let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
+        assert!(recv(&mut ws).await["caps"].as_array().unwrap().contains(&json!("create")));
+        send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.5.0", "caps": ["close", "create"] })).await;
+
+        // 未允许接管：三种请求都是 disabled
+        send(&mut ws, json!({ "type": "createOptions", "requestId": "o1" })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "createOptionsResult", "requestId": "o1", "ok": false, "reason": "disabled" }));
+        send(&mut ws, json!({ "type": "claudeHistory", "requestId": "c1", "cwd": r"C:\a" })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "claudeHistoryResult", "requestId": "c1", "ok": false, "reason": "disabled" }));
+        send(&mut ws, json!({ "type": "create", "requestId": "n1", "target": { "kind": "local" } })).await;
+        let r = recv(&mut ws).await;
+        assert_eq!((r["type"].as_str(), r["ok"].as_bool(), r["reason"].as_str()), (Some("createResult"), Some(false), Some("disabled")));
+        assert!(shared.lock().unwrap().sessions.is_empty());
+
+        // 新建选项：remote 最近目录带主机当前名称，主机已不存在的剔除
+        shared.lock().unwrap().config.hub.allow_takeover = true;
+        send(&mut ws, json!({ "type": "createOptions", "requestId": "o2" })).await;
+        let r = recv(&mut ws).await;
+        assert_eq!((r["type"].as_str(), r["ok"].as_bool()), (Some("createOptionsResult"), Some(true)));
+        assert_eq!(r["home"].as_str(), config::home().map(|h| h.display().to_string()).as_deref());
+        assert_eq!(r["recent"], json!([{ "kind": "local", "cwd": r"C:\a" }, { "kind": "remote", "hostId": "h-test", "host": "dev", "cwd": "/srv" }]));
+        assert_eq!(r["hosts"][0], json!({ "id": "h-test", "name": "dev" }));
+
+        // Claude 历史：没有对话的目录为空列表
+        send(&mut ws, json!({ "type": "claudeHistory", "requestId": "c2", "cwd": r"C:\tether-no-such-dir-4f2a" })).await;
+        assert_eq!(recv(&mut ws).await, json!({ "type": "claudeHistoryResult", "requestId": "c2", "ok": true, "items": [] }));
+
+        // 主机不存在 → not_found；本地目录不存在 → error
+        send(&mut ws, json!({ "type": "create", "requestId": "n2", "target": { "kind": "remote", "hostId": "nope" } })).await;
+        let r = recv(&mut ws).await;
+        assert_eq!((r["requestId"].as_str(), r["ok"].as_bool(), r["reason"].as_str()), (Some("n2"), Some(false), Some("not_found")));
+        send(&mut ws, json!({ "type": "create", "requestId": "n3", "target": { "kind": "local", "cwd": r"C:\tether-no-such-dir-4f2a" } })).await;
+        let r = recv(&mut ws).await;
+        assert_eq!((r["requestId"].as_str(), r["reason"].as_str()), (Some("n3"), Some("error")));
+        assert!(r["message"].as_str().unwrap().contains("目录不存在"));
+        assert!(shared.lock().unwrap().sessions.is_empty());
+
+        // 本地新建成功：createResult 之前已上报含新会话的列表
+        let dir = std::env::temp_dir();
+        let cwd = dir.display().to_string();
+        send(&mut ws, json!({ "type": "create", "requestId": "n4", "target": { "kind": "local", "cwd": cwd }, "cols": 100, "rows": 30 })).await;
+        let mut listed = false;
+        let r = loop {
+            let msg = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.expect("等待 createResult 超时").unwrap().unwrap();
+            let Message::Text(text) = msg else { continue };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            if v["type"] == "sessions" {
+                listed |= v["sessions"].as_array().unwrap().iter().any(|s| s["cwd"] == cwd.as_str());
+                continue;
+            }
+            break v;
+        };
+        assert_eq!((r["type"].as_str(), r["requestId"].as_str(), r["ok"].as_bool()), (Some("createResult"), Some("n4"), Some(true)));
+        assert!(listed, "createResult 前应已上报新会话");
+        let id = r["sessionId"].as_u64().unwrap() as u32;
+        {
+            let st = shared.lock().unwrap();
+            let s = &st.sessions[&id].info;
+            assert_eq!((s.cwd.as_str(), s.command.as_str(), s.host.as_deref()), (cwd.as_str(), "cmd.exe", None));
+            assert_eq!(session::snapshot(&st, id).map(|(c, r, _)| (c, r)), Some((100, 30)));
+        }
+        // GUI 收到会话列表，但没有 Activate / Error
+        let mut gui = Vec::new();
+        while let Ok(line) = gui_rx.try_recv() {
+            gui.push(serde_json::from_str::<Value>(&line).unwrap()["type"].as_str().unwrap().to_string());
+        }
+        assert!(gui.iter().any(|t| t == "sessions"), "{gui:?}");
+        assert!(!gui.iter().any(|t| t == "activate" || t == "error"), "{gui:?}");
+
+        let removed = session::remove(&mut shared.lock().unwrap(), id);
+        std::thread::spawn(move || removed.unwrap().close()).join().unwrap();
+        task.abort();
+    }
+
+    #[test]
+    fn recent_dirs_and_history_items() {
+        let host = |id: &str, name: &str| proto::Host {
+            id: id.into(),
+            name: name.into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            auth: proto::AuthKind::Key,
+            key_path: None,
+            source: proto::HostSource::Tether,
+        };
+        let recent = vec![
+            proto::RecentItem { target: proto::Target::Remote { host_id: "gone".into(), cwd: Some("/x".into()) }, host: None, closed_at: 3 },
+            proto::RecentItem { target: proto::Target::Remote { host_id: "h1".into(), cwd: None }, host: Some("旧".into()), closed_at: 2 },
+            proto::RecentItem { target: proto::Target::Local { cwd: r"C:\a".into() }, host: None, closed_at: 1 },
+        ];
+        assert_eq!(
+            recent_dirs(&recent, &[host("h1", "dev")]),
+            [
+                link::RecentDir::Remote { host_id: "h1".into(), host: "dev".into(), cwd: String::new() },
+                link::RecentDir::Local { cwd: r"C:\a".into() }
+            ]
+        );
+
+        // Claude 历史：临时 projects 目录；open 标记已有会话在运行的对话，最多 50 条
+        let root = std::env::temp_dir().join(format!("tether-hub-cc-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("C--work-p");
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = r#"{"isSidechain":false,"type":"user","message":{"role":"user","content":"你好"},"permissionMode":"acceptEdits"}"#;
+        for i in 0..55 {
+            let path = dir.join(format!("id{i:02}.jsonl"));
+            std::fs::write(&path, line).unwrap();
+            let t = std::time::UNIX_EPOCH + Duration::from_secs(1_000 + i);
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(t).unwrap();
+        }
+        let items = history_items(&root, r"C:\work\p", &HashSet::from(["id54".to_string()]));
+        assert_eq!(items.len(), 50);
+        let expect = link::HistoryItem {
+            id: "id54".into(),
+            title: "你好".into(),
+            mtime: 1_054_000,
+            messages: 1,
+            permission_mode: Some("acceptEdits".into()),
+            bypass: false,
+            open: true,
+        };
+        assert_eq!(items[0], expect);
+        assert_eq!((items[1].id.as_str(), items[1].open), ("id53", false));
+        assert!(history_items(&root, r"C:\other", &HashSet::new()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// 网页贴图：begin → 每块原始 ≤256KB 的 chunk → end
     async fn upload(ws: &mut Ws, id: u32, upload_id: &str, mime: &str, size: usize, data: &[u8]) {
         send(ws, json!({ "type": "imageBegin", "sessionId": id, "uploadId": upload_id, "mime": mime, "size": size })).await;
@@ -639,7 +934,7 @@ mod tests {
 
         // 旧 hub：welcome 无 caps → attached 不带 history
         let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
-        assert_eq!(recv(&mut ws).await["caps"], json!(["history", "image", "close"]));
+        assert_eq!(recv(&mut ws).await["caps"], json!(["history", "image", "close", "create"]));
         send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.3.0" })).await;
         send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
         let attached = recv(&mut ws).await;

@@ -11,3 +11,17 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# 开发版：图片编解码相关依赖开启优化，否则 Ctrl+V 贴图的 PNG 编码在 debug 下慢一个数量级（不影响 release）
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3

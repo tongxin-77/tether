@@ -3,6 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Claude Code 历史对话列表（GUI 的「恢复 Claude 对话…」与 hub 网页新建共用）
+pub mod claude_history;
+
+/// 贴图文件的类型校验与保存（daemon 的 hub 贴图与 GUI 粘贴剪贴板图片共用）
+pub mod image;
+
 /// 管道协议版本：GUI 与 daemon 互发 Hello 时携带。0.1.0 的 daemon 不认识 Hello（视为 0），也不支持 Shutdown
 pub const PROTO_VERSION: u32 = 1;
 
@@ -55,7 +61,7 @@ pub struct SessionInfo {
 }
 
 /// 新建本地会话后恢复的 Claude Code 对话：shell 就绪后输入 `claude --resume`，带上原来的权限模式
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeResume {
     pub id: String,

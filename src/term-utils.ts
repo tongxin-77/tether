@@ -58,9 +58,52 @@ export function branchLabel(branch: string | null | undefined): string {
   return branch ? `⎇ ${branch}` : "";
 }
 
-/** 终端字号：4K 及以上（屏幕物理宽度 ≥ 3840）用 14，其余用更紧凑的 13 */
+/** 终端字号“自动”值：4K 及以上（屏幕物理宽度 ≥ 3840）用 12，其余用更紧凑的 11 */
 export function terminalFontSize(screenWidth: number, dpr: number): number {
-  return screenWidth * dpr >= 3840 ? 14 : 13;
+  return screenWidth * dpr >= 3840 ? 12 : 11;
+}
+
+/** 终端字号可调范围（设置面板与 Ctrl+滚轮） */
+export const TERM_FONT_MIN = 8;
+export const TERM_FONT_MAX = 28;
+
+/** 钳制终端字号到可调范围并取整 */
+export function clampTermFont(size: number): number {
+  return Math.round(Math.max(TERM_FONT_MIN, Math.min(size, TERM_FONT_MAX)));
+}
+
+/** 解析存储的终端字号：无值或非数字为 null（自动），数字取整并钳制到 8–28 */
+export function parseTermFont(stored: string | null): number | null {
+  const n = stored?.trim() ? Number(stored) : NaN;
+  return Number.isFinite(n) ? clampTermFont(n) : null;
+}
+
+/** 界面字号偏移（相对原始字号，单位 px）：可选 -4…+2，默认小 2 号 */
+export const FONT_ADJ_DEFAULT = -2;
+export const FONT_ADJ_OPTIONS = [-4, -3, -2, -1, 0, 1, 2];
+
+/** 解析存储的界面字号偏移；非法值为默认。index.html 头部的内联脚本用同一正则，须保持一致 */
+export function parseFontAdj(stored: string | null): number {
+  return stored !== null && /^(-[1-4]|[0-2])$/.test(stored) ? Number(stored) : FONT_ADJ_DEFAULT;
+}
+
+/** 界面字号偏移的选项文字，如“小 2 号（默认）”“原始大小”“大 1 号” */
+export function fontAdjLabel(adj: number): string {
+  const s = adj < 0 ? `小 ${-adj} 号` : adj > 0 ? `大 ${adj} 号` : "原始大小";
+  return adj === FONT_ADJ_DEFAULT ? `${s}（默认）` : s;
+}
+
+/** Ctrl+滚轮每累计这么多像素的 deltaY 调一号 */
+const WHEEL_STEP = 50;
+
+/** Ctrl+滚轮换算为字号步数（上滚为正）：单个事件最多计一步（鼠标一格 ≈ 100px 只调一号），
+ *  触控板捏合的小增量累计跨过阈值才调；换向时清零累计。deltaMode 非像素（按行 / 页）时每个事件计一步。返回步数与新的累计值 */
+export function wheelSteps(acc: number, deltaY: number, deltaMode: number): { steps: number; acc: number } {
+  const d = deltaMode ? Math.sign(deltaY) * WHEEL_STEP : Math.max(-WHEEL_STEP, Math.min(deltaY, WHEEL_STEP));
+  if (Math.sign(d) !== Math.sign(acc)) acc = 0;
+  acc += d;
+  const n = Math.trunc(acc / WHEEL_STEP);
+  return { steps: n === 0 ? 0 : -n, acc: acc - n * WHEEL_STEP };
 }
 
 /** 终端 OSC 8 超链接（Claude Code 等输出）的打开目标：http(s) → 浏览器；file:// → 本机路径；其它协议忽略 */
@@ -88,4 +131,9 @@ export function formatMemory(bytes: number): string {
 /** 内存占用超过 1 GB 时用警示色标出 */
 export function memoryHigh(bytes: number): boolean {
   return bytes > GIB;
+}
+
+/** 粘贴给 Claude Code 的图片路径：含空格时加双引号（与 daemon session::paste_path 一致） */
+export function pastedPath(path: string): string {
+  return path.includes(" ") ? `"${path}"` : path;
 }

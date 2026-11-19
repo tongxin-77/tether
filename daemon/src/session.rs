@@ -286,34 +286,21 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             let cwd = cwd.filter(|c| !c.trim().is_empty());
             match config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) {
                 // 连接 / 认证可能要等用户输入，放到异步任务中，不阻塞消息分发
-                Some(host) => drop(tokio::spawn(ssh::create(state.clone(), host, cwd, cols, rows))),
+                Some(host) => drop(tokio::spawn(ssh::create(state.clone(), host, cwd, cols, rows, false))),
                 None => st.send(&ServerMsg::Error { message: format!("未找到主机 {host_id}") }),
             }
         }
         ClientMsg::Create { target: Target::Local { cwd }, cols, rows, command, resume } => {
-            // 自动模式每次新建时现场探测，安装 PowerShell 7 后无需重启 daemon
-            let shell = command.unwrap_or_else(|| config::resolve_shell(&st.config.shell));
-            // 未指定目录（“+ 新建 → 本地”）时进用户主目录
-            let cwd = match cwd.trim() {
-                "" => config::home().map(|h| h.display().to_string()).unwrap_or(cwd),
-                _ => cwd,
-            };
             // 启动 PTY 较慢，不持锁
             drop(guard);
-            let result = spawn(state, &shell, cwd, cols, rows);
-            if let (Ok(id), Some(r)) = (&result, resume) {
-                resume_claude(state, *id, r);
-            }
+            let result = create_local(state, command, cwd, cols, rows, resume);
             let st = state.lock().unwrap();
             match result {
                 Ok(id) => {
                     st.push_sessions();
                     st.send(&ServerMsg::Activate { id });
                 }
-                Err(e) => {
-                    log!("启动 shell 失败（{shell}）：{e}");
-                    st.send(&ServerMsg::Error { message: format!("启动 shell 失败（{shell}）：{e}") });
-                }
+                Err(message) => st.send(&ServerMsg::Error { message }),
             }
         }
         ClientMsg::Attach { id, history } => {
@@ -554,6 +541,11 @@ pub fn local_pids(st: &State) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// 未退出的会话正在运行的 Claude 对话 id（hub 网页列 Claude 历史时标记 open，同桌面端）
+pub fn claude_sessions(st: &State) -> HashSet<String> {
+    st.sessions.values().filter(|s| s.info.status != Status::Exited).filter_map(|s| s.resume.as_ref().map(|r| r.id.clone())).collect()
+}
+
 /// 本地会话（非 SSH）；会话不存在为 false
 pub fn is_local(st: &State, id: u32) -> bool {
     st.sessions.get(&id).is_some_and(|s| s.info.host.is_none())
@@ -600,6 +592,26 @@ fn fs_spawn(state: &Shared, st: &State, req_id: u64, session_id: u32, op: fs::Op
         Some(s) => drop(tokio::spawn(fs::run(state.clone(), req_id, s.fs.clone(), op))),
         None => st.send(&ServerMsg::FsResult { req_id, error: Some("会话已不存在".into()) }),
     }
+}
+
+/// 新建本地会话（GUI 与 hub 网页新建共用，不持锁调用）：command 缺省用配置的 shell，cwd 为空进用户主目录，
+/// 有 resume 时在 shell 就绪后恢复该 Claude 对话；失败已记日志，返回给用户看的原因。推送与激活由调用方负责
+pub fn create_local(state: &Shared, command: Option<String>, cwd: String, cols: u16, rows: u16, resume: Option<proto::ClaudeResume>) -> Result<u32, String> {
+    // 自动模式每次新建时现场探测，安装 PowerShell 7 后无需重启 daemon
+    let shell = command.unwrap_or_else(|| config::resolve_shell(&state.lock().unwrap().config.shell));
+    // 未指定目录（“+ 新建 → 本地”）时进用户主目录
+    let cwd = match cwd.trim() {
+        "" => config::home().map(|h| h.display().to_string()).unwrap_or(cwd),
+        _ => cwd,
+    };
+    let result = spawn(state, &shell, cwd, cols, rows);
+    if let (Ok(id), Some(r)) = (&result, resume) {
+        resume_claude(state, *id, r);
+    }
+    result.map_err(|e| {
+        log!("启动 shell 失败（{shell}）：{e}");
+        format!("启动 shell 失败（{shell}）：{e}")
+    })
 }
 
 /// 启动配置中的 shell，登记会话并起读线程、等待线程
@@ -754,7 +766,7 @@ pub fn restore_remote(state: &Shared, st: &mut State) {
     for item in std::mem::take(&mut st.pending) {
         let host_id = item.host_id.unwrap_or_default();
         match config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) {
-            Some(host) => drop(tokio::spawn(ssh::create(state.clone(), host, Some(item.cwd), 120, 30))),
+            Some(host) => drop(tokio::spawn(ssh::create(state.clone(), host, Some(item.cwd), 120, 30, false))),
             None => log!("恢复远程会话失败：未找到主机 {host_id}"),
         }
     }

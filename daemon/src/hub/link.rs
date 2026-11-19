@@ -41,7 +41,7 @@ pub const REPLACED_MSG: &str = "另一台机器使用了相同的机器 ID（例
 pub const MACHINE_ID_MAX: usize = 64;
 const NAME_MAX: usize = 256;
 /// 本机支持的能力位（hello.caps）：双方都声明的才使用；proto 仍为 2，旧 hub 不回 caps 即视为空集
-pub const CAPS: &[&str] = &["history", "image", "close"];
+pub const CAPS: &[&str] = &["history", "image", "close", "create"];
 
 /// 截断到 max 个字符以内（按 UTF-16 码元计，与 hub 端 JavaScript 的字符串长度一致，不切断代理对）
 pub fn truncate_chars(s: &str, max: usize) -> String {
@@ -214,6 +214,85 @@ pub enum Up {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// 新建选项（能力 create）：本机用户目录、最近目录、SSH 主机；失败时 reason 为 disabled
+    CreateOptionsResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recent: Option<Vec<RecentDir>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hosts: Option<Vec<HostItem>>,
+    },
+    /// 本地目录的 Claude 历史对话（能力 create）；失败时 reason 为 disabled / error
+    ClaudeHistoryResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        items: Option<Vec<HistoryItem>>,
+    },
+    /// 网页新建会话的结果（能力 create）；失败时 reason 为 disabled / not_found / auth_required / error
+    CreateResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+}
+
+/// createOptionsResult 的最近目录：remote 带主机 id 与当前显示名
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RecentDir {
+    Local { cwd: String },
+    Remote { host_id: String, host: String, cwd: String },
+}
+
+/// createOptionsResult 的 SSH 主机
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostItem {
+    pub id: String,
+    pub name: String,
+}
+
+/// claudeHistoryResult 的一条对话（同桌面端「恢复 Claude 对话…」）；open 为已有会话正在运行该对话
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryItem {
+    pub id: String,
+    pub title: String,
+    pub mtime: u64,
+    pub messages: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    pub bypass: bool,
+    pub open: bool,
+}
+
+/// 网页新建的目标；cwd 缺省或空为用户目录（远程为登录目录）
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CreateTarget {
+    Local {
+        #[serde(default)]
+        cwd: Option<String>,
+    },
+    Remote {
+        host_id: String,
+        #[serde(default)]
+        cwd: Option<String>,
+    },
 }
 
 /// hub → daemon；未知 type 忽略
@@ -243,6 +322,21 @@ pub enum Down {
     ImageEnd { session_id: u32, upload_id: String },
     /// 网页关闭会话（能力 close），不要求正被接管；daemon 回 closeResult
     Close { session_id: u32, request_id: String },
+    /// 网页新建（能力 create）：取选项 / 列 Claude 历史 / 新建，daemon 分别回 createOptionsResult / claudeHistoryResult / createResult
+    CreateOptions { request_id: String },
+    ClaudeHistory { request_id: String, cwd: String },
+    Create {
+        request_id: String,
+        target: CreateTarget,
+        /// 仅本地有效：新会话中恢复该 Claude 对话
+        #[serde(default)]
+        resume: Option<proto::ClaudeResume>,
+        /// 网页终端尺寸，缺省 120×32
+        #[serde(default)]
+        cols: Option<u16>,
+        #[serde(default)]
+        rows: Option<u16>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -596,7 +690,10 @@ async fn serve(mut ws: Ws, link: &Link, caps: Vec<String>) -> Failure {
                         | Down::ImageBegin { .. }
                         | Down::ImageChunk { .. }
                         | Down::ImageEnd { .. }
-                        | Down::Close { .. }),
+                        | Down::Close { .. }
+                        | Down::CreateOptions { .. }
+                        | Down::ClaudeHistory { .. }
+                        | Down::Create { .. }),
                     )) => (link.down)(msg),
                     Ok(_) => {}
                     Err(f) => return f,
@@ -712,7 +809,7 @@ mod tests {
         let hello = hello("9f1c".into(), "DEV-PC", "0.4.0");
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
-            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0","caps":["history","image","close"]}"#
+            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0","caps":["history","image","close","create"]}"#
         );
         // 旧版 hello（无 caps）解析为空集
         let old: Up = serde_json::from_str(r#"{"type":"hello","proto":2,"machineId":"m","machineName":"n","version":"v"}"#).unwrap();
@@ -803,6 +900,55 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&up).unwrap(),
             r#"{"type":"closeResult","sessionId":3,"requestId":"r1","ok":false,"reason":"disabled"}"#
+        );
+    }
+
+    #[test]
+    fn create_wire_format() {
+        let d: Down = serde_json::from_str(r#"{"type":"createOptions","requestId":"r1"}"#).unwrap();
+        assert_eq!(d, Down::CreateOptions { request_id: "r1".into() });
+        let d: Down = serde_json::from_str(r#"{"type":"claudeHistory","requestId":"r2","cwd":"C:\\w"}"#).unwrap();
+        assert_eq!(d, Down::ClaudeHistory { request_id: "r2".into(), cwd: r"C:\w".into() });
+        // 本地 cwd、resume、尺寸均可省略
+        let d: Down = serde_json::from_str(r#"{"type":"create","requestId":"r3","target":{"kind":"local"}}"#).unwrap();
+        assert_eq!(d, Down::Create { request_id: "r3".into(), target: CreateTarget::Local { cwd: None }, resume: None, cols: None, rows: None });
+        let d: Down = serde_json::from_str(
+            r#"{"type":"create","requestId":"r4","target":{"kind":"remote","hostId":"h1","cwd":"/srv"},"resume":{"id":"u","permissionMode":"acceptEdits","bypass":false},"cols":100,"rows":30}"#,
+        )
+        .unwrap();
+        let resume = Some(proto::ClaudeResume { id: "u".into(), permission_mode: Some("acceptEdits".into()), bypass: false });
+        let target = CreateTarget::Remote { host_id: "h1".into(), cwd: Some("/srv".into()) };
+        assert_eq!(d, Down::Create { request_id: "r4".into(), target, resume, cols: Some(100), rows: Some(30) });
+
+        let up = Up::CreateOptionsResult {
+            request_id: "r1".into(),
+            ok: true,
+            reason: None,
+            home: Some(r"C:\Users\x".into()),
+            recent: Some(vec![
+                RecentDir::Local { cwd: r"C:\a".into() },
+                RecentDir::Remote { host_id: "h1".into(), host: "dev".into(), cwd: "/srv".into() },
+            ]),
+            hosts: Some(vec![HostItem { id: "h1".into(), name: "dev".into() }]),
+        };
+        assert_eq!(
+            serde_json::to_string(&up).unwrap(),
+            r#"{"type":"createOptionsResult","requestId":"r1","ok":true,"home":"C:\\Users\\x","recent":[{"kind":"local","cwd":"C:\\a"},{"kind":"remote","hostId":"h1","host":"dev","cwd":"/srv"}],"hosts":[{"id":"h1","name":"dev"}]}"#
+        );
+        let up = Up::CreateOptionsResult { request_id: "r1".into(), ok: false, reason: Some("disabled".into()), home: None, recent: None, hosts: None };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"createOptionsResult","requestId":"r1","ok":false,"reason":"disabled"}"#);
+        let item = HistoryItem { id: "u".into(), title: "t".into(), mtime: 5, messages: 2, permission_mode: Some("plan".into()), bypass: true, open: false };
+        let up = Up::ClaudeHistoryResult { request_id: "r2".into(), ok: true, reason: None, message: None, items: Some(vec![item]) };
+        assert_eq!(
+            serde_json::to_string(&up).unwrap(),
+            r#"{"type":"claudeHistoryResult","requestId":"r2","ok":true,"items":[{"id":"u","title":"t","mtime":5,"messages":2,"permissionMode":"plan","bypass":true,"open":false}]}"#
+        );
+        let up = Up::CreateResult { request_id: "r3".into(), ok: true, session_id: Some(7), reason: None, message: None };
+        assert_eq!(serde_json::to_string(&up).unwrap(), r#"{"type":"createResult","requestId":"r3","ok":true,"sessionId":7}"#);
+        let up = Up::CreateResult { request_id: "r3".into(), ok: false, session_id: None, reason: Some("auth_required".into()), message: Some("m".into()) };
+        assert_eq!(
+            serde_json::to_string(&up).unwrap(),
+            r#"{"type":"createResult","requestId":"r3","ok":false,"reason":"auth_required","message":"m"}"#
         );
     }
 

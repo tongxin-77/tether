@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { oscLinkTarget, terminalFontSize, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+// @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）
+import { readFileSync } from "node:fs";
+import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, pastedPath, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -175,15 +177,86 @@ describe("branchLabel", () => {
 });
 
 describe("terminalFontSize", () => {
-  it("4K 及以上（物理宽度 ≥ 3840）用 14", () => {
-    expect(terminalFontSize(3840, 1)).toBe(14);
-    expect(terminalFontSize(2560, 1.5)).toBe(14); // 4K 150% 缩放
-    expect(terminalFontSize(1920, 2)).toBe(14); // 4K 200% 缩放
+  it("4K 及以上（物理宽度 ≥ 3840）用 12", () => {
+    expect(terminalFontSize(3840, 1)).toBe(12);
+    expect(terminalFontSize(2560, 1.5)).toBe(12); // 4K 150% 缩放
+    expect(terminalFontSize(1920, 2)).toBe(12); // 4K 200% 缩放
   });
-  it("低于 4K 用更紧凑的 13", () => {
-    expect(terminalFontSize(1920, 1)).toBe(13);
-    expect(terminalFontSize(2560, 1)).toBe(13); // 2K
-    expect(terminalFontSize(1536, 1.25)).toBe(13); // 1080p 125% 缩放
+  it("低于 4K 用更紧凑的 11", () => {
+    expect(terminalFontSize(1920, 1)).toBe(11);
+    expect(terminalFontSize(2560, 1)).toBe(11); // 2K
+    expect(terminalFontSize(1536, 1.25)).toBe(11); // 1080p 125% 缩放
+  });
+});
+
+describe("终端字号存储", () => {
+  it("无值或非数字为自动（null）", () => {
+    for (const v of [null, "", " ", "auto", "abc", "NaN", "Infinity"]) expect(parseTermFont(v), String(v)).toBeNull();
+  });
+  it("数字取整并钳制到 8–28", () => {
+    expect(parseTermFont("14")).toBe(14);
+    expect(parseTermFont("13.6")).toBe(14);
+    expect(parseTermFont("3")).toBe(8);
+    expect(parseTermFont("100")).toBe(28);
+    expect(clampTermFont(7)).toBe(8);
+    expect(clampTermFont(29)).toBe(28);
+  });
+});
+
+describe("界面字号偏移", () => {
+  it("-4…+2 的整数原样解析", () => {
+    for (const n of FONT_ADJ_OPTIONS) expect(parseFontAdj(String(n))).toBe(n);
+  });
+  it("无值或非法值为默认 -2", () => {
+    expect(FONT_ADJ_DEFAULT).toBe(-2);
+    for (const v of [null, "", "-5", "3", "1.5", "-0", "abc", " 1"]) expect(parseFontAdj(v), String(v)).toBe(-2);
+  });
+  it("选项文字", () => {
+    expect(fontAdjLabel(-2)).toBe("小 2 号（默认）");
+    expect(fontAdjLabel(-4)).toBe("小 4 号");
+    expect(fontAdjLabel(0)).toBe("原始大小");
+    expect(fontAdjLabel(1)).toBe("大 1 号");
+  });
+  // index.html 头部的防闪烁脚本（第二段）无法 import，这里直接执行，确保与 parseFontAdj 结论一致
+  it("index.html 防闪烁脚本与 parseFontAdj 一致", () => {
+    const html: string = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].find((m) => m[1].includes("tether.ui.fontAdj"))![1];
+    for (const v of [null, "", "-5", "3", "-0", "abc", ...FONT_ADJ_OPTIONS.map(String)]) {
+      const props: Record<string, string> = {};
+      const style = { setProperty: (k: string, val: string) => (props[k] = val) };
+      new Function("localStorage", "document", script)({ getItem: () => v }, { documentElement: { style } });
+      expect(props["--font-adj"] ?? `${FONT_ADJ_DEFAULT}px`, String(v)).toBe(`${parseFontAdj(v)}px`);
+    }
+  });
+});
+
+describe("wheelSteps", () => {
+  const run = (deltas: number[], mode = 0) => {
+    let acc = 0;
+    let total = 0;
+    for (const d of deltas) {
+      const r = wheelSteps(acc, d, mode);
+      acc = r.acc;
+      total += r.steps;
+    }
+    return total;
+  };
+  it("鼠标一格（100 / 120px）只调一号，上滚为正", () => {
+    expect(run([-100])).toBe(1);
+    expect(run([120])).toBe(-1);
+    expect(run([-100, -100, -100])).toBe(3);
+  });
+  it("触控板小增量累计跨过阈值才调", () => {
+    expect(run([-10, -10, -10, -10])).toBe(0);
+    expect(run(Array(10).fill(-10))).toBe(2);
+  });
+  it("换向时清零累计", () => {
+    expect(run([-40, 40])).toBe(0);
+    expect(run([-40, 40, 20])).toBe(-1); // 不清零则累计为 20，不调
+  });
+  it("按行 / 页滚动时每个事件一号", () => {
+    expect(run([-3, -3], 1)).toBe(2);
+    expect(run([1], 2)).toBe(-1);
   });
 });
 
@@ -214,5 +287,12 @@ describe("formatMemory / memoryHigh", () => {
     expect(memoryHigh(1024 ** 3)).toBe(false);
     expect(memoryHigh(1024 ** 3 + 1)).toBe(true);
     expect(memoryHigh(500 * 1024 ** 2)).toBe(false);
+  });
+});
+
+describe("pastedPath", () => {
+  it("含空格时加双引号，否则原样", () => {
+    expect(pastedPath("C:\\Temp\\tether-img\\a.png")).toBe("C:\\Temp\\tether-img\\a.png");
+    expect(pastedPath("C:\\Users\\A B\\tether-img\\a.png")).toBe('"C:\\Users\\A B\\tether-img\\a.png"');
   });
 });

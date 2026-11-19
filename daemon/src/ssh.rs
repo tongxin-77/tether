@@ -39,11 +39,21 @@ const DEFAULT_KEYS: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
 /// 连接测试的最长耗时（等待用户确认指纹 / 输入私钥口令的时间不计）
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 密码来源：正式连接先用凭据管理器中保存的密码，再弹窗询问；连接测试只用给定的密码（None 为没有），不弹窗、不改凭据管理器
+/// hub 网页新建（不弹提示）时需要用户输入的说明；错误信息含此句即为 auth_required（见 needs_input）
+const NO_PROMPT: &str = "网页新建不弹提示，请先在桌面端连接一次（保存密码 / 信任主机指纹）或配置免口令密钥";
+
+/// 密码来源：正式连接先用凭据管理器中保存的密码，再弹窗询问；连接测试只用给定的密码（None 为没有），不弹窗、不改凭据管理器；
+/// Quiet 为 hub 网页新建：只用已保存的密码，不弹任何提示（含主机指纹、私钥口令），需要输入即失败
 #[derive(Clone, Copy)]
 enum Pw<'a> {
     Interactive,
     Given(Option<&'a str>),
+    Quiet,
+}
+
+/// 连接失败是否因为需要用户输入（hub 网页新建不弹提示）
+pub fn needs_input(e: &str) -> bool {
+    e.contains(NO_PROMPT)
 }
 
 /// 会话发给其 channel 任务的命令
@@ -82,13 +92,15 @@ pub struct Client {
     label: String,
     /// check_server_key 拒绝的原因，connect 失败时用于报错
     reject: Arc<Mutex<Option<String>>>,
+    /// 不弹提示（hub 网页新建）：未记录的主机指纹直接拒绝
+    quiet: bool,
 }
 
 impl client::Handler for Client {
     type Error = russh::Error;
 
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
-        match verify_host_key(&self.state, &self.host, self.port, &self.label, key).await {
+        match verify_host_key(&self.state, &self.host, self.port, &self.label, key, self.quiet).await {
             Ok(()) => Ok(true),
             Err(e) => {
                 *self.reject.lock().unwrap() = Some(e);
@@ -112,20 +124,26 @@ impl client::Handler for Client {
     }
 }
 
-/// 新建远程会话（异步任务）：结果以 Sessions + Activate 或 Error 告知 GUI
-pub async fn create(state: Shared, host: Host, cwd: Option<String>, cols: u16, rows: u16) {
-    let result = open_shell(&state, &host, cwd, cols, rows).await;
+/// 新建远程会话（异步任务）：桌面端（hub 为 false）结果以 Sessions + Activate 或 Error 告知 GUI，需要输入时弹提示；
+/// hub 网页新建（hub 为 true）不弹任何提示、只推 Sessions（不发 Activate / Error），结果由调用方回给 hub
+pub async fn create(state: Shared, host: Host, cwd: Option<String>, cols: u16, rows: u16, hub: bool) -> Result<u32, String> {
+    let result = open_shell(&state, &host, cwd, cols, rows, hub).await;
     let st = state.lock().unwrap();
-    match result {
+    match &result {
         Ok(id) => {
             st.push_sessions();
-            st.send(&ServerMsg::Activate { id });
+            if !hub {
+                st.send(&ServerMsg::Activate { id: *id });
+            }
         }
         Err(e) => {
             log!("连接 {} 失败：{e}", host.name);
-            st.send(&ServerMsg::Error { message: format!("连接 {} 失败：{e}", host.name) });
+            if !hub {
+                st.send(&ServerMsg::Error { message: format!("连接 {} 失败：{e}", host.name) });
+            }
         }
     }
+    result
 }
 
 fn label(host: &Host) -> String {
@@ -155,8 +173,8 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// 在主机连接上开 channel：request_pty + shell（指定目录时 exec `cd '<dir>' && exec "$SHELL" -l`），登记会话并起 channel 任务
-async fn open_shell(state: &Shared, host: &Host, cwd: Option<String>, cols: u16, rows: u16) -> Result<u32, String> {
-    let conn = connection(state, host).await?;
+async fn open_shell(state: &Shared, host: &Host, cwd: Option<String>, cols: u16, rows: u16, quiet: bool) -> Result<u32, String> {
+    let conn = connection(state, host, quiet).await?;
     let ch = conn.handle.channel_open_session().await.map_err(|e| format!("打开 channel 失败：{e}"))?;
     let err = |e: russh::Error| format!("启动远程 shell 失败：{e}");
     ch.request_pty(false, "xterm-256color", cols.into(), rows.into(), 0, 0, &[]).await.map_err(err)?;
@@ -243,8 +261,8 @@ async fn pump(
     drop(conn);
 }
 
-/// 取主机连接：池中有存活连接则复用，否则新建（持该主机的异步锁，不持全局锁）
-pub async fn connection(state: &Shared, host: &Host) -> Result<Arc<Conn>, String> {
+/// 取主机连接：池中有存活连接则复用，否则新建（持该主机的异步锁，不持全局锁）；quiet 为新建时不弹提示（hub 网页新建）
+pub async fn connection(state: &Shared, host: &Host, quiet: bool) -> Result<Arc<Conn>, String> {
     let label = label(host);
     let slot = state.lock().unwrap().pool.entry(format!("{}|{label}", host.id)).or_default().clone();
     let mut slot = slot.lock().await;
@@ -253,27 +271,27 @@ pub async fn connection(state: &Shared, host: &Host) -> Result<Arc<Conn>, String
         return Ok(conn);
     }
     log!("新建 SSH 连接 {label}");
-    let conn = Arc::new(connect(state, host, &label).await?);
+    let conn = Arc::new(connect(state, host, &label, quiet).await?);
     *slot = Arc::downgrade(&conn);
     Ok(conn)
 }
 
 /// 客户端配置与 handler（含主机密钥校验）；reject 记录 check_server_key 拒绝的原因
-fn new_client(state: &Shared, host: &Host, label: &str) -> (Arc<client::Config>, Client, Arc<Mutex<Option<String>>>) {
+fn new_client(state: &Shared, host: &Host, label: &str, quiet: bool) -> (Arc<client::Config>, Client, Arc<Mutex<Option<String>>>) {
     let config = client::Config { keepalive_interval: Some(Duration::from_secs(30)), keepalive_max: 3, ..Default::default() };
     let reject = Arc::new(Mutex::new(None));
     let handler =
-        Client { state: state.clone(), host: host.host.clone(), port: host.port, label: label.into(), reject: reject.clone() };
+        Client { state: state.clone(), host: host.host.clone(), port: host.port, label: label.into(), reject: reject.clone(), quiet };
     (Arc::new(config), handler, reject)
 }
 
-async fn connect(state: &Shared, host: &Host, label: &str) -> Result<Conn, String> {
-    let (config, handler, reject) = new_client(state, host, label);
+async fn connect(state: &Shared, host: &Host, label: &str, quiet: bool) -> Result<Conn, String> {
+    let (config, handler, reject) = new_client(state, host, label, quiet);
     let mut handle = match client::connect(config, (host.host.as_str(), host.port), handler).await {
         Ok(h) => h,
         Err(e) => return Err(reject.lock().unwrap().take().unwrap_or_else(|| format!("连接失败：{e}"))),
     };
-    authenticate(state, &mut handle, host, label, Pw::Interactive).await?;
+    authenticate(state, &mut handle, host, label, if quiet { Pw::Quiet } else { Pw::Interactive }).await?;
     log!("SSH 认证成功 {label}");
     Ok(Conn { handle, sftp: Default::default() })
 }
@@ -282,7 +300,7 @@ async fn authenticate(state: &Shared, h: &mut client::Handle<Client>, host: &Hos
     match host.auth {
         // 与 OpenSSH 一致：密钥全部失败后回退到密码（~/.ssh/config 导入的主机只读，否则无法用密码登录）
         AuthKind::Key => {
-            if let Err(key_err) = auth_key(state, h, host, label).await {
+            if let Err(key_err) = auth_key(state, h, host, label, pw).await {
                 log!("{label} {key_err}，改用密码认证");
                 auth_password(state, h, host, label, pw).await.map_err(|e| format!("{key_err}；{e}"))?;
             }
@@ -335,7 +353,7 @@ async fn test_connect(state: &Shared, host: &Host, label: &str, password: Option
     *stage.lock().unwrap() = "TCP 连接";
     let stream = tokio::net::TcpStream::connect(&addrs[..]).await.map_err(|e| tcp_error(&e, &host.host, host.port))?;
     *stage.lock().unwrap() = "SSH 握手";
-    let (config, handler, reject) = new_client(state, host, label);
+    let (config, handler, reject) = new_client(state, host, label, false);
     let mut handle = client::connect_stream(config, stream, handler).await.map_err(|e| match reject.lock().unwrap().take() {
         Some(r) => format!("主机密钥校验未通过：{r}"),
         None => format!("SSH 握手失败：{e}"),
@@ -369,7 +387,7 @@ async fn ask(state: &Shared, kind: PromptKind, host: &str, message: String, fing
 }
 
 /// 按 ~/.ssh/known_hosts 校验主机公钥：一致放行；不一致直接拒绝；未记录则请用户确认指纹后追加记录
-async fn verify_host_key(state: &Shared, host: &str, port: u16, label: &str, key: &PublicKeyOrCertificate) -> Result<(), String> {
+async fn verify_host_key(state: &Shared, host: &str, port: u16, label: &str, key: &PublicKeyOrCertificate, quiet: bool) -> Result<(), String> {
     let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
         return Err("不支持主机证书".into());
     };
@@ -381,6 +399,9 @@ async fn verify_host_key(state: &Shared, host: &str, port: u16, label: &str, key
         }
         Err(e) => return Err(format!("读取 known_hosts 失败：{e}")),
     }
+    if quiet {
+        return Err(format!("首次连接该主机，需要确认主机指纹：{NO_PROMPT}"));
+    }
     let message = format!("首次连接该主机，无法确认其真实性。请核对 {} 主机密钥指纹，信任后将记录到 ~/.ssh/known_hosts。", key.algorithm());
     let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
     let (answer, _) = ask(state, PromptKind::HostKey, label, message, Some(fingerprint)).await?;
@@ -391,11 +412,11 @@ async fn verify_host_key(state: &Shared, host: &str, port: u16, label: &str, key
 }
 
 /// 密钥认证：指定的私钥 → ssh-agent → （未指定私钥时）~/.ssh 下的默认私钥
-async fn auth_key(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str) -> Result<(), String> {
+async fn auth_key(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str, pw: Pw<'_>) -> Result<(), String> {
     let mut notes = Vec::new();
     let explicit = host.key_path.as_deref().map(config::expand_tilde);
     if let Some(p) = &explicit
-        && try_key_file(state, h, &host.user, Path::new(p), label, &mut notes).await
+        && try_key_file(state, h, &host.user, Path::new(p), label, &mut notes, pw).await
     {
         return Ok(());
     }
@@ -409,7 +430,7 @@ async fn auth_key(state: &Shared, h: &mut client::Handle<Client>, host: &Host, l
             notes.push(format!("~/.ssh 下没有默认私钥（{}）", DEFAULT_KEYS.join(" / ")));
         }
         for p in found {
-            if try_key_file(state, h, &host.user, &p, label, &mut notes).await {
+            if try_key_file(state, h, &host.user, &p, label, &mut notes, pw).await {
                 return Ok(());
             }
         }
@@ -418,7 +439,7 @@ async fn auth_key(state: &Shared, h: &mut client::Handle<Client>, host: &Host, l
     Err(notes.join("；"))
 }
 
-/// 用私钥文件认证；有口令时弹窗询问（最多 3 次，不保存），取消则跳过该私钥
+/// 用私钥文件认证；有口令时弹窗询问（最多 3 次，不保存），取消则跳过该私钥；不弹提示（Pw::Quiet）时直接跳过
 async fn try_key_file(
     state: &Shared,
     h: &mut client::Handle<Client>,
@@ -426,6 +447,7 @@ async fn try_key_file(
     path: &Path,
     label: &str,
     notes: &mut Vec<String>,
+    pw: Pw<'_>,
 ) -> bool {
     if !path.is_file() {
         notes.push(format!("私钥文件 {} 不存在", path.display()));
@@ -433,6 +455,10 @@ async fn try_key_file(
     }
     let key = match keys::load_secret_key(path, None) {
         Ok(k) => k,
+        Err(keys::Error::KeyIsEncrypted) if matches!(pw, Pw::Quiet) => {
+            notes.push(format!("私钥 {} 有口令，需要输入", path.display()));
+            return false;
+        }
         Err(keys::Error::KeyIsEncrypted) => {
             let mut unlocked = None;
             for i in 0..3 {
@@ -499,7 +525,7 @@ async fn try_agent(h: &mut client::Handle<Client>, user: &str, notes: &mut Vec<S
 }
 
 /// 密码认证：先用凭据管理器中保存的密码，失败则删除该保存项并弹窗（最多 3 次）；勾选保存且成功后写入凭据管理器。
-/// 连接测试（Pw::Given）只试给定的密码一次
+/// 连接测试（Pw::Given）只试给定的密码一次；hub 网页新建（Pw::Quiet）只试已保存的密码，不弹窗
 async fn auth_password(state: &Shared, h: &mut client::Handle<Client>, host: &Host, label: &str, pw: Pw<'_>) -> Result<(), String> {
     if let Pw::Given(given) = pw {
         let Some(password) = given else { return Err("未填写密码，凭据管理器中也没有已保存的密码".into()) };
@@ -515,6 +541,9 @@ async fn auth_password(state: &Shared, h: &mut client::Handle<Client>, host: &Ho
         if let Some(e) = &entry {
             let _ = e.delete_credential();
         }
+    }
+    if matches!(pw, Pw::Quiet) {
+        return Err(format!("需要输入 {label} 的密码：{NO_PROMPT}"));
     }
     let mut message = format!("请输入 {label} 的密码");
     for _ in 0..3 {
