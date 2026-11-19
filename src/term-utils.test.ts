@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）
 import { readFileSync } from "node:fs";
-import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -200,6 +200,15 @@ describe("终端字号存储", () => {
     expect(parseTermFont("100")).toBe(28);
     expect(clampTermFont(7)).toBe(8);
     expect(clampTermFont(29)).toBe(28);
+  });
+});
+
+describe("GPU 加速渲染开关", () => {
+  it("无值或非 \"0\" 为开启（默认开启）", () => {
+    for (const v of [null, "", "1", "true", "abc"]) expect(parseGpu(v), String(v)).toBe(true);
+  });
+  it("\"0\" 为关闭", () => {
+    expect(parseGpu("0")).toBe(false);
   });
 });
 

@@ -202,6 +202,10 @@
             <span class="rt"><b>终端字号</b><small>立即生效；“自动”按屏幕分辨率选择。鼠标在终端上时 Ctrl+滚轮也可调整</small></span>
             <select id="term-font-select"></select>
           </label>
+          <label class="row">
+            <span class="rt"><b>GPU 加速渲染</b><small>使用 WebGL 渲染终端，输出密集时更流畅；显示异常时可关闭</small></span>
+            <input type="checkbox" class="switch" id="gpu-check" aria-label="GPU 加速渲染" />
+          </label>
           <label class="row range">
             <span class="rt"><b>窗口透明度</b><small>100% 为完全不透明；调低后窗口背景半透明，文字与图标不受影响</small></span>
             <span class="range-ctl"><input type="range" id="opacity-range" min="30" max="100" step="1" /><output id="opacity-val"></output></span>

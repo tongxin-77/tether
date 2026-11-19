@@ -78,6 +78,11 @@ export function parseTermFont(stored: string | null): number | null {
   return Number.isFinite(n) ? clampTermFont(n) : null;
 }
 
+/** 解析存储的“GPU 加速渲染”开关：仅 "0" 为关闭，其余（含无值）为默认开启 */
+export function parseGpu(stored: string | null): boolean {
+  return stored !== "0";
+}
+
 /** 界面字号偏移（相对原始字号，单位 px）：可选 -4…+2，默认小 2 号 */
 export const FONT_ADJ_DEFAULT = -2;
 export const FONT_ADJ_OPTIONS = [-4, -3, -2, -1, 0, 1, 2];

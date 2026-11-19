@@ -10,6 +10,7 @@ import "@fontsource/jetbrains-mono/latin-700.css";
 import "./styles.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -29,7 +30,7 @@ import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostS
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -188,6 +189,10 @@ interface View {
   promptTimer?: number;
   /** 终端提示符当前为 root */
   rootSeen: boolean;
+  /** 当前加载的 WebGL 渲染（仅显示中的会话加载：WebGL 上下文数量有限） */
+  webgl?: WebglAddon;
+  /** WebGL 加载失败或上下文丢失：本会话不再尝试，保持 DOM 渲染 */
+  gpuFailed?: boolean;
 }
 
 const views = new Map<number, View>();
@@ -393,6 +398,55 @@ window.addEventListener("storage", (ev) => {
 });
 loadFontAdj();
 loadTermFont();
+
+// GPU 加速渲染：WebGL 上下文数量有限（约 16 个），只给当前显示的终端加载，隐藏时释放；立即生效并记在本机，其它窗口经 storage 事件同步
+const GPU_KEY = "tether.term.gpu";
+const gpuCheck = $<HTMLInputElement>("gpu-check");
+let gpuOn = true;
+function loadGpu() {
+  gpuOn = parseGpu(readStore(GPU_KEY));
+  gpuCheck.checked = gpuOn;
+  syncGpu();
+}
+/** 按开关与当前会话加载 / 释放各终端的 WebGL；渲染器切换后单元格尺寸可能变化，当前会话重新 fit */
+function syncGpu() {
+  let changed = false;
+  for (const v of views.values()) {
+    const want = gpuOn && v.info.id === activeId && !v.gpuFailed;
+    if (want && !v.webgl) {
+      const addon = new WebglAddon();
+      try {
+        v.term.loadAddon(addon);
+      } catch (e) {
+        console.warn("WebGL 渲染不可用，使用 DOM 渲染", e);
+        addon.dispose();
+        v.gpuFailed = true;
+        continue;
+      }
+      // 上下文丢失（显卡驱动重置等）：退回 DOM 渲染，本会话不再尝试
+      addon.onContextLoss(() => {
+        console.warn("WebGL 上下文丢失，使用 DOM 渲染");
+        v.gpuFailed = true;
+        syncGpu();
+      });
+      v.webgl = addon;
+      changed = true;
+    } else if (!want && v.webgl) {
+      v.webgl.dispose();
+      v.webgl = undefined;
+      changed = true;
+    }
+  }
+  if (changed && shouldFit(terminals.clientWidth, terminals.clientHeight)) activeView()?.fit.fit();
+}
+gpuCheck.addEventListener("change", () => {
+  writeStore(GPU_KEY, gpuCheck.checked ? "1" : "0");
+  loadGpu();
+});
+window.addEventListener("storage", (ev) => {
+  if (ev.key === GPU_KEY) loadGpu();
+});
+loadGpu();
 
 // 鼠标在终端上时 Ctrl+滚轮调终端字号（作用于全部终端并记住）。捕获阶段处理并阻止默认行为：
 // 不让 WebView2 缩放整个页面，也不让 xterm 当作滚动 / 发给程序。触控板捏合同样产生 ctrlKey 的 wheel，按累计量节流
@@ -1515,6 +1569,8 @@ function activate(id: number) {
   v.item.classList.remove("unread");
   renderCardHead();
   refreshBranch();
+  // 显示后再加载 WebGL（display:none 时尺寸为 0），其余会话释放；fit 在其后，按最终渲染器的单元格尺寸计算
+  syncGpu();
   // 隐藏期间容器尺寸为 0，显示后再 fit；行列未变时 onResize 不触发，无条件补发一次，覆盖 hub 网页留下的尺寸
   v.fit.fit();
   send({ type: "resize", id, cols: v.term.cols, rows: v.term.rows });
