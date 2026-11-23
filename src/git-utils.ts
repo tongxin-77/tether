@@ -1,4 +1,5 @@
 // git 输出解析的小纯函数（无副作用，便于单元测试）；git 命令由后端 src-tauri/src/lib.rs 执行
+import { fmtAgo } from "./i18n";
 
 export interface Refs {
   /** 当前分支，分离 HEAD 时为 null */
@@ -139,12 +140,5 @@ export function classifyDiff(text: string, maxLines: number): { lines: { text: s
 
 /** 提交的相对时间（sec 为 Unix 秒，now 为毫秒） */
 export function relTime(sec: number, now: number): string {
-  const s = Math.max(0, now / 1000 - sec);
-  if (s < 60) return "刚刚";
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
-  const days = Math.floor(s / 86400);
-  if (days < 30) return `${days} 天前`;
-  if (days < 365) return `${Math.floor(days / 30)} 个月前`;
-  return `${Math.floor(days / 365)} 年前`;
+  return fmtAgo(now / 1000 - sec);
 }

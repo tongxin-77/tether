@@ -156,7 +156,7 @@ pub fn settings_path() -> Option<PathBuf> {
 /// 写入 settings.json 的命令：当前运行的 tetherd.exe 绝对路径（正斜杠，Git Bash 与 PowerShell 都能直接执行）+ ` hook`。
 /// 路径无空格时不加引号（两种 shell 通用）；含空格时用双引号（适用于 Claude Code 默认的 Git Bash）
 pub fn hook_command() -> Result<String, String> {
-    let exe = crate::stable_exe().map_err(|e| format!("无法获取 tetherd 路径：{e}"))?;
+    let exe = crate::stable_exe().map_err(|e| tr!("claude.exe_path_failed", error = e))?;
     Ok(command_for(&exe))
 }
 
@@ -175,7 +175,7 @@ fn read_settings(path: &Path) -> Result<(Map<String, Value>, bool), String> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Map::new(), false)),
-        Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),
+        Err(e) => return Err(tr!("claude.read_failed", path = path.display(), error = e)),
     };
     let text = text.trim_start_matches('\u{feff}');
     if text.trim().is_empty() {
@@ -183,8 +183,8 @@ fn read_settings(path: &Path) -> Result<(Map<String, Value>, bool), String> {
     }
     match serde_json::from_str(text) {
         Ok(Value::Object(m)) => Ok((m, true)),
-        Ok(_) => Err(format!("{} 顶层不是 JSON 对象，未修改", path.display())),
-        Err(e) => Err(format!("{} 不是合法 JSON（{e}），未修改", path.display())),
+        Ok(_) => Err(tr!("claude.not_object", path = path.display())),
+        Err(e) => Err(tr!("claude.invalid_json", path = path.display(), error = e)),
     }
 }
 
@@ -192,12 +192,12 @@ fn read_settings(path: &Path) -> Result<(Map<String, Value>, bool), String> {
 fn write_settings(path: &Path, root: &Map<String, Value>, existed: bool) -> Result<(), String> {
     if existed {
         let name = format!("{}.tether-bak-{}", path.file_name().and_then(|n| n.to_str()).unwrap_or("settings.json"), crate::now_ms());
-        std::fs::copy(path, path.with_file_name(name)).map_err(|e| format!("备份失败：{e}"))?;
+        std::fs::copy(path, path.with_file_name(name)).map_err(|e| tr!("claude.backup_failed", error = e))?;
     } else if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(root).map_err(|e| e.to_string())?;
-    std::fs::write(path, json + "\n").map_err(|e| format!("写入 {} 失败：{e}", path.display()))
+    std::fs::write(path, json + "\n").map_err(|e| tr!("claude.write_failed", path = path.display(), error = e))
 }
 
 /// 从 hooks 对象中删除 Tether 的条目；因此变空的匹配组 / 事件数组随之删除。返回是否有改动
@@ -227,11 +227,11 @@ pub fn enable(path: &Path, command: &str) -> Result<(), String> {
     let (mut root, existed) = read_settings(path)?;
     let original = root.clone();
     let hooks = root.entry("hooks").or_insert_with(|| json!({}));
-    let hooks = hooks.as_object_mut().ok_or("settings.json 中的 hooks 不是对象，未修改")?;
+    let hooks = hooks.as_object_mut().ok_or_else(|| tr!("claude.hooks_not_object"))?;
     strip(hooks);
     for event in EVENTS {
         let groups = hooks.entry(event).or_insert_with(|| json!([]));
-        let groups = groups.as_array_mut().ok_or_else(|| format!("settings.json 中的 hooks.{event} 不是数组，未修改"))?;
+        let groups = groups.as_array_mut().ok_or_else(|| tr!("claude.hooks_event_not_array", event = event))?;
         groups.push(json!({ "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT }] }));
     }
     if root == original {

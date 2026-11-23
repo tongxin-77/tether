@@ -8,6 +8,7 @@ import { lintGutter, linter } from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
 import type { EditorLang } from "./preview-utils";
 import type { YamlProblem } from "./yaml-check";
+import { type MessageKey, t as tr } from "./i18n";
 
 export interface Editor {
   view: EditorView;
@@ -83,28 +84,29 @@ const highlight = HighlightStyle.define([
   { tag: t.invalid, color: "var(--danger)" },
 ]);
 
-/** 查找替换面板等的界面文字 */
-const phrases = EditorState.phrases.of({
-  Find: "查找",
-  Replace: "替换",
-  next: "下一个",
-  previous: "上一个",
-  all: "全部",
-  "match case": "区分大小写",
-  "by word": "全字匹配",
-  regexp: "正则",
-  replace: "替换",
-  "replace all": "全部替换",
-  close: "关闭",
-  "current match": "当前匹配",
-  "replaced match on line $": "已替换第 $ 行的匹配",
-  "replaced $ matches": "已替换 $ 处",
-  "on line": "所在行",
-  "Go to line": "跳到行",
-  go: "跳转",
-  Diagnostics: "问题",
-  "No diagnostics": "没有问题",
-});
+/** 查找替换面板等的界面文字（CodeMirror phrases → 词条），按创建编辑器时的语言；已打开的编辑器下次打开时生效 */
+const PHRASES: Record<string, MessageKey> = {
+  Find: "editor.find",
+  Replace: "editor.replace",
+  next: "editor.next",
+  previous: "editor.previous",
+  all: "editor.all",
+  "match case": "editor.matchCase",
+  "by word": "editor.byWord",
+  regexp: "editor.regexp",
+  replace: "editor.replaceOne",
+  "replace all": "editor.replaceAll",
+  close: "common.close",
+  "current match": "editor.currentMatch",
+  "replaced match on line $": "editor.replacedOnLine",
+  "replaced $ matches": "editor.replacedN",
+  "on line": "editor.onLine",
+  "Go to line": "editor.goToLine",
+  go: "editor.go",
+  Diagnostics: "editor.diagnostics",
+  "No diagnostics": "editor.noDiagnostics",
+};
+const phrases = () => EditorState.phrases.of(Object.fromEntries(Object.entries(PHRASES).map(([k, v]) => [k, tr(v)])));
 
 /** 语言包与（YAML 的）校验；按需动态加载，各自打成独立的包 */
 async function language(lang: EditorLang): Promise<{ ext: Extension; check?: (text: string) => YamlProblem[] }> {
@@ -156,7 +158,7 @@ export async function createEditor(parent: HTMLElement, text: string, lang: Edit
         keymap.of([{ key: "Mod-s", run: () => (on.save(), true), preventDefault: true }, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
         syntaxHighlighting(highlight),
         theme,
-        phrases,
+        phrases(),
         ext,
         EditorView.updateListener.of((u) => {
           if (!u.docChanged) return;

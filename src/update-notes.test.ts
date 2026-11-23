@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { notesSince } from "./update-notes";
+import { notesForLocale, notesSince } from "./update-notes";
 
 const body = `## [0.5.6] - 2026-11-18
 
@@ -35,5 +35,35 @@ describe("notesSince", () => {
   });
   it("没有比当前新的段落时原样返回", () => {
     expect(notesSince(body, "0.6.0")).toBe(body);
+  });
+});
+
+describe("notesForLocale", () => {
+  const both = `<!-- lang:zh-CN -->
+## [0.6.0] - 2026-12-01
+
+- 中文说明
+
+<!-- lang:en -->
+## [0.6.0] - 2026-12-01
+
+- English notes`;
+  it("zh-CN / zh-TW 取中文段，en / ja 取英文段", () => {
+    expect(notesForLocale(both, "zh-CN")).toBe("## [0.6.0] - 2026-12-01\n\n- 中文说明");
+    expect(notesForLocale(both, "zh-TW")).toBe("## [0.6.0] - 2026-12-01\n\n- 中文说明");
+    expect(notesForLocale(both, "en")).toBe("## [0.6.0] - 2026-12-01\n\n- English notes");
+    expect(notesForLocale(both, "ja")).toBe("## [0.6.0] - 2026-12-01\n\n- English notes");
+  });
+  it("没有标记的旧格式整段返回", () => {
+    expect(notesForLocale(body, "en")).toBe(body);
+  });
+  it("所需语言段缺失时取另一种", () => {
+    expect(notesForLocale("<!-- lang:zh-CN -->\n- 只有中文", "ja")).toBe("- 只有中文");
+    expect(notesForLocale("<!-- lang:en -->\n- only en", "zh-TW")).toBe("- only en");
+  });
+  it("兼容 CRLF 与标记前后空白；选段后再按版本截取", () => {
+    const crlf = "<!-- lang:zh-CN -->\r\n## [0.6.0]\r\n\r\n- 新\r\n\r\n## [0.5.0]\r\n\r\n- 旧\r\n  <!--  lang:en  -->  \r\n## [0.6.0]\r\n\r\n- new\r\n\r\n## [0.5.0]\r\n\r\n- old";
+    expect(notesSince(notesForLocale(crlf, "en"), "0.5.0")).toBe("## [0.6.0]\n\n- new");
+    expect(notesSince(notesForLocale(crlf, "zh-CN"), "0.5.0")).toBe("## [0.6.0]\n\n- 新");
   });
 });

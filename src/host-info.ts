@@ -29,10 +29,13 @@ interface Deps {
 }
 
 const POLL = 3000;
+/** daemon “不支持”类错误的前缀（daemon 按其当前语言生成，与 daemon/src/i18n.rs 的 stats.not_linux 四种语言一致） */
+const UNSUPPORTED_RE = /^(不支持|不支援|Not supported|サポートされていません)/;
 /** 等待回复的最长时间（daemon 远程采样超时为 8 秒）；超时视为不认识该消息的旧版 daemon */
 const TIMEOUT = 15000;
 
 import { icon } from "./icons";
+import { fmtNum, onLocaleChange, t, tn } from "./i18n";
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const panel = $("files");
@@ -46,6 +49,8 @@ let unsupported = false;
 let shownId: number | undefined;
 /** 与文件树一样错开 reqId 起点，避免误认别的窗口的回复 */
 let reqSeq = Math.floor(Math.random() * 2 ** 40);
+/** 最近一次渲染，切换语言时重绘 */
+let redraw: (() => void) | undefined;
 
 export function initHostInfo(d: Deps) {
   deps = d;
@@ -56,6 +61,7 @@ export function initHostInfo(d: Deps) {
     card.classList.toggle("open");
   });
   document.addEventListener("click", () => card.classList.remove("open"));
+  onLocaleChange(() => redraw?.());
 }
 
 /** 激活会话变化时调用：清空旧数据并立即采样 */
@@ -70,7 +76,7 @@ export function showHostInfo() {
     clearTimeout(timer);
   }
   card.hidden = id === undefined;
-  if (id !== undefined) renderNote(unsupported ? "后台需重启" : "加载中…");
+  if (id !== undefined) renderNote(unsupported ? "hostInfo.needRestart" : "common.loading");
   kick();
 }
 
@@ -82,7 +88,8 @@ export function onHostStats(m: HostStatsServerMsg) {
   // 等待期间已切换会话：丢弃并立即为新会话采样
   if (sessionId !== deps.active()?.id) return schedule(0);
   if (m.stats) render(m.stats, deps.active()?.host ?? null);
-  else renderNote(m.error?.startsWith("不支持") ? "不支持" : "不可用", m.error ?? "");
+  // daemon 的错误文字随其语言；“不支持”类错误（如远程非 Linux）以各语言的前缀识别
+  else renderNote(UNSUPPORTED_RE.test(m.error ?? "") ? "hostInfo.unsupported" : "hostInfo.unavailable", m.error ?? "");
   schedule(POLL);
 }
 
@@ -107,7 +114,7 @@ function tick() {
     // 等待超时：daemon 不认识该消息
     pending = undefined;
     unsupported = true;
-    renderNote("后台需重启", "后台进程版本较旧，不支持主机信息；重启后台后可用");
+    renderNote("hostInfo.needRestart", t("hostInfo.oldDaemon"));
     return;
   }
   if (!s || unsupported || !canPoll()) return;
@@ -147,7 +154,9 @@ function gauge(color: string, pct: number | null, label: string, sub: string, ti
   return g;
 }
 
-function renderNote(text: string, title = "") {
+function renderNote(key: "hostInfo.needRestart" | "common.loading" | "hostInfo.unsupported" | "hostInfo.unavailable", title = "") {
+  redraw = () => renderNote(key, key === "hostInfo.needRestart" ? t("hostInfo.oldDaemon") : title);
+  const text = t(key);
   card.classList.remove("open");
   card.innerHTML = icon("cpu");
   card.appendChild(el("span", "hb hi-note", text));
@@ -155,38 +164,39 @@ function renderNote(text: string, title = "") {
 }
 
 function render(s: HostStats, host: string | null) {
+  redraw = () => render(s, host);
   const remote = host !== null;
   const memPct = s.memTotal ? (s.memUsed * 100) / s.memTotal : null;
   // 有多块显卡时显示显存最大的（独显），全部列在悬停提示中
   const gpu = [...s.gpus].sort((a, b) => (b.memTotal ?? 0) - (a.memTotal ?? 0))[0];
   const gpuTitle = s.gpus.length
-    ? s.gpus.map((g) => [g.name, g.usage == null ? "" : `占用 ${Math.round(g.usage)}%`, vram(g)].filter(Boolean).join("  ")).join("\n")
+    ? s.gpus.map((g) => [g.name, g.usage == null ? "" : t("hostInfo.gpuUsage", { pct: Math.round(g.usage) }), vram(g)].filter(Boolean).join("  ")).join("\n")
     : remote
-      ? "未检测到 NVIDIA 显卡（远程仅支持 nvidia-smi）"
-      : "未检测到显卡";
+      ? t("hostInfo.noNvidia")
+      : t("hostInfo.noGpu");
   const net = s.netRx == null || s.netTx == null ? "…" : `↓${rate(s.netRx)} ↑${rate(s.netTx)}`;
   const pct = (v: number | null) => (v == null ? "…" : `${Math.round(v)}%`);
 
   const bar = el("span", "hb");
-  bar.append(barItem("var(--chart-1)", "CPU", pct(s.cpuUsage)), el("span", "sep", "·"), barItem("var(--chart-2)", "内存", pct(memPct)));
+  bar.append(barItem("var(--chart-1)", "CPU", pct(s.cpuUsage)), el("span", "sep", "·"), barItem("var(--chart-2)", t("hostInfo.memory"), pct(memPct)));
   // 第三项：有显卡占用时显示 GPU，否则显示网络
   bar.append(el("span", "sep", "·"));
   if (gpu?.usage != null) bar.append(barItem("var(--chart-3)", "GPU", pct(gpu.usage)));
-  else bar.append(barItem("var(--chart-3)", "网络", net));
+  else bar.append(barItem("var(--chart-3)", t("hostInfo.network"), net));
 
   const pop = el("div", "host-pop");
   pop.setAttribute("role", "dialog");
-  pop.setAttribute("aria-label", "主机详情");
+  pop.setAttribute("aria-label", t("hostInfo.details"));
   const head = pop.appendChild(el("div", "p-head"));
   const h3 = head.appendChild(el("h3", ""));
   h3.innerHTML = icon("cpu");
-  h3.append("主机 ");
-  h3.appendChild(el("small", "", host ?? "本机"));
+  h3.append(`${t("hostInfo.host")} `);
+  h3.appendChild(el("small", "", host ?? t("hostInfo.local")));
   const gauges = pop.appendChild(el("div", "gauges"));
   gauges.append(
-    gauge("var(--chart-1)", s.cpuUsage, "CPU", s.cores ? `${s.cores} 线程` : "—"),
-    gauge("var(--chart-2)", memPct, "内存", `${gb(s.memUsed)}/${gb(s.memTotal)} GB`),
-    gauge("var(--chart-3)", gpu?.usage ?? null, "GPU", gpu ? shortGpu(gpu.name) : "无", gpuTitle),
+    gauge("var(--chart-1)", s.cpuUsage, "CPU", s.cores ? tn("hostInfo.threads", s.cores) : "—"),
+    gauge("var(--chart-2)", memPct, t("hostInfo.memory"), `${gb(s.memUsed)}/${gb(s.memTotal)} GB`),
+    gauge("var(--chart-3)", gpu?.usage ?? null, "GPU", gpu ? shortGpu(gpu.name) : t("hostInfo.none"), gpuTitle),
   );
   const line = (ico: "monitor" | "arrow-down-up", name: string, value: string, title: string) => {
     const l = pop.appendChild(el("div", "sysline"));
@@ -194,8 +204,8 @@ function render(s: HostStats, host: string | null) {
     l.innerHTML = icon(ico);
     l.append(el("b", "", name), el("span", "sp", value));
   };
-  line("monitor", shortCpu(s.cpuModel) || "CPU", s.cores ? `${s.cores} 核` : "", [s.cpuModel, s.cores ? `逻辑处理器 ${s.cores}` : ""].filter(Boolean).join("\n"));
-  line("arrow-down-up", "网络", net, remote ? "物理网卡合计（不含 lo 与虚拟网卡）" : "硬件网卡合计");
+  line("monitor", shortCpu(s.cpuModel) || "CPU", s.cores ? tn("hostInfo.cores", s.cores) : "", [s.cpuModel, s.cores ? t("hostInfo.logical", { n: s.cores }) : ""].filter(Boolean).join("\n"));
+  line("arrow-down-up", t("hostInfo.network"), net, remote ? t("hostInfo.netRemote") : t("hostInfo.netLocal"));
 
   card.title = "";
   card.innerHTML = icon("cpu");
@@ -205,7 +215,7 @@ function render(s: HostStats, host: string | null) {
 /** 显存：集成显卡的“专用显存”只是很小的保留区，不显示 */
 function vram(g: GpuStats) {
   if (g.memTotal == null || g.memTotal < 512 * 2 ** 20) return "";
-  return g.memUsed == null ? `显存 ${gb(g.memTotal)} GB` : `显存 ${gb(g.memUsed)}/${gb(g.memTotal)} GB`;
+  return t("hostInfo.vram", { size: g.memUsed == null ? gb(g.memTotal) : `${gb(g.memUsed)}/${gb(g.memTotal)}` });
 }
 
 /** “Intel(R) Core(TM) i7-10700 CPU @ 2.90GHz” → “i7-10700”，“AMD Ryzen 7 5800X 8-Core Processor” → “Ryzen 7 5800X” */
@@ -228,7 +238,7 @@ function shortGpu(name: string) {
 
 function gb(bytes: number) {
   const v = bytes / 2 ** 30;
-  return v >= 10 ? Math.round(v).toString() : v.toFixed(1);
+  return v >= 10 ? fmtNum(Math.round(v)) : fmtNum(v, 1);
 }
 
 /** 字节/秒 → “80K”“1.2M” */

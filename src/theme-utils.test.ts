@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）；CSS 的 ?raw 导入在 vitest 中会被置空，故直接读文件
 import { readFileSync } from "node:fs";
 import { DEFAULT_THEME, parseTheme, STYLES, themeFor, THEMES, toggledTheme, xtermThemeFor } from "./theme-utils";
+import { type MessageKey, t } from "./i18n";
 
 const css: string = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html: string = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 describe("主题注册表", () => {
   it("6 个风格，顺序与名称固定", () => {
-    expect(STYLES.map((s) => s.label)).toEqual(["奶油风1", "极简", "奶油风2", "毛玻璃", "北欧莫兰迪", "现代暗色"]);
+    expect(STYLES.map((s) => t(`theme.${s.id}` as MessageKey))).toEqual(["奶油风1", "极简", "奶油风2", "毛玻璃", "北欧莫兰迪", "现代暗色"]);
   });
   it("每个风格恰有亮 / 暗两个主题，id 为 <风格>-light / <风格>-dark，dark 字段正确", () => {
     expect(THEMES).toHaveLength(12);

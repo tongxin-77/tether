@@ -24,6 +24,12 @@ macro_rules! log {
     ($($t:tt)*) => {{ let _ = format!($($t)*); }};
 }
 
+// link.rs 的提示文字经 daemon 的词条表（tr! 宏、crate::i18n）
+#[allow(dead_code)]
+#[macro_use]
+#[path = "../src/i18n.rs"]
+mod i18n;
+
 #[allow(dead_code)]
 #[path = "../src/hub/link.rs"]
 mod link;
@@ -317,7 +323,7 @@ async fn replaced_is_fatal() {
     let states = h.states.lock().unwrap().clone();
     let (last, error) = states.last().unwrap();
     assert_eq!(*last, HubState::Failed);
-    assert_eq!(error.as_deref(), Some(link::REPLACED_MSG));
+    assert_eq!(error.as_deref(), Some(tr!("hub.replaced").as_str()));
     // 没有第二次连接
     assert!(tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await.is_err());
 }

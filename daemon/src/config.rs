@@ -16,7 +16,7 @@ pub fn load() -> Config {
 }
 
 pub fn save(config: &Config) -> Result<(), String> {
-    let p = path().ok_or("未找到 APPDATA 环境变量")?;
+    let p = path().ok_or_else(|| tr!("common.no_appdata"))?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -52,21 +52,21 @@ pub fn split_command(line: &str) -> Vec<String> {
 
 /// 探测本机可用的 shell，按固定顺序返回；不存在的不列出
 pub fn detect_shells() -> Vec<ShellOption> {
-    let opt = |name: &str, command: String| ShellOption { name: name.into(), command };
+    let opt = |name: String, command: String| ShellOption { name, command };
     let mut shells = vec![
-        opt("自动（PowerShell 7 优先）", AUTO_SHELL.into()),
-        opt("Windows PowerShell", WINDOWS_POWERSHELL.into()),
+        opt(tr!("shell.auto"), AUTO_SHELL.into()),
+        opt("Windows PowerShell".into(), WINDOWS_POWERSHELL.into()),
     ];
     if let Some(pwsh) = pwsh() {
-        shells.push(opt("PowerShell 7", pwsh));
+        shells.push(opt("PowerShell 7".into(), pwsh));
     }
-    shells.push(opt("命令提示符", "cmd.exe".into()));
+    shells.push(opt(tr!("shell.cmd"), "cmd.exe".into()));
     if let Some(bash) = git_bash() {
-        shells.push(opt("Git Bash", format!("\"{}\" --login -i", bash.display())));
+        shells.push(opt("Git Bash".into(), format!("\"{}\" --login -i", bash.display())));
     }
     let wsl = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\wsl.exe"));
     if wsl.is_some_and(|p| p.is_file()) {
-        shells.push(opt("WSL", "wsl.exe".into()));
+        shells.push(opt("WSL".into(), "wsl.exe".into()));
     }
     shells
 }

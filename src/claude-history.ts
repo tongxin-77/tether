@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { filesDir } from "./files";
+import { onLocaleChange, t, tn } from "./i18n";
 
 /** 与 src-tauri claude_history 命令的返回一致 */
 interface Conversation {
@@ -34,7 +35,9 @@ interface Deps {
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 let deps: Deps;
 let dir = "";
-let items: Conversation[] | string = [];
+let items: Conversation[] = [];
+/** 加载中，或读取失败的错误信息 */
+let loadState: "loading" | { error: string } | undefined;
 /** 只认最近一次请求的结果 */
 let seq = 0;
 
@@ -47,12 +50,13 @@ export function initClaudeHistory(d: Deps) {
     const d = filesDir();
     if (d) load(d);
   });
+  onLocaleChange(() => $<HTMLDialogElement>("cc-history").open && render());
 }
 
 /** 打开弹窗；没有目录（当前不是本地会话）时先选择文件夹 */
 export async function openClaudeHistory(cwd: string | undefined) {
   if (!cwd) {
-    const d = await open({ directory: true, title: "选择要恢复 Claude 对话的目录" });
+    const d = await open({ directory: true, title: t("history.pickDir") });
     if (typeof d !== "string") return;
     cwd = d;
   }
@@ -65,11 +69,16 @@ export async function openClaudeHistory(cwd: string | undefined) {
 async function load(cwd: string) {
   dir = cwd;
   const my = ++seq;
-  items = "加载中…";
+  items = [];
+  loadState = "loading";
   render();
-  const r = await invoke<Conversation[]>("claude_history", { dir: cwd }).catch((e) => `读取失败：${e}`);
+  const r = await invoke<Conversation[]>("claude_history", { dir: cwd }).then(
+    (list) => ({ list }),
+    (e) => ({ error: String(e) }),
+  );
   if (my !== seq) return;
-  items = r;
+  if ("list" in r) [items, loadState] = [r.list, undefined];
+  else loadState = r;
   render();
 }
 
@@ -79,10 +88,17 @@ function render() {
   const fd = filesDir();
   $("cch-files").hidden = !fd || fd.toLowerCase() === dir.toLowerCase();
   const q = $<HTMLInputElement>("cch-filter").value.trim().toLowerCase();
-  const shown = typeof items === "string" ? [] : items.filter((c) => c.title.toLowerCase().includes(q));
+  const shown = loadState ? [] : items.filter((c) => c.title.toLowerCase().includes(q));
   const empty = $("cch-empty");
   empty.hidden = shown.length > 0;
-  empty.textContent = typeof items === "string" ? items : items.length ? "没有匹配的对话" : "该目录没有 Claude 对话记录";
+  empty.textContent =
+    loadState === "loading"
+      ? t("common.loading")
+      : loadState
+        ? t("history.readFailed", { error: loadState.error })
+        : items.length
+          ? t("history.noMatch")
+          : t("history.none");
   $("cch-list").replaceChildren(...shown.map(row));
 }
 
@@ -90,13 +106,13 @@ function row(c: Conversation) {
   const li = document.createElement("li");
   const opened = deps.openedIn(c.id);
   li.innerHTML = `<span class="cch-title"></span><span class="cch-meta"><span></span></span>`;
-  li.querySelector(".cch-title")!.textContent = c.title || "（无标题）";
+  li.querySelector(".cch-title")!.textContent = c.title || t("history.untitled");
   li.title = c.title;
-  li.querySelector(".cch-meta span")!.textContent = `${deps.relativeTime(c.mtime)} · ${c.messages} 条消息`;
+  li.querySelector(".cch-meta span")!.textContent = `${deps.relativeTime(c.mtime)} · ${tn("history.messages", c.messages)}`;
   if (opened !== undefined) {
     const tag = li.querySelector(".cch-meta")!.appendChild(document.createElement("span"));
     tag.className = "tag open";
-    tag.textContent = "已打开";
+    tag.textContent = t("history.opened");
   }
   li.addEventListener("click", () => {
     $<HTMLDialogElement>("cc-history").close();

@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { icon } from "./icons";
 import { requestClosePreview } from "./preview";
+import { fmtDateTime, onLocaleChange, t, tn } from "./i18n";
 import { type Commit, type Refs, classifyDiff, filterRefs, graphRuns, parseDecor, parseLog, parseNumstat, parseRefs, relTime, switchTarget } from "./git-utils";
 
 interface Deps {
@@ -45,7 +46,14 @@ const errText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
 export function initGitPanel(d: Deps) {
   deps = d;
-  branchEl.title = "切换分支 / 查看历史";
+  const syncTitle = () => (branchEl.title = t("git.branchTitle"));
+  syncTitle();
+  // 切换语言：分支菜单收起，已打开的历史面板重新读取渲染
+  onLocaleChange(() => {
+    syncTitle();
+    menu.hidden = true;
+    if (!panel.hidden) loadHistory();
+  });
   branchEl.addEventListener("click", () => (menu.hidden ? openMenu() : (menu.hidden = true)));
   $("gp-ico").innerHTML = icon("history");
   $("gp-close").addEventListener("click", closeGitPanel);
@@ -67,15 +75,15 @@ async function openMenu() {
   if (!dir) return;
   menuDir = dir;
   const filter = el("input", "gm-filter");
-  filter.placeholder = "过滤分支…";
+  filter.placeholder = t("git.filter");
   const history = el("button", "gm-item");
   history.innerHTML = icon("history");
-  history.append("查看历史");
+  history.append(t("git.viewHistory"));
   history.addEventListener("click", () => {
     menu.hidden = true;
     void openHistory(dir);
   });
-  const list = el("div", "gm-list", "正在读取分支…");
+  const list = el("div", "gm-list", t("git.loadingBranches"));
   const status = el("pre", "gm-status");
   status.hidden = true;
   menu.replaceChildren(filter, history, list, status);
@@ -105,14 +113,14 @@ async function openMenu() {
 function renderBranches(list: HTMLElement, status: HTMLElement, query: string) {
   const items: HTMLElement[] = [];
   const locals = filterRefs(refs.locals, query);
-  if (locals.length) items.push(el("div", "gm-sec", "本地分支"));
+  if (locals.length) items.push(el("div", "gm-sec", t("git.localBranches")));
   for (const name of locals) {
     const cur = name === refs.current;
     items.push(branchItem(name, cur, () => !cur && doSwitch(status, name, false)));
   }
   for (const g of refs.remotes) {
     const names = filterRefs(g.branches, query);
-    if (names.length) items.push(el("div", "gm-sec", `远程 ${g.remote}`));
+    if (names.length) items.push(el("div", "gm-sec", t("git.remote", { remote: g.remote })));
     for (const name of names) {
       items.push(branchItem(name, false, () => {
         const t = switchTarget(name, refs);
@@ -120,7 +128,7 @@ function renderBranches(list: HTMLElement, status: HTMLElement, query: string) {
       }));
     }
   }
-  if (!items.length) items.push(el("div", "gm-empty", "没有匹配的分支"));
+  if (!items.length) items.push(el("div", "gm-empty", t("git.noMatch")));
   list.replaceChildren(...items);
 }
 
@@ -128,7 +136,7 @@ function branchItem(name: string, current: boolean, onClick: () => void) {
   const b = el("button", current ? "gm-item gm-branch current" : "gm-item gm-branch");
   b.innerHTML = icon(current ? "check" : "git-branch");
   b.append(el("span", "gm-name", name));
-  b.title = current ? "当前分支" : `切换到 ${name}`;
+  b.title = current ? t("git.current") : t("git.switchTo", { name });
   b.addEventListener("click", onClick);
   return b;
 }
@@ -137,7 +145,7 @@ function branchItem(name: string, current: boolean, onClick: () => void) {
 async function doSwitch(status: HTMLElement, name: string, track: boolean) {
   if (menu.classList.contains("busy")) return;
   menu.classList.add("busy");
-  showStatus(status, `正在切换到 ${name}…`, false);
+  showStatus(status, t("git.switching", { name }), false);
   try {
     await invoke("git_switch", { dir: menuDir, name, track });
     menu.hidden = true;
@@ -182,13 +190,13 @@ async function loadHistory() {
   showSeq++;
   detailEl.hidden = true;
   detailEl.replaceChildren();
-  listEl.replaceChildren(el("div", "gp-note", "正在读取提交…"));
+  listEl.replaceChildren(el("div", "gp-note", t("git.loadingCommits")));
   let out: string;
   try {
     const [log, r] = await Promise.all([invoke<string>("git_log", { dir: panelDir, limit: LOG_LIMIT }), invoke<string>("git_refs", { dir: panelDir })]);
     out = log;
     const cur = parseRefs(r).current;
-    $("gp-branch").textContent = cur ? `⎇ ${cur}` : "分离 HEAD";
+    $("gp-branch").textContent = cur ? `⎇ ${cur}` : t("git.detached");
   } catch (e) {
     if (seq === loadSeq) listEl.replaceChildren(el("pre", "gp-note err", errText(e)));
     return;
@@ -216,8 +224,8 @@ async function loadHistory() {
     }
     return div;
   });
-  listEl.replaceChildren(...(rows.length ? rows : [el("div", "gp-note", "没有提交")]));
-  if (rows.length >= LOG_LIMIT) listEl.append(el("div", "gp-note", `仅显示最近 ${LOG_LIMIT} 个提交`));
+  listEl.replaceChildren(...(rows.length ? rows : [el("div", "gp-note", t("git.noCommits"))]));
+  if (rows.length >= LOG_LIMIT) listEl.append(el("div", "gp-note", tn("git.limit", LOG_LIMIT)));
 }
 
 /** 图形列：按 lane 着色（6 色循环） */
@@ -238,7 +246,7 @@ function decorEl(d: string) {
 async function showCommit(c: Commit) {
   const seq = ++showSeq;
   detailEl.hidden = false;
-  detailEl.replaceChildren(commitHead(c), el("div", "gp-note", "正在读取改动…"));
+  detailEl.replaceChildren(commitHead(c), el("div", "gp-note", t("git.loadingDiff")));
   let numstat: string, diff: string, cut: boolean;
   try {
     [numstat, diff, cut] = await invoke<[string, string, boolean]>("git_show", { dir: panelDir, hash: c.hash });
@@ -256,19 +264,19 @@ async function showCommit(c: Commit) {
     if (l.text.startsWith("diff ")) fileHeads.push(row);
     diffEl.append(row);
   }
-  if (cut || truncated) diffEl.append(el("div", "gp-note warn", `改动过大，已截断显示（最多 ${DIFF_LINES} 行 / 512 KB）`));
+  if (cut || truncated) diffEl.append(el("div", "gp-note warn", t("git.truncated", { lines: DIFF_LINES })));
   const filesEl = el("div", "gp-files");
   files.forEach((f, i) => {
     const row = el("button", "gp-file");
     row.append(el("span", "gp-path", f.path));
-    if (f.add === null) row.append(el("span", "gp-bin", "二进制"));
+    if (f.add === null) row.append(el("span", "gp-bin", t("git.binary")));
     else row.append(el("span", "gp-add", `+${f.add}`), el("span", "gp-del", `-${f.del}`));
     row.title = f.path;
     // numstat 与 patch 的文件顺序一致：点击滚动到对应 diff
     row.addEventListener("click", () => fileHeads[i]?.scrollIntoView({ block: "start" }));
     filesEl.append(row);
   });
-  if (!files.length) filesEl.append(el("div", "gp-note", "没有文件改动"));
+  if (!files.length) filesEl.append(el("div", "gp-note", t("git.noFiles")));
   const scroll = el("div", "gp-dscroll");
   scroll.append(filesEl, diffEl);
   detailEl.replaceChildren(commitHead(c), scroll);
@@ -279,9 +287,9 @@ function commitHead(c: Commit) {
   const copy = el("button", "gp-copy");
   copy.innerHTML = icon("copy");
   copy.append(c.short);
-  copy.title = `复制完整哈希 ${c.hash}`;
+  copy.title = t("git.copyHash", { hash: c.hash });
   copy.addEventListener("click", () => deps.copy(c.hash));
-  const meta = el("span", "gp-dmeta", `${c.author} · ${new Date(c.time * 1000).toLocaleString()}`);
+  const meta = el("span", "gp-dmeta", `${c.author} · ${fmtDateTime(c.time * 1000)}`);
   head.append(copy, el("span", "gp-dsubj", c.subject), meta);
   return head;
 }

@@ -2,7 +2,7 @@
 //! hello / welcome、会话全量上报（500 ms 防抖）、心跳超时、指数退避重连与错误分类；远程接管的消息在这里收发，处理交给 daemon。
 //!
 //! 本文件只依赖外部 crate 与 `proto`，不引用 daemon 的其它模块（集成测试以 `#[path]` 直接引入本文件）；
-//! 调用方需在引入前定义 `log!` 宏。
+//! 调用方需在引入前定义 `log!` 宏，并在 crate 根引入 daemon 的 `i18n` 模块（提供 `tr!` 宏与词条表）。
 
 use std::{
     future::Future,
@@ -36,7 +36,6 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 /// 退避上限
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// 被同一 machineId 的新连接替换（replaced / 4004）时的原因；daemon 据此识别“测试连接”造成的临时替换
-pub const REPLACED_MSG: &str = "另一台机器使用了相同的机器 ID（例如克隆的虚拟机），已停止重连";
 /// hello 字段上限（超出 hub 按 bad_hello 处理）：machineId 1–64 字符，machineName / version 不超过 256 字符
 pub const MACHINE_ID_MAX: usize = 64;
 const NAME_MAX: usize = 256;
@@ -91,57 +90,57 @@ impl Endpoint {
 pub fn parse_address(input: &str, allow_insecure: bool) -> Result<Endpoint, String> {
     let s = input.trim();
     if s.is_empty() {
-        return Err("未填写服务器地址".into());
+        return Err(tr!("hub.addr_empty"));
     }
     let (tls, rest) = match s.find("://") {
         Some(i) => match s[..i].to_ascii_lowercase().as_str() {
             "wss" => (true, &s[i + 3..]),
             "ws" => (false, &s[i + 3..]),
-            other => return Err(format!("不支持的协议 {other}://，只能是 wss:// 或 ws://")),
+            other => return Err(tr!("hub.addr_bad_scheme", scheme = other)),
         },
         None => (!allow_insecure, s),
     };
     if !tls && !allow_insecure {
-        return Err("ws:// 为明文连接，需勾选「允许明文连接（仅限局域网调试）」".into());
+        return Err(tr!("hub.addr_insecure"));
     }
     if rest.contains(['?', '#', '@']) || rest.chars().any(char::is_whitespace) {
-        return Err("地址只能包含主机和端口".into());
+        return Err(tr!("hub.addr_host_port_only"));
     }
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, ""),
     };
     if !matches!(path.trim_end_matches('/'), "" | PATH) {
-        return Err(format!("地址不能包含路径（连接路径固定为 {PATH}）"));
+        return Err(tr!("hub.addr_no_path", path = PATH));
     }
     let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
-        let (h, after) = v6.split_once(']').ok_or("IPv6 地址缺少右方括号")?;
+        let (h, after) = v6.split_once(']').ok_or_else(|| tr!("hub.addr_v6_bracket"))?;
         if h.parse::<std::net::Ipv6Addr>().is_err() {
-            return Err(format!("{h} 不是合法的 IPv6 地址"));
+            return Err(tr!("hub.addr_bad_v6", host = h));
         }
         let port = match after {
             "" => None,
-            p => Some(p.strip_prefix(':').ok_or("IPv6 地址后只能跟 :端口")?),
+            p => Some(p.strip_prefix(':').ok_or_else(|| tr!("hub.addr_v6_port"))?),
         };
         (h.to_ascii_lowercase(), port)
     } else {
         match authority.split_once(':') {
-            Some((_, p)) if p.contains(':') => return Err("IPv6 地址需用方括号括起，如 [fe80::1]:8443".into()),
+            Some((_, p)) if p.contains(':') => return Err(tr!("hub.addr_v6_brackets_needed")),
             Some((h, p)) => (h.to_ascii_lowercase(), Some(p)),
             None => (authority.to_ascii_lowercase(), None),
         }
     };
     if host.is_empty() {
-        return Err("缺少主机名".into());
+        return Err(tr!("hub.addr_no_host"));
     }
     if !host.contains(':') && !host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')) {
-        return Err(format!("主机名 {host} 含非法字符"));
+        return Err(tr!("hub.addr_bad_host", host = host));
     }
     let port = match port {
         None => if tls { 443 } else { 80 },
         Some(p) => match p.parse::<u16>() {
             Ok(n) if n > 0 => n,
-            _ => return Err(format!("端口 {p} 无效，应为 1–65535")),
+            _ => return Err(tr!("hub.addr_bad_port", port = p)),
         },
     };
     Ok(Endpoint { tls, host, port })
@@ -388,27 +387,27 @@ impl Failure {
 
 /// hub error 消息的 code → 失败
 pub fn classify_code(code: &str, message: &str) -> Failure {
-    let detail = if message.is_empty() { String::new() } else { format!("（{message}）") };
+    let detail = if message.is_empty() { String::new() } else { tr!("hub.detail", message = message) };
     match code {
-        "proto_unsupported" => Failure::new(Kind::Proto, format!("协议不兼容：hub 不支持协议 {HUB_PROTO}{detail}")),
-        "revoked" => Failure::new(Kind::Hub, format!("token 已被 hub 吊销{detail}")),
-        "replaced" => Failure::new(Kind::Replaced, REPLACED_MSG),
-        "bad_hello" => Failure::new(Kind::Hub, format!("hub 拒绝了 hello{detail}")),
-        other => Failure::new(Kind::Hub, format!("hub 返回错误 {other}{detail}")),
+        "proto_unsupported" => Failure::new(Kind::Proto, tr!("hub.proto_unsupported", proto = HUB_PROTO, detail = detail)),
+        "revoked" => Failure::new(Kind::Hub, tr!("hub.revoked", detail = detail)),
+        "replaced" => Failure::new(Kind::Replaced, tr!("hub.replaced")),
+        "bad_hello" => Failure::new(Kind::Hub, tr!("hub.bad_hello", detail = detail)),
+        other => Failure::new(Kind::Hub, tr!("hub.error_code", code = other, detail = detail)),
     }
 }
 
 /// 未先收到 error 消息时按 WebSocket 关闭码分类
 pub fn classify_close(frame: Option<&CloseFrame>) -> Failure {
-    let Some(f) = frame else { return Failure::new(Kind::Closed, "hub 关闭了连接") };
+    let Some(f) = frame else { return Failure::new(Kind::Closed, tr!("hub.closed")) };
     let code = u16::from(f.code);
     match code {
         4001 => classify_code("revoked", &f.reason),
         4002 => classify_code("proto_unsupported", &f.reason),
         4003 => classify_code("bad_hello", &f.reason),
         4004 => classify_code("replaced", &f.reason),
-        _ if f.reason.is_empty() => Failure::new(Kind::Closed, format!("hub 关闭了连接（关闭码 {code}）")),
-        _ => Failure::new(Kind::Closed, format!("hub 关闭了连接（关闭码 {code}：{}）", f.reason)),
+        _ if f.reason.is_empty() => Failure::new(Kind::Closed, tr!("hub.closed_code", code = code)),
+        _ => Failure::new(Kind::Closed, tr!("hub.closed_code_reason", code = code, reason = f.reason)),
     }
 }
 
@@ -417,17 +416,17 @@ pub fn classify_handshake(e: &tungstenite::Error) -> Failure {
     match e {
         tungstenite::Error::Http(resp) if resp.status().as_u16() == 401 => {
             // hub 对错误与已吊销的 token 都回 401，无法区分
-            Failure::new(Kind::Auth, "认证失败：token 无效或已吊销（HTTP 401）")
+            Failure::new(Kind::Auth, tr!("hub.auth_failed"))
         }
         tungstenite::Error::Http(resp) => Failure::new(
             Kind::Handshake,
-            format!("WebSocket 握手被拒绝：HTTP {}（地址或端口可能指向了其它服务）", resp.status()),
+            tr!("hub.ws_rejected", status = resp.status()),
         ),
-        tungstenite::Error::Io(e) => Failure::new(Kind::Closed, format!("WebSocket 握手时连接断开（{e}）")),
+        tungstenite::Error::Io(e) => Failure::new(Kind::Closed, tr!("hub.ws_io", error = e)),
         tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
-            Failure::new(Kind::Closed, "WebSocket 握手时连接断开")
+            Failure::new(Kind::Closed, tr!("hub.ws_closed"))
         }
-        e => Failure::new(Kind::Handshake, format!("WebSocket 握手失败，对端可能不是 Tether hub（{e}）")),
+        e => Failure::new(Kind::Handshake, tr!("hub.ws_failed", error = e)),
     }
 }
 
@@ -436,10 +435,10 @@ fn tcp_failure(e: &std::io::Error, ep: &Endpoint) -> Failure {
     use std::io::ErrorKind::*;
     let at = format!("{}:{}", ep.host, ep.port);
     let msg = match e.kind() {
-        ConnectionRefused => format!("TCP 连接被拒绝：{at} 没有在监听（{e}）"),
-        TimedOut => format!("TCP 连接超时：{at} 无响应（{e}）"),
-        HostUnreachable | NetworkUnreachable => format!("TCP 连接失败：网络不可达 {at}（{e}）"),
-        _ => format!("TCP 连接失败：{at}（{e}）"),
+        ConnectionRefused => tr!("hub.tcp_refused", addr = at, error = e),
+        TimedOut => tr!("hub.tcp_timeout", addr = at, error = e),
+        HostUnreachable | NetworkUnreachable => tr!("hub.tcp_unreachable", addr = at, error = e),
+        _ => tr!("hub.tcp_failed", addr = at, error = e),
     };
     Failure::new(Kind::Tcp, msg)
 }
@@ -450,17 +449,17 @@ fn tls_failure(e: &std::io::Error) -> Failure {
     let detail = e.get_ref().and_then(|inner| inner.downcast_ref::<TlsError>());
     let msg = match detail {
         Some(TlsError::InvalidCertificate(CertificateError::UnknownIssuer)) => {
-            "TLS 失败：证书不受信任（签发者不在 Windows 受信任根证书中；自签证书需先导入证书库）".to_string()
+            tr!("hub.tls_untrusted")
         }
         Some(TlsError::InvalidCertificate(CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. })) => {
-            "TLS 失败：证书与服务器地址不匹配".to_string()
+            tr!("hub.tls_name_mismatch")
         }
         Some(TlsError::InvalidCertificate(CertificateError::Expired | CertificateError::ExpiredContext { .. })) => {
-            "TLS 失败：证书已过期".to_string()
+            tr!("hub.tls_expired")
         }
-        Some(TlsError::InvalidCertificate(c)) => format!("TLS 失败：证书无效（{c:?}）"),
-        Some(other) => format!("TLS 失败：{other}"),
-        None => format!("TLS 失败：{e}（对端可能未启用 TLS，明文 hub 需写 ws:// 并勾选允许明文）"),
+        Some(TlsError::InvalidCertificate(c)) => tr!("hub.tls_invalid", error = format!("{c:?}")),
+        Some(other) => tr!("hub.tls_failed", error = other),
+        None => tr!("hub.tls_not_tls", error = e),
     };
     Failure::new(Kind::Tls, msg)
 }
@@ -473,8 +472,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
 pub type Ws = WebSocketStream<Box<dyn Io>>;
 
-/// 当前所处阶段，超时时据此说明卡在哪一步
+/// 当前所处阶段（词条键 stage.*，或等待 welcome 时的 WELCOME），超时时据此说明卡在哪一步
 pub type Stage = Mutex<&'static str>;
+
+const WELCOME: &str = "welcome";
 
 fn set_stage(stage: &Stage, s: &'static str) {
     if let Ok(mut g) = stage.lock() {
@@ -487,12 +488,12 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, Failure> {
     let found = rustls_native_certs::load_native_certs();
     let (added, _) = roots.add_parsable_certificates(found.certs);
     if added == 0 {
-        return Err(Failure::new(Kind::Tls, "TLS 失败：无法读取 Windows 证书库中的受信任根证书"));
+        return Err(Failure::new(Kind::Tls, tr!("hub.tls_no_roots")));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(|e| Failure::new(Kind::Tls, format!("TLS 初始化失败：{e}")))?
+        .map_err(|e| Failure::new(Kind::Tls, tr!("hub.tls_init_failed", error = e)))?
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(Arc::new(config))
@@ -500,43 +501,43 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, Failure> {
 
 /// DNS → TCP → （TLS）→ WebSocket 握手（带 Authorization: Bearer）
 pub async fn connect(ep: &Endpoint, token: &Secret, stage: &Stage) -> Result<Ws, Failure> {
-    set_stage(stage, "DNS 解析");
+    set_stage(stage, "stage.dns");
     let addrs: Vec<_> = tokio::net::lookup_host((ep.host.as_str(), ep.port))
         .await
-        .map_err(|e| Failure::new(Kind::Dns, format!("DNS 解析失败：无法解析 {}（{e}）", ep.host)))?
+        .map_err(|e| Failure::new(Kind::Dns, tr!("hub.dns_failed", host = ep.host, error = e)))?
         .collect();
-    set_stage(stage, "TCP 连接");
+    set_stage(stage, "stage.tcp");
     let tcp = TcpStream::connect(&addrs[..]).await.map_err(|e| tcp_failure(&e, ep))?;
     let _ = tcp.set_nodelay(true);
     let io: Box<dyn Io> = if ep.tls {
-        set_stage(stage, "TLS 握手");
+        set_stage(stage, "stage.tls");
         let name = rustls::pki_types::ServerName::try_from(ep.host.clone())
-            .map_err(|_| Failure::new(Kind::Address, format!("地址无效：{} 不能用作 TLS 服务器名", ep.host)))?;
+            .map_err(|_| Failure::new(Kind::Address, tr!("hub.tls_bad_name", host = ep.host)))?;
         let tls = tokio_rustls::TlsConnector::from(tls_config()?).connect(name, tcp).await.map_err(|e| tls_failure(&e))?;
         Box::new(tls)
     } else {
         Box::new(tcp)
     };
-    set_stage(stage, "WebSocket 握手");
-    let mut req = ep.url().into_client_request().map_err(|e| Failure::new(Kind::Address, format!("地址无效：{e}")))?;
+    set_stage(stage, "stage.ws");
+    let mut req = ep.url().into_client_request().map_err(|e| Failure::new(Kind::Address, tr!("common.invalid_address", error = e)))?;
     let auth = format!("Bearer {}", token.0)
         .parse()
-        .map_err(|_| Failure::new(Kind::NoToken, "token 含非法字符（只能是可见 ASCII 字符）"))?;
+        .map_err(|_| Failure::new(Kind::NoToken, tr!("hub.token_invalid_chars")))?;
     req.headers_mut().insert("Authorization", auth);
     let (ws, _) = tokio_tungstenite::client_async(req, io).await.map_err(|e| classify_handshake(&e))?;
     Ok(ws)
 }
 
 async fn send_up(ws: &mut Ws, msg: &Up) -> Result<(), Failure> {
-    let json = serde_json::to_string(msg).map_err(|e| Failure::new(Kind::Closed, format!("序列化失败：{e}")))?;
-    ws.send(Message::Text(json.into())).await.map_err(|e| Failure::new(Kind::Closed, format!("发送失败，连接已断开（{e}）")))
+    let json = serde_json::to_string(msg).map_err(|e| Failure::new(Kind::Closed, tr!("hub.serialize_failed", error = e)))?;
+    ws.send(Message::Text(json.into())).await.map_err(|e| Failure::new(Kind::Closed, tr!("hub.send_failed", error = e)))
 }
 
 /// 读下一条 hub 消息：文本帧解析为 Down（无法解析的忽略），ping / pong 等其它帧返回 None
 fn read_frame(item: Option<Result<Message, tungstenite::Error>>) -> Result<Option<Down>, Failure> {
     match item {
-        None => Err(Failure::new(Kind::Closed, "hub 关闭了连接")),
-        Some(Err(e)) => Err(Failure::new(Kind::Closed, format!("连接断开（{e}）"))),
+        None => Err(Failure::new(Kind::Closed, tr!("hub.closed"))),
+        Some(Err(e)) => Err(Failure::new(Kind::Closed, tr!("hub.disconnected", error = e))),
         Some(Ok(Message::Close(frame))) => Err(classify_close(frame.as_ref())),
         Some(Ok(Message::Text(text))) => Ok(serde_json::from_str::<Down>(&text).ok()),
         Some(Ok(_)) => Ok(None),
@@ -545,13 +546,13 @@ fn read_frame(item: Option<Result<Message, tungstenite::Error>>) -> Result<Optio
 
 /// 发 hello，等 welcome；返回 hubVersion 与 hub 声明的能力位
 pub async fn handshake(ws: &mut Ws, hello: &Up, stage: &Stage) -> Result<(String, Vec<String>), Failure> {
-    set_stage(stage, "等待 welcome");
+    set_stage(stage, WELCOME);
     send_up(ws, hello).await?;
     loop {
         match read_frame(ws.next().await)? {
             Some(Down::Welcome { proto, hub_version, caps }) if proto == HUB_PROTO => return Ok((hub_version, caps)),
             Some(Down::Welcome { proto, .. }) => {
-                return Err(Failure::new(Kind::Proto, format!("协议不兼容：hub 使用协议 {proto}，本机为 {HUB_PROTO}")));
+                return Err(Failure::new(Kind::Proto, tr!("hub.proto_mismatch", hub = proto, local = HUB_PROTO)));
             }
             Some(Down::Error { code, message }) => return Err(classify_code(&code, &message)),
             // welcome 前的接管消息不合协议，忽略；测试连接收到 welcome 即关闭，不会处理 attach
@@ -565,11 +566,11 @@ pub async fn with_timeout<T>(limit: Duration, stage: &Stage, fut: impl Future<Ou
     match tokio::time::timeout(limit, fut).await {
         Ok(r) => r,
         Err(_) => {
-            let s = stage.lock().map(|g| *g).unwrap_or("连接");
-            let msg = if s == "等待 welcome" {
-                format!("超时：{} 秒内未收到 hub 的 welcome", limit.as_secs())
+            let s = stage.lock().map(|g| *g).unwrap_or("stage.connect");
+            let msg = if s == WELCOME {
+                tr!("hub.welcome_timeout", secs = limit.as_secs())
             } else {
-                format!("连接超时：{s}阶段 {} 秒内未完成", limit.as_secs())
+                tr!("common.connect_timeout_stage", stage = crate::i18n::tr(s, &[]), secs = limit.as_secs())
             };
             Err(Failure::new(Kind::Timeout, msg))
         }
@@ -583,7 +584,7 @@ pub async fn probe(ep: &Endpoint, token: &Secret, hello: &Up) -> Result<String, 
         *probe = true;
     }
     let hello = &hello;
-    let stage = Mutex::new("DNS 解析");
+    let stage = Mutex::new("stage.dns");
     with_timeout(CONNECT_TIMEOUT, &stage, async {
         let mut ws = connect(ep, token, &stage).await?;
         let version = handshake(&mut ws, hello, &stage).await;
@@ -622,7 +623,7 @@ pub async fn run(link: Link) {
     let mut last: Option<String> = None;
     loop {
         (link.status)(HubState::Connecting, last.clone());
-        let stage = Mutex::new("DNS 解析");
+        let stage = Mutex::new("stage.dns");
         let connected = with_timeout(CONNECT_TIMEOUT, &stage, async {
             let mut ws = connect(&link.endpoint, &link.token, &stage).await?;
             let (version, caps) = handshake(&mut ws, &link.hello, &stage).await?;
@@ -705,7 +706,7 @@ async fn serve(mut ws: Ws, link: &Link, caps: Vec<String>) -> Failure {
                 }
             }
             _ = &mut idle => {
-                return Failure::new(Kind::Timeout, format!("{} 秒内未收到 hub 的任何数据，判定断线", IDLE_TIMEOUT.as_secs()));
+                return Failure::new(Kind::Timeout, tr!("hub.idle_timeout", secs = IDLE_TIMEOUT.as_secs()));
             }
             _ = link.changed.notified(), if due.is_none() => {
                 due = Some(tokio::time::Instant::now() + DEBOUNCE);
@@ -962,7 +963,7 @@ mod tests {
         assert_eq!(classify_code("whatever", "").kind, Kind::Hub);
         assert!(classify_code("proto_unsupported", "").fatal());
         assert!(classify_code("replaced", "").fatal());
-        assert_eq!(classify_code("replaced", "x").msg, REPLACED_MSG);
+        assert_eq!(classify_code("replaced", "x").msg, tr!("hub.replaced"));
         assert!(!classify_code("revoked", "").fatal());
         assert!(!classify_code("bad_hello", "").fatal());
 

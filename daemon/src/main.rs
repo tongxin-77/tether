@@ -21,6 +21,8 @@ macro_rules! log {
     ($($t:tt)*) => { $crate::write_log(&format!($($t)*)) };
 }
 
+#[macro_use]
+mod i18n;
 mod claude;
 mod config;
 mod crash;
@@ -60,6 +62,9 @@ fn main() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("创建 tokio 运行时失败");
     let mut state = State::default();
     state.config = config::load();
+    if let Some(l) = &state.config.locale {
+        i18n::set(l);
+    }
     state.recent = recent::load();
     rt.block_on(serve(Arc::new(Mutex::new(state))));
 }

@@ -111,7 +111,7 @@ pub fn restart(state: &Shared, st: &mut State) {
     }
     let endpoint = match link::parse_address(&address, allow_insecure) {
         Ok(ep) => ep,
-        Err(e) => return set_status(st, generation, HubState::Failed, Some(format!("地址无效：{e}"))),
+        Err(e) => return set_status(st, generation, HubState::Failed, Some(tr!("common.invalid_address", error = e))),
     };
     set_status(st, generation, HubState::Connecting, None);
     let shared = state.clone();
@@ -120,7 +120,7 @@ pub fn restart(state: &Shared, st: &mut State) {
         // 读凭据管理器放在任务里，不拖慢启动 / 保存设置
         let Some(token) = saved_token() else {
             let mut st = shared.lock().unwrap();
-            return set_status(&mut st, generation, HubState::Failed, Some("未保存 token：请在设置中填写 hub 签发的 token".into()));
+            return set_status(&mut st, generation, HubState::Failed, Some(tr!("hub.no_token_saved")));
         };
         log!("hub 客户端启动：{}", endpoint.url());
         link::run(make_link(&shared, generation, endpoint, Secret(token), hello(), changed)).await;
@@ -318,7 +318,7 @@ fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
                         request_id,
                         ok: false,
                         reason: Some("error".into()),
-                        message: Some("未找到用户目录".into()),
+                        message: Some(tr!("common.no_home")),
                         items: None,
                     },
                 };
@@ -330,7 +330,7 @@ fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
             let size = |v: Option<u16>, default| v.filter(|v| (1..=1000).contains(v)).unwrap_or(default);
             let (cols, rows) = (size(cols, 120), size(rows, 32));
             if !st.config.hub.allow_takeover {
-                return create_result(st, request_id, Err(("disabled", "本机未允许 hub 接管".into())));
+                return create_result(st, request_id, Err(("disabled", tr!("hub.takeover_disabled"))));
             }
             let shared = shared.clone();
             match target {
@@ -340,7 +340,7 @@ fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
                         let cwd = cwd.filter(|c| !c.trim().is_empty());
                         // 桌面端从目录选择框 / 最近目录选，ConPTY 遇到不存在的目录会悄悄改用主目录；网页手填的目录需先校验
                         let result = match &cwd {
-                            Some(c) if !Path::new(c).is_dir() => Err(format!("目录不存在：{c}")),
+                            Some(c) if !Path::new(c).is_dir() => Err(tr!("common.dir_not_found", dir = c)),
                             _ => session::create_local(&shared, None, cwd.unwrap_or_default(), cols, rows, resume),
                         };
                         let st = shared.lock().unwrap();
@@ -352,7 +352,7 @@ fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
                 }
                 link::CreateTarget::Remote { host_id, cwd } => {
                     let Some(host) = config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) else {
-                        return create_result(st, request_id, Err(("not_found", format!("未找到主机 {host_id}"))));
+                        return create_result(st, request_id, Err(("not_found", tr!("common.host_not_found", host = host_id))));
                     };
                     let cwd = cwd.filter(|c| !c.trim().is_empty());
                     tokio::spawn(async move {
@@ -460,8 +460,8 @@ pub fn reclaim(st: &mut State, id: u32) {
 pub async fn test(state: Shared, req_id: u64, address: String, allow_insecure: bool, token: Option<String>) {
     let start = std::time::Instant::now();
     let result = match (link::parse_address(&address, allow_insecure), token) {
-        (Err(e), _) => Err(format!("地址无效：{e}")),
-        (Ok(_), None) => Err("未填写 token，凭据管理器中也没有已保存的 token".into()),
+        (Err(e), _) => Err(tr!("common.invalid_address", error = e)),
+        (Ok(_), None) => Err(tr!("hub.no_token")),
         // hello 带 probe: true，hub 不会替换常驻连接
         (Ok(ep), Some(token)) => link::probe(&ep, &Secret(token), &hello()).await.map_err(|f| f.msg),
     };
@@ -499,7 +499,7 @@ pub fn token_saved() -> bool {
 
 /// 保存（Some）/ 清除（None）token
 pub fn set_token(token: Option<&str>) -> Result<(), String> {
-    let entry = entry().ok_or("无法打开 Windows 凭据管理器")?;
+    let entry = entry().ok_or_else(|| tr!("hub.keyring_unavailable"))?;
     match token.map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => entry.set_password(t).map_err(|e| e.to_string()),
         None => match entry.delete_credential() {

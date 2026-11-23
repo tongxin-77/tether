@@ -20,16 +20,16 @@
         <span class="brand-ver" id="brand-ver"></span>
       </div>
       <div class="new-wrap">
-        <button id="new-btn" title="新建本地或远程会话"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>新建会话<svg class="i chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+        <button id="new-btn" data-i18n-title="sidebar.newTitle"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span data-i18n="sidebar.newSession"></span><svg class="i chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
         <div id="new-menu" hidden></div>
       </div>
-      <div class="sec-label"><span>会话</span><span id="session-count"></span></div>
+      <div class="sec-label"><span data-i18n="sidebar.sessions"></span><span id="session-count"></span></div>
       <ul id="session-list"></ul>
       <div class="side-foot">
         <!-- 自动检查发现新版本时显示，点击打开更新对话框 -->
         <button id="update-badge" hidden></button>
         <div class="foot-row">
-          <button id="settings-btn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>设置</button>
+          <button id="settings-btn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg><span data-i18n="sidebar.settings"></span></button>
           <!-- 同一风格内切换亮色 / 暗色（图标与提示由 main.ts 按当前模式填写），风格在设置面板选择 -->
           <button id="theme-btn" class="icon-btn"></button>
         </div>
@@ -37,9 +37,9 @@
     </aside>
     <!-- 自定义标题栏（窗口无系统装饰）：位于中间列与文件栏上方；空白处拖动窗口、双击最大化 / 还原，右侧三个窗口按钮由 main.ts 填图标 -->
     <header id="titlebar" data-tauri-drag-region>
-      <button id="win-min" class="win-btn" title="最小化"></button>
-      <button id="win-max" class="win-btn" title="最大化"></button>
-      <button id="win-close" class="win-btn" title="关闭"></button>
+      <button id="win-min" class="win-btn" data-i18n-title="titlebar.minimize"></button>
+      <button id="win-max" class="win-btn"></button>
+      <button id="win-close" class="win-btn" data-i18n-title="common.close"></button>
     </header>
     <!-- 中间列：顶部会话卡片头 + （可选）提示条 + 暖棕终端卡片（由 #terminals::before 绘制，.term 浮在其上） -->
     <main id="terminals">
@@ -52,40 +52,40 @@
         <div class="ch-claude"><span class="lbl">Claude Code</span><span id="ch-claude" hidden></span></div>
       </div>
       <!-- 复制成功的短暂提示 -->
-      <div id="copied" hidden>已复制</div>
+      <div id="copied" hidden></div>
       <!-- 未检测到 PowerShell 7 时的安装提示（可关闭），位于卡片头下方；显示时终端区内容整体下移 -->
       <div id="pwsh-banner" class="notice" hidden>
         <span class="b-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg></span>
-        <span class="b-text"><b>建议安装 PowerShell 7</b><small>未检测到，新建会话将使用 Windows PowerShell</small></span>
-        <button id="pwsh-install">安装</button>
-        <button id="pwsh-dismiss">不再提示</button>
+        <span class="b-text"><b data-i18n="banner.pwsh.title"></b><small data-i18n="banner.pwsh.sub"></small></span>
+        <button id="pwsh-install" data-i18n="banner.pwsh.install"></button>
+        <button id="pwsh-dismiss" data-i18n="banner.pwsh.dismiss"></button>
       </div>
       <!-- 与后台服务的连接断开（daemon 崩溃 / 被结束）时显示，重连成功后隐藏；覆盖在 PowerShell 提示条之上 -->
       <div id="daemon-banner" class="notice warn" hidden>
         <span class="b-ico"><svg class="i spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></span>
-        <span class="b-text"><b>后台服务已断开，正在重连…</b></span>
+        <span class="b-text"><b data-i18n="banner.daemon.reconnecting"></b></span>
       </div>
       <!-- 当前会话正被 hub 远程接管：提示并可一键收回 -->
       <div id="hub-banner" class="notice warn" hidden>
         <span class="b-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg></span>
-        <span class="b-text"><b>hub 接管中</b><small>远程用户可查看此会话并输入</small></span>
-        <button id="hub-reclaim">收回</button>
+        <span class="b-text"><b data-i18n="banner.hub.title"></b><small data-i18n="banner.hub.sub"></small></span>
+        <button id="hub-reclaim" data-i18n="banner.hub.reclaim"></button>
       </div>
       <!-- 更新后 daemon 仍为旧版本（安装时不打断会话）：提示用户择机重启后台 -->
       <div id="daemon-old-banner" class="notice" hidden>
         <span class="b-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/></svg></span>
         <span id="daemon-old-text" class="b-text"></span>
-        <button id="daemon-restart">重启后台</button>
+        <button id="daemon-restart" data-i18n="daemon.restart"></button>
       </div>
       <!-- 无会话时的空状态：最近关闭的目录 -->
       <div id="empty" hidden>
         <div id="empty-box">
-          <h2 id="empty-title">没有打开的会话</h2>
-          <p id="empty-sub">新建一个本地会话，或从最近关闭的目录继续</p>
-          <button id="empty-new">＋ 新建本地会话</button>
-          <div id="recent-head">最近关闭</div>
+          <h2 id="empty-title" data-i18n="empty.title"></h2>
+          <p id="empty-sub" data-i18n="empty.sub"></p>
+          <button id="empty-new" data-i18n="empty.new"></button>
+          <div id="recent-head" data-i18n="empty.recent"></div>
           <ul id="recent-list"></ul>
-          <p id="recent-none">暂无最近关闭的会话</p>
+          <p id="recent-none" data-i18n="empty.recentNone"></p>
         </div>
       </div>
       <!-- Markdown 预览：覆盖在终端卡片上方（与 .term 同级，不影响 xterm 容器） -->
@@ -94,11 +94,11 @@
           <svg class="i pv-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
           <span id="pv-name"></span>
           <span id="pv-note" hidden></span>
-          <button id="pv-edit" class="pv-btn" hidden>编辑</button>
-          <button id="pv-cancel" class="pv-btn" hidden>取消</button>
-          <button id="pv-save" class="pv-btn primary" title="保存（Ctrl+S）" hidden>保存</button>
-          <button id="pv-open" class="pv-btn">用默认程序打开</button>
-          <button id="pv-close" class="fs-btn" title="关闭（Esc）"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+          <button id="pv-edit" class="pv-btn" hidden data-i18n="common.edit"></button>
+          <button id="pv-cancel" class="pv-btn" hidden data-i18n="common.cancel"></button>
+          <button id="pv-save" class="pv-btn primary" data-i18n-title="preview.saveTitle" data-i18n="common.save" hidden></button>
+          <button id="pv-open" class="pv-btn" data-i18n="files.openDefault"></button>
+          <button id="pv-close" class="fs-btn" data-i18n-title="common.closeEsc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
         <div id="pv-body" tabindex="-1"><article id="pv-doc"></article></div>
         <div id="pv-editor" hidden></div>
@@ -107,9 +107,9 @@
       <div id="git-panel" hidden>
         <div id="gp-head">
           <span id="gp-ico"></span>
-          <span id="gp-title">提交历史</span>
+          <span id="gp-title" data-i18n="git.historyTitle"></span>
           <span id="gp-branch"></span>
-          <button id="gp-close" class="fs-btn" title="关闭（Esc）"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+          <button id="gp-close" class="fs-btn" data-i18n-title="common.closeEsc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
         <div id="gp-body">
           <div id="gp-list" tabindex="-1"></div>
@@ -125,17 +125,17 @@
       <section class="tree-panel">
         <div id="files-head">
           <svg class="i fs-head-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/></svg>
-          <span id="fs-title">文件</span>
+          <span id="fs-title" data-i18n="files.title"></span>
           <span id="fs-root-tag" hidden>root</span>
           <button id="fs-root" class="fs-btn" hidden></button>
-          <button id="fs-up" class="fs-btn" title="上一级"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
-          <button id="fs-refresh" class="fs-btn" title="刷新"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+          <button id="fs-up" class="fs-btn" data-i18n-title="files.up"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+          <button id="fs-refresh" class="fs-btn" data-i18n-title="common.refresh"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
           <button id="fs-toggle" class="fs-btn"></button>
         </div>
         <div id="fs-path"></div>
         <!-- SSH 会话“以 root 浏览”时的警示，与终端已是 root 时的提权提示（files.ts 控制显示） -->
-        <div id="fs-root-banner" hidden>正以 root 身份浏览：删除、覆盖、上传等操作均以 root 执行</div>
-        <div id="fs-root-hint" hidden><span>终端已是 root，是否同步提权文件面板？</span><button type="button" id="fs-root-hint-ok" class="pill-primary">提权</button><button type="button" id="fs-root-hint-no">忽略</button></div>
+        <div id="fs-root-banner" hidden data-i18n="files.rootBanner"></div>
+        <div id="fs-root-hint" hidden><span data-i18n="files.rootHint"></span><button type="button" id="fs-root-hint-ok" class="pill-primary" data-i18n="files.rootHintOk"></button><button type="button" id="fs-root-hint-no" data-i18n="files.rootHintNo"></button></div>
         <div id="fs-tree" tabindex="0"></div>
         <div id="fs-transfers"></div>
       </section>
@@ -148,8 +148,8 @@
         <p id="fs-d-msg"></p>
         <input id="fs-d-input" autocomplete="off" spellcheck="false" />
         <div class="actions">
-          <button value="ok" id="fs-d-ok">确定</button>
-          <button value="cancel">取消</button>
+          <button value="ok" id="fs-d-ok"></button>
+          <button value="cancel" data-i18n="common.cancel"></button>
         </div>
       </form>
     </dialog>
@@ -159,9 +159,9 @@
         <p id="fs-c-hint" class="hint"></p>
         <label class="check" id="fs-c-all-row"><input type="checkbox" id="fs-c-all" /><span id="fs-c-all-text"></span></label>
         <div class="actions">
-          <button value="keep" autofocus>都保留</button>
-          <button value="skip">跳过</button>
-          <button value="overwrite">覆盖</button>
+          <button value="keep" autofocus data-i18n="files.conflict.keep"></button>
+          <button value="skip" data-i18n="files.conflict.skip"></button>
+          <button value="overwrite" data-i18n="common.overwrite"></button>
         </div>
       </form>
     </dialog>
@@ -169,11 +169,11 @@
     <dialog id="pv-conflict">
       <form method="dialog">
         <p id="pv-c-msg"></p>
-        <p class="hint">覆盖：用编辑器中的内容替换；重新加载：放弃未保存的修改，读取最新内容。</p>
+        <p class="hint" data-i18n="preview.conflict.hint"></p>
         <div class="actions">
-          <button value="overwrite" class="danger">覆盖</button>
-          <button value="reload">重新加载</button>
-          <button value="cancel" autofocus>取消</button>
+          <button value="overwrite" class="danger" data-i18n="common.overwrite"></button>
+          <button value="reload" data-i18n="preview.conflict.reload"></button>
+          <button value="cancel" autofocus data-i18n="common.cancel"></button>
         </div>
       </form>
     </dialog>
@@ -182,11 +182,11 @@
       <form method="dialog">
         <div class="m-head">
           <span class="ch-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span>
-          <h2>恢复 Claude 对话</h2>
+          <h2 data-i18n="history.title"></h2>
         </div>
-        <button value="cancel" class="m-x" title="关闭" formnovalidate><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
-        <div class="cch-dir"><span id="cch-dir"></span><button type="button" id="cch-files" hidden>改用文件栏目录</button></div>
-        <input id="cch-filter" placeholder="按标题过滤" autocomplete="off" spellcheck="false" />
+        <button value="cancel" class="m-x" data-i18n-title="common.close" formnovalidate><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        <div class="cch-dir"><span id="cch-dir"></span><button type="button" id="cch-files" hidden data-i18n="history.useFilesDir"></button></div>
+        <input id="cch-filter" data-i18n-placeholder="history.filter" autocomplete="off" spellcheck="false" />
         <ul id="cch-list"></ul>
         <p id="cch-empty" class="hint" hidden></p>
       </form>
@@ -195,129 +195,133 @@
       <form method="dialog">
         <div class="m-head">
           <span class="ch-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></span>
-          <h2>设置</h2>
+          <h2 data-i18n="settings.title"></h2>
         </div>
         <!-- 可滚动区域：标题与底部按钮固定 -->
         <div class="m-body">
         <div class="rows">
           <label class="row">
-            <span class="rt"><b>默认 shell</b><small>仅对之后新建的会话生效<span id="pwsh-hint" hidden>；未检测到 PowerShell 7，自动将使用 Windows PowerShell（可用 winget 安装）</span></small></span>
+            <span class="rt"><b data-i18n="settings.shell.title"></b><small><span data-i18n="settings.shell.sub"></span><span id="pwsh-hint" data-i18n="settings.shell.pwshHint" hidden></span></small></span>
             <select id="shell-select"></select>
           </label>
         </div>
-        <div class="section-head">外观</div>
+        <div class="section-head" data-i18n="settings.appearance"></div>
         <div class="rows">
           <label class="row">
-            <span class="rt"><b>主题风格</b><small>立即生效；侧栏底部的按钮切换亮色 / 暗色</small></span>
+            <span class="rt"><b data-i18n="settings.language.title"></b><small data-i18n="settings.language.sub"></small></span>
+            <select id="locale-select"></select>
+          </label>
+          <label class="row">
+            <span class="rt"><b data-i18n="settings.theme.title"></b><small data-i18n="settings.theme.sub"></small></span>
             <select id="theme-select"></select>
           </label>
           <label class="row">
-            <span class="rt"><b>界面字号</b><small>立即生效；相对原始字号整体调小 / 调大</small></span>
+            <span class="rt"><b data-i18n="settings.fontAdj.title"></b><small data-i18n="settings.fontAdj.sub"></small></span>
             <select id="font-adj-select"></select>
           </label>
           <label class="row">
-            <span class="rt"><b>终端字号</b><small>立即生效；“自动”按屏幕分辨率选择。鼠标在终端上时 Ctrl+滚轮也可调整</small></span>
+            <span class="rt"><b data-i18n="settings.termFont.title"></b><small data-i18n="settings.termFont.sub"></small></span>
             <select id="term-font-select"></select>
           </label>
           <label class="row">
-            <span class="rt"><b>GPU 加速渲染</b><small>使用 WebGL 渲染终端，输出密集时更流畅；显示异常时可关闭</small></span>
-            <input type="checkbox" class="switch" id="gpu-check" aria-label="GPU 加速渲染" />
+            <span class="rt"><b data-i18n="settings.gpu.title"></b><small data-i18n="settings.gpu.sub"></small></span>
+            <input type="checkbox" class="switch" id="gpu-check" data-i18n-aria-label="settings.gpu.title" />
           </label>
           <label class="row range">
-            <span class="rt"><b>窗口透明度</b><small>100% 为完全不透明；调低后窗口背景半透明，文字与图标不受影响</small></span>
+            <span class="rt"><b data-i18n="settings.opacity.title"></b><small data-i18n="settings.opacity.sub"></small></span>
             <span class="range-ctl"><input type="range" id="opacity-range" min="30" max="100" step="1" /><output id="opacity-val"></output></span>
           </label>
         </div>
-        <div class="section-head">通知</div>
+        <div class="section-head" data-i18n="settings.notify"></div>
         <div class="rows">
           <div class="row" id="sound-row">
-            <span class="rt"><b>提示音</b><small>弹出系统通知时播放鸟鸣提示音；关闭后通知静音</small></span>
-            <button type="button" id="sound-test">试听</button>
-            <input type="checkbox" class="switch" id="sound-check" aria-label="提示音" />
+            <span class="rt"><b data-i18n="settings.sound.title"></b><small data-i18n="settings.sound.sub"></small></span>
+            <button type="button" id="sound-test" data-i18n="settings.sound.test"></button>
+            <input type="checkbox" class="switch" id="sound-check" data-i18n-aria-label="settings.sound.title" />
           </div>
         </div>
-        <div class="section-head">Claude Code 集成</div>
+        <div class="section-head" data-i18n="settings.cc.title"></div>
         <!-- 在 Claude Code 的 settings.json 中写入 hooks，会话内的 claude 把状态与通知发回 Tether -->
         <div class="rows">
           <div class="row cc-row" id="cc-row">
-            <span class="rt"><b>Claude Code 集成 · <span id="cc-status">未启用</span></b><small>写入 hooks，让侧栏实时显示 Claude 的状态</small><small class="hint" id="cc-path"></small></span>
-            <button type="button" id="cc-enable">启用</button>
-            <button type="button" id="cc-remove">移除</button>
+            <span class="rt"><b><span data-i18n="settings.cc.title"></span> · <span id="cc-status"></span></b><small data-i18n="settings.cc.sub"></small><small class="hint" id="cc-path"></small></span>
+            <button type="button" id="cc-enable"></button>
+            <button type="button" id="cc-remove" data-i18n="settings.cc.remove"></button>
           </div>
         </div>
-        <div class="section-head">管理服务器</div>
+        <div class="section-head" data-i18n="settings.hub.section"></div>
         <!-- 连接自托管的 Tether hub（由 daemon 出站连接）；默认关闭，关闭时不发起任何连接 -->
         <div class="rows" id="hub-rows">
           <label class="row">
-            <span class="rt"><b>连接管理服务器</b><small>在 hub 网页中汇总本机的会话列表（不上传终端内容）；关闭时不发起任何连接</small></span>
-            <input type="checkbox" class="switch" id="hub-enabled" aria-label="连接管理服务器" />
+            <span class="rt"><b data-i18n="settings.hub.enable"></b><small data-i18n="settings.hub.enableSub"></small></span>
+            <input type="checkbox" class="switch" id="hub-enabled" data-i18n-aria-label="settings.hub.enable" />
           </label>
           <div class="row" id="hub-fields">
-            <label>服务器地址<input id="hub-address" autocomplete="off" spellcheck="false" placeholder="192.168.1.10:8443 或 wss://hub.example.com" /></label>
-            <label>token（保存到 Windows 凭据管理器）<input id="hub-token" type="password" autocomplete="off" spellcheck="false" /></label>
-            <div id="hub-token-state"><span id="hub-token-status"></span><button type="button" id="hub-token-clear" class="danger">清除 token</button></div>
-            <label class="check"><input type="checkbox" id="hub-insecure" />允许明文连接（仅限局域网调试）</label>
-            <label class="check"><input type="checkbox" id="hub-takeover" />允许 hub 远程接管本机会话</label>
-            <p class="hint" id="hub-takeover-hint">接管者可在 hub 网页中查看终端并输入，即可在本机执行命令；被接管的会话会显示标识，可随时收回</p>
+            <label><span data-i18n="settings.hub.address"></span><input id="hub-address" autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.hub.addressPlaceholder" /></label>
+            <label><span data-i18n="settings.hub.token"></span><input id="hub-token" type="password" autocomplete="off" spellcheck="false" /></label>
+            <div id="hub-token-state"><span id="hub-token-status"></span><button type="button" id="hub-token-clear" class="danger" data-i18n="settings.hub.clearToken"></button></div>
+            <label class="check"><input type="checkbox" id="hub-insecure" /><span data-i18n="settings.hub.insecure"></span></label>
+            <label class="check"><input type="checkbox" id="hub-takeover" /><span data-i18n="settings.hub.takeover"></span></label>
+            <p class="hint" id="hub-takeover-hint" data-i18n="settings.hub.takeoverHint"></p>
             <p id="hub-test-result" role="status" hidden></p>
           </div>
           <div class="row">
-            <span class="rt"><b>连接状态 · <span id="hub-state">未启用</span></b><small id="hub-state-detail"></small></span>
-            <button type="button" id="hub-test">测试连接</button>
+            <span class="rt"><b><span data-i18n="settings.hub.state"></span> · <span id="hub-state"></span></b><small id="hub-state-detail"></small></span>
+            <button type="button" id="hub-test"></button>
           </div>
         </div>
-        <div class="section-head">关于与更新</div>
+        <div class="section-head" data-i18n="settings.about"></div>
         <div class="rows">
           <div class="row" id="update-row">
-            <span class="rt"><b>当前版本 <span id="about-version"></span></b><small id="update-status"></small></span>
-            <button type="button" id="update-check">检查更新</button>
+            <span class="rt"><b><span data-i18n="settings.version"></span> <span id="about-version"></span></b><small id="update-status"></small></span>
+            <button type="button" id="update-check" data-i18n="settings.checkUpdate"></button>
           </div>
           <label class="row">
-            <span class="rt"><b>启动时自动检查更新</b></span>
+            <span class="rt"><b data-i18n="settings.autoUpdate"></b></span>
             <input type="checkbox" class="switch" id="update-auto" />
           </label>
           <div class="row">
-            <span class="rt"><b>后台进程 <span id="daemon-version"></span></b><small>重启后台以启用新版后台或排除故障；会话会在原目录重开</small></span>
-            <button type="button" id="daemon-restart-settings">重启后台</button>
+            <span class="rt"><b><span data-i18n="settings.daemon.title"></span> <span id="daemon-version"></span></b><small data-i18n="settings.daemon.sub"></small></span>
+            <button type="button" id="daemon-restart-settings" data-i18n="daemon.restart"></button>
           </div>
         </div>
-        <div class="section-head">主机<button type="button" id="host-add">+ 添加</button></div>
+        <div class="section-head"><span data-i18n="settings.hosts"></span><button type="button" id="host-add" data-i18n="settings.add"></button></div>
         <ul id="host-list"></ul>
-        <div class="section-head">自定义联想命令<button type="button" id="completion-add">+ 添加</button></div>
+        <div class="section-head"><span data-i18n="settings.completions"></span><button type="button" id="completion-add" data-i18n="settings.add"></button></div>
         <ul id="completion-list"></ul>
-        <p class="hint">在终端输入命令开头时弹出联想，Tab 接受</p>
+        <p class="hint" data-i18n="settings.completionsHint"></p>
         </div>
         <div class="actions">
           <!-- 保存在前：回车提交时取首个按钮；视觉顺序由 CSS row-reverse 调换 -->
-          <button value="save">保存</button>
-          <button value="cancel" formnovalidate>取消</button>
+          <button value="save" data-i18n="common.save"></button>
+          <button value="cancel" formnovalidate data-i18n="common.cancel"></button>
         </div>
         <!-- 右上角关闭（放在表单末尾，不影响回车默认提交“保存”） -->
-        <button value="cancel" class="m-x" title="关闭" formnovalidate><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        <button value="cancel" class="m-x" data-i18n-title="common.close" formnovalidate><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </form>
     </dialog>
     <dialog id="host-dialog">
       <form method="dialog">
-        <label>名称<input id="h-name" required /></label>
-        <label>主机<input id="h-host" required /></label>
-        <label>端口<input id="h-port" type="number" min="1" max="65535" required /></label>
-        <label>用户<input id="h-user" required /></label>
-        <label>认证方式
+        <label><span data-i18n="host.name"></span><input id="h-name" required /></label>
+        <label><span data-i18n="host.host"></span><input id="h-host" required /></label>
+        <label><span data-i18n="host.port"></span><input id="h-port" type="number" min="1" max="65535" required /></label>
+        <label><span data-i18n="host.user"></span><input id="h-user" required /></label>
+        <label><span data-i18n="host.auth"></span>
           <select id="h-auth">
-            <option value="key">密钥</option>
-            <option value="password">密码</option>
+            <option value="key" data-i18n="host.authKey"></option>
+            <option value="password" data-i18n="host.authPassword"></option>
           </select>
         </label>
-        <label>私钥路径（可选）<input id="h-key" placeholder="留空依次尝试 ~/.ssh/id_ed25519、id_ecdsa、id_rsa" /></label>
+        <label><span data-i18n="host.keyPath"></span><input id="h-key" data-i18n-placeholder="host.keyPathPlaceholder" /></label>
         <div id="h-pw-row">
-          <label id="h-pw-label">密码（保存到 Windows 凭据管理器）<input id="h-password" type="password" autocomplete="off" placeholder="留空则不修改已保存的密码" /></label>
-          <div id="h-pw-state"><span id="h-pw-status"></span><button type="button" id="h-pw-clear" class="danger">清除已保存密码</button></div>
+          <label id="h-pw-label"><span data-i18n="host.password"></span><input id="h-password" type="password" autocomplete="off" data-i18n-placeholder="host.passwordPlaceholder" /></label>
+          <div id="h-pw-state"><span id="h-pw-status"></span><button type="button" id="h-pw-clear" class="danger" data-i18n="host.clearPassword"></button></div>
         </div>
         <p id="h-test-result" role="status" hidden></p>
         <div class="actions">
-          <button value="save">保存</button>
-          <button value="cancel" formnovalidate>取消</button>
-          <button type="button" id="h-test">测试连接</button>
+          <button value="save" data-i18n="common.save"></button>
+          <button value="cancel" formnovalidate data-i18n="common.cancel"></button>
+          <button type="button" id="h-test"></button>
         </div>
       </form>
     </dialog>
@@ -325,12 +329,12 @@
       <form method="dialog">
         <h3 id="upd-title"></h3>
         <div id="upd-notes"></div>
-        <p class="hint">安装时只重启窗口，会话继续运行；之后可在提示条中重启后台进程以启用新版后台。</p>
+        <p class="hint" data-i18n="update.hint"></p>
         <progress id="upd-progress" hidden></progress>
         <div class="actions">
-          <button type="button" id="upd-install">立即更新</button>
-          <button value="skip">跳过此版本</button>
-          <button value="later">稍后</button>
+          <button type="button" id="upd-install" data-i18n="update.install"></button>
+          <button value="skip" data-i18n="update.skip"></button>
+          <button value="later" data-i18n="update.later"></button>
         </div>
       </form>
     </dialog>
@@ -341,10 +345,10 @@
         <p id="p-message"></p>
         <code id="p-fingerprint"></code>
         <input id="p-input" type="password" autocomplete="off" />
-        <label class="check" id="p-save-row"><input type="checkbox" id="p-save" />保存密码（Windows 凭据管理器）</label>
+        <label class="check" id="p-save-row"><input type="checkbox" id="p-save" /><span data-i18n="prompt.savePassword"></span></label>
         <div class="actions">
-          <button value="ok" id="p-ok">确定</button>
-          <button value="cancel">取消</button>
+          <button value="ok" id="p-ok"></button>
+          <button value="cancel" data-i18n="common.cancel"></button>
         </div>
       </form>
     </dialog>

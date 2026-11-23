@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 /// Claude Code 历史对话列表（GUI 的「恢复 Claude 对话…」与 hub 网页新建共用）
 pub mod claude_history;
 
+/// 界面语言代码解析与词条表查找（daemon 与 GUI 进程各自的词条表共用）
+pub mod i18n;
+
 /// 贴图文件的类型校验与保存（daemon 的 hub 贴图与 GUI 粘贴剪贴板图片共用）
 pub mod image;
 
@@ -140,6 +143,10 @@ pub struct Config {
     /// 管理服务器（hub）连接设置；旧配置无此字段时为未启用。token 不在这里，存 Windows 凭据管理器
     #[serde(default)]
     pub hub: HubConfig,
+    /// daemon 生成文字（系统通知、错误提示等）所用的语言，由 GUI 以 SetLocale 设置（不随 SetConfig 修改）；
+    /// 旧配置无此字段时为 None，按 zh-CN
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 /// 管理服务器（hub）连接设置
@@ -198,6 +205,7 @@ impl Default for Config {
             sound: true,
             completions: Vec::new(),
             hub: HubConfig::default(),
+            locale: None,
         }
     }
 }
@@ -552,6 +560,9 @@ pub enum ClientMsg {
     PlaySound,
     /// GUI 连接后的首条消息：GUI 版本与协议版本，daemon 回 Hello（旧 daemon 不回复，GUI 超时后按旧版处理）
     Hello { version: String, proto: u32 },
+    /// GUI 当前界面语言（解析后的代码：zh-CN / en / zh-TW / ja）：Hello 之后及切换语言时发送，daemon 记住并持久化，
+    /// 用于系统通知与发往 GUI 的提示文字；旧 daemon 不认识、忽略
+    SetLocale { locale: String },
     /// 让 daemon 保存会话列表后退出（GUI 更新后“重启后台”）；GUI 重连时拉起新 daemon 并恢复会话
     Shutdown,
     /// 采样会话所在机器的主机信息，daemon 以同一 req_id 回 HostStats（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
@@ -698,6 +709,23 @@ mod tests {
         assert!(matches!(shutdown, super::ClientMsg::Shutdown));
         let reply: super::ServerMsg = serde_json::from_str(r#"{"type":"hello","version":"0.1.1","proto":1}"#).unwrap();
         assert!(matches!(reply, super::ServerMsg::Hello { proto: 1, .. }));
+    }
+
+    #[test]
+    fn set_locale_wire_format() {
+        let msg = super::ClientMsg::SetLocale { locale: "en".into() };
+        assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"setLocale","locale":"en"}"#);
+        let msg: super::ClientMsg = serde_json::from_str(r#"{"type":"setLocale","locale":"ja"}"#).unwrap();
+        assert!(matches!(msg, super::ClientMsg::SetLocale { locale } if locale == "ja"));
+    }
+
+    #[test]
+    fn config_locale_optional() {
+        let c: super::Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.locale, None);
+        assert!(!serde_json::to_string(&c).unwrap().contains("locale"));
+        let c: super::Config = serde_json::from_str(r#"{"locale":"zh-TW"}"#).unwrap();
+        assert_eq!(c.locale.as_deref(), Some("zh-TW"));
     }
 
     #[test]

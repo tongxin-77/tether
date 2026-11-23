@@ -1,6 +1,8 @@
 // 设置面板「管理服务器」分组：启用开关、服务器地址、token（存 Windows 凭据管理器，不回传 GUI）、允许明文、允许远程接管、测试连接与当前连接状态。
 // 连接由 daemon 发起；这里只编辑设置草稿（随设置“保存”提交）并显示 daemon 推送的状态。
 
+import { onLocaleChange, t } from "./i18n";
+
 // 与 proto crate 的 HubConfig / HubState 保持一致
 export interface HubConfig {
   enabled: boolean;
@@ -26,12 +28,6 @@ interface Deps {
 
 /** 等待测试结果的最长时间（daemon 测试限时 10 秒）；超时视为不认识该消息的旧版 daemon */
 const TEST_TIMEOUT = 15000;
-const STATE_LABELS: Record<HubState, string> = {
-  disabled: "未启用",
-  connecting: "连接中…",
-  connected: "已连接",
-  failed: "连接失败",
-};
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const enabledCheck = $<HTMLInputElement>("hub-enabled");
@@ -49,47 +45,49 @@ let clearToken = false;
 let test: { reqId: number; timer: number } | undefined;
 /** 与文件树一样错开 reqId 起点 */
 let testSeq = Math.floor(Math.random() * 2 ** 40);
+/** 最近一次显示的连接状态，切换语言时重绘 */
+let shown: { state: HubState; error: string | null } = { state: "disabled", error: null };
 
 /** 校验服务器地址（规则与 daemon 的 parse_address 一致），合法返回 null，否则返回原因 */
 export function hubAddressError(input: string, allowInsecure: boolean): string | null {
   const s = input.trim();
-  if (!s) return "未填写服务器地址";
+  if (!s) return t("hub.addr.empty");
   let tls = !allowInsecure; // 未写协议：默认 wss，勾选允许明文则默认 ws
   let rest = s;
   const i = s.indexOf("://");
   if (i >= 0) {
     const scheme = s.slice(0, i).toLowerCase();
-    if (scheme !== "wss" && scheme !== "ws") return `不支持的协议 ${scheme}://，只能是 wss:// 或 ws://`;
+    if (scheme !== "wss" && scheme !== "ws") return t("hub.addr.scheme", { scheme });
     tls = scheme === "wss";
     rest = s.slice(i + 3);
   }
-  if (!tls && !allowInsecure) return "ws:// 为明文连接，需勾选「允许明文连接（仅限局域网调试）」";
-  if (/[?#@\s]/.test(rest)) return "地址只能包含主机和端口";
+  if (!tls && !allowInsecure) return t("hub.addr.insecure", { option: t("settings.hub.insecure") });
+  if (/[?#@\s]/.test(rest)) return t("hub.addr.hostPortOnly");
   const slash = rest.indexOf("/");
   const authority = slash >= 0 ? rest.slice(0, slash) : rest;
   const path = slash >= 0 ? rest.slice(slash).replace(/\/+$/, "") : "";
-  if (path !== "" && path !== "/agent") return "地址不能包含路径（连接路径固定为 /agent）";
+  if (path !== "" && path !== "/agent") return t("hub.addr.noPath");
   let host: string;
   let port: string | undefined;
   if (authority.startsWith("[")) {
     const end = authority.indexOf("]");
-    if (end < 0) return "IPv6 地址缺少右方括号";
+    if (end < 0) return t("hub.addr.ipv6Bracket");
     host = authority.slice(1, end);
-    if (!/^[0-9a-fA-F:.]+$/.test(host) || !host.includes(":")) return `${host} 不是合法的 IPv6 地址`;
+    if (!/^[0-9a-fA-F:.]+$/.test(host) || !host.includes(":")) return t("hub.addr.ipv6Invalid", { host });
     const after = authority.slice(end + 1);
     if (after) {
-      if (!after.startsWith(":")) return "IPv6 地址后只能跟 :端口";
+      if (!after.startsWith(":")) return t("hub.addr.ipv6Port");
       port = after.slice(1);
     }
   } else {
     const parts = authority.split(":");
-    if (parts.length > 2) return "IPv6 地址需用方括号括起，如 [fe80::1]:8443";
+    if (parts.length > 2) return t("hub.addr.ipv6NeedBrackets");
     [host, port] = parts;
-    if (host && !/^[A-Za-z0-9._-]+$/.test(host)) return `主机名 ${host} 含非法字符`;
+    if (host && !/^[A-Za-z0-9._-]+$/.test(host)) return t("hub.addr.badHost", { host });
   }
-  if (!host) return "缺少主机名";
+  if (!host) return t("hub.addr.noHost");
   if (port !== undefined && !(/^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) {
-    return `端口 ${port} 无效，应为 1–65535`;
+    return t("hub.addr.badPort", { port });
   }
   return null;
 }
@@ -104,6 +102,14 @@ export function initHub(d: Deps) {
     renderToken();
   });
   testBtn.addEventListener("click", runTest);
+  renderTestBtn();
+  renderStatus(shown.state, shown.error);
+  onLocaleChange(() => {
+    renderStatus(shown.state, shown.error);
+    renderToken();
+    renderTestBtn();
+    validate();
+  });
 }
 
 /** 收到 daemon 的 config：回填已保存的设置（旧 daemon 无 hubTokenSaved，整个分组置灰并提示） */
@@ -117,7 +123,7 @@ export function fillHub(cfg: HubConfig | undefined, saved: boolean | undefined) 
   const supported = saved !== undefined;
   for (const el of [enabledCheck, addressInput, tokenInput, insecureCheck, takeoverCheck, testBtn]) el.disabled = !supported;
   $("hub-fields").classList.toggle("off", !supported);
-  if (!supported) renderStatus("disabled", "后台版本较旧，不支持管理服务器；重启后台后可用");
+  if (!supported) renderStatus("disabled", t("hub.unsupported"));
   $("hub-test-result").hidden = true;
   renderToken();
   validate();
@@ -150,7 +156,7 @@ export function onHubMessage(m: HubServerMsg) {
   if (m.reqId !== test?.reqId) return;
   endTest();
   if (m.error) showResult(false, m.error);
-  else showResult(true, `连接成功（耗时 ${m.elapsedMs ?? 0} ms，hub 版本 ${m.hubVersion ?? "未知"}）`);
+  else showResult(true, t("hub.testOk", { ms: m.elapsedMs ?? 0, version: m.hubVersion ?? t("hub.unknownVersion") }));
 }
 
 /** 地址校验结果写入输入框的自定义有效性：设置“保存”与测试连接都会被拦下并提示原因。未启用且留空时不校验 */
@@ -165,18 +171,19 @@ function renderToken() {
   const saved = typed || (!clearToken && !!tokenSaved);
   const changed = typed || clearToken;
   const status = $("hub-token-status");
-  status.textContent = (saved ? "token：已保存" : "token：未保存") + (changed ? "（点设置“保存”后生效）" : "");
+  status.textContent = (saved ? t("hub.tokenSaved") : t("hub.tokenNotSaved")) + (changed ? t("settings.pendingSave") : "");
   status.classList.toggle("on", saved);
-  tokenInput.placeholder = tokenSaved && !clearToken ? "留空则不修改已保存的 token" : "粘贴 hub 签发的 token";
+  tokenInput.placeholder = tokenSaved && !clearToken ? t("hub.tokenKeep") : t("hub.tokenPaste");
   $("hub-token-clear").hidden = !saved || tokenSaved === undefined;
 }
 
 function renderStatus(state: HubState, error: string | null) {
+  shown = { state, error };
   const el = $("hub-state");
-  el.textContent = STATE_LABELS[state];
+  el.textContent = t(`hub.state.${state}`);
   el.dataset.state = state;
   const detail = $("hub-state-detail");
-  detail.textContent = error ? (state === "connecting" ? `上次失败：${error}，稍后自动重试` : error) : "";
+  detail.textContent = error ? (state === "connecting" ? t("hub.retrying", { error }) : error) : "";
 }
 
 /** 测试连接：用面板当前填写的地址 / 明文开关 / token（不必先保存）；token 留空时用已保存的（点过清除则没有） */
@@ -188,11 +195,11 @@ function runTest() {
   const reqId = ++testSeq;
   const timer = window.setTimeout(() => {
     endTest();
-    showResult(false, "未收到后台响应：后台版本较旧，重启后台后可用");
+    showResult(false, t("error.daemonNoReply"));
   }, TEST_TIMEOUT);
   test = { reqId, timer };
   testBtn.disabled = true;
-  testBtn.textContent = "测试中…";
+  renderTestBtn();
   $("hub-test-result").hidden = true;
   const { address, allowInsecure } = draftHub();
   deps.send({ type: "testHub", reqId, address, allowInsecure, token: typed || null, useSaved: !typed && !clearToken });
@@ -202,7 +209,11 @@ function endTest() {
   if (test) clearTimeout(test.timer);
   test = undefined;
   testBtn.disabled = tokenSaved === undefined;
-  testBtn.textContent = "测试连接";
+  renderTestBtn();
+}
+
+function renderTestBtn() {
+  testBtn.textContent = test ? t("common.testing") : t("common.testConnection");
 }
 
 function showResult(ok: boolean, text: string) {

@@ -8,9 +8,8 @@
 import type { ITheme } from "@xterm/xterm";
 
 export interface StyleDef {
+  /** 设置面板中显示的名称为词条 theme.<id> */
   id: string;
-  /** 设置面板中显示的名称 */
-  label: string;
 }
 
 export interface ThemeDef {
@@ -30,12 +29,12 @@ export function xtermThemeFor(def: ThemeDef, windowTransparent: boolean): ITheme
 }
 
 export const STYLES: readonly StyleDef[] = [
-  { id: "cream", label: "奶油风1" },
-  { id: "minimal", label: "极简" }, // docs/design/fd-01-minimal.html
-  { id: "milk", label: "奶油风2" }, // docs/design/fd-02-cream.html
-  { id: "glass", label: "毛玻璃" }, // docs/design/fd-03-glass.html
-  { id: "morandi", label: "北欧莫兰迪" }, // docs/design/fd-04-morandi.html
-  { id: "modern", label: "现代暗色" }, // docs/design/fd-05-dark.html
+  { id: "cream" },
+  { id: "minimal" }, // docs/design/fd-01-minimal.html
+  { id: "milk" }, // docs/design/fd-02-cream.html
+  { id: "glass" }, // docs/design/fd-03-glass.html
+  { id: "morandi" }, // docs/design/fd-04-morandi.html
+  { id: "modern" }, // docs/design/fd-05-dark.html
 ];
 
 /** 滚动条三色：同一颜色的三档透明度 */

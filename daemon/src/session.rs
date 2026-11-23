@@ -21,7 +21,6 @@ pub type Shared = Arc<Mutex<State>>;
 /// 交互提示的回复：(输入值, 是否保存)，None 表示取消
 pub type PromptAnswer = Option<(String, bool)>;
 
-const DEFAULT_MSG: &str = "会话需要你的关注";
 /// 最近一次 Claude hook 事件后这段时间内，OSC9/BEL 不再通知（hook 已通知，避免重复）
 const HOOK_SUPPRESS: Duration = Duration::from_secs(5);
 /// 未收到 SubagentStop 的子代理登记超过这段时间即作废（仅在 Stop 不带 background_tasks 的旧版 Claude Code 上用到）
@@ -299,7 +298,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             match config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) {
                 // 连接 / 认证可能要等用户输入，放到异步任务中，不阻塞消息分发
                 Some(host) => drop(tokio::spawn(ssh::create(state.clone(), host, cwd, cols, rows, false))),
-                None => st.send(&ServerMsg::Error { message: format!("未找到主机 {host_id}") }),
+                None => st.send(&ServerMsg::Error { message: tr!("common.host_not_found", host = host_id) }),
             }
         }
         ClientMsg::Create { target: Target::Local { cwd }, cols, rows, command, resume } => {
@@ -349,6 +348,8 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
         }
         ClientMsg::GetConfig => st.send_config(),
         ClientMsg::SetConfig { mut config } => {
+            // 语言只由 SetLocale 修改
+            config.locale = st.config.locale.clone();
             // 丢弃 ~/.ssh/config 中已不存在的 alias 的覆盖项
             let ssh = config::ssh_config_hosts();
             config.hosts.retain(|h| h.source == HostSource::Tether || ssh.iter().any(|s| s.id == h.id));
@@ -371,18 +372,18 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 }
                 Err(e) => {
                     log!("保存配置失败：{e}");
-                    st.send(&ServerMsg::Error { message: format!("保存配置失败：{e}") });
+                    st.send(&ServerMsg::Error { message: tr!("session.save_config_failed", error = e) });
                 }
             }
         }
         ClientMsg::SetHostPassword { host_id, password } => {
             let Some(host) = config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) else {
-                st.send(&ServerMsg::Error { message: format!("未找到主机 {host_id}") });
+                st.send(&ServerMsg::Error { message: tr!("common.host_not_found", host = host_id) });
                 return true;
             };
             if let Err(e) = ssh::set_password(&ssh::Keyring, &host, password.as_ref().map(|p| p.0.as_str())) {
                 log!("保存密码失败：{e}");
-                st.send(&ServerMsg::Error { message: format!("保存密码失败：{e}") });
+                st.send(&ServerMsg::Error { message: tr!("session.save_password_failed", error = e) });
             }
             st.send_config();
         }
@@ -416,7 +417,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
         }
         ClientMsg::FsCopy { req_id, session_id, source, items, dest_dir } => {
             let Some(dest) = st.sessions.get(&session_id).map(|s| s.fs.clone()) else {
-                st.send(&ServerMsg::FsResult { req_id, error: Some("会话已不存在".into()) });
+                st.send(&ServerMsg::FsResult { req_id, error: Some(tr!("common.session_gone")) });
                 return true;
             };
             // 源按主机定位：源会话关闭后只要主机仍可连接（池中连接复用，或重新连接）即可粘贴
@@ -425,7 +426,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 FsSource::Remote { host_id } => match config::all_hosts(&st.config).into_iter().find(|h| h.id == host_id) {
                     Some(h) => Some(h),
                     None => {
-                        st.send(&ServerMsg::FsResult { req_id, error: Some(format!("未找到源主机 {host_id}")) });
+                        st.send(&ServerMsg::FsResult { req_id, error: Some(tr!("session.source_host_not_found", host = host_id)) });
                         return true;
                     }
                 },
@@ -435,7 +436,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
         ClientMsg::FsRoot { req_id, session_id, enabled } => match st.sessions.get(&session_id) {
             // 可能要等用户输入 sudo 密码，放到异步任务中
             Some(s) => drop(tokio::spawn(sudo::toggle(state.clone(), req_id, s.fs.clone(), enabled))),
-            None => st.send(&ServerMsg::FsResult { req_id, error: Some("会话已不存在".into()) }),
+            None => st.send(&ServerMsg::FsResult { req_id, error: Some(tr!("common.session_gone")) }),
         },
         ClientMsg::OpenUrl { url } => drop(tokio::spawn(fs::open_url(state.clone(), url))),
         ClientMsg::RemoveRecent { target } => {
@@ -449,7 +450,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
         }
         ClientMsg::GetClaudeHooks => st.send(&claude::status_msg(None)),
         ClientMsg::SetClaudeHooks { enabled } => {
-            let result = claude::settings_path().ok_or_else(|| "未找到用户目录".to_string()).and_then(|p| {
+            let result = claude::settings_path().ok_or_else(|| tr!("common.no_home")).and_then(|p| {
                 let r = if enabled { claude::hook_command().and_then(|c| claude::enable(&p, &c)) } else { claude::disable(&p) };
                 log!("Claude 集成{}（{}）：{r:?}", if enabled { "启用" } else { "移除" }, p.display());
                 r
@@ -457,13 +458,23 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             st.send(&claude::status_msg(result.err()));
         }
         ClientMsg::PlaySound => notify::play(),
+        ClientMsg::SetLocale { locale } => {
+            let code = crate::i18n::set(&locale).code();
+            if st.config.locale.as_deref() != Some(code) {
+                log!("界面语言：{code}");
+                st.config.locale = Some(code.into());
+                if let Err(e) = config::save(&st.config) {
+                    log!("保存配置失败：{e}");
+                }
+            }
+        }
         ClientMsg::Hello { version, proto } => {
             log!("GUI 版本 {version}（协议 {proto}），daemon 版本 {}", env!("CARGO_PKG_VERSION"));
             st.send(&ServerMsg::Hello { version: env!("CARGO_PKG_VERSION").into(), proto: proto::PROTO_VERSION });
         }
         ClientMsg::HostStats { req_id, session_id } => match st.sessions.get(&session_id) {
             Some(s) => drop(tokio::spawn(stats::run(state.clone(), req_id, s.fs.clone()))),
-            None => st.send(&ServerMsg::HostStats { req_id, stats: None, error: Some("会话已不存在".into()) }),
+            None => st.send(&ServerMsg::HostStats { req_id, stats: None, error: Some(tr!("common.session_gone")) }),
         },
         ClientMsg::TestHost { req_id, host, password, use_saved } => {
             let password = match password {
@@ -481,7 +492,7 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
                 Ok(()) => log!("hub token 已{}", if token.is_some() { "保存" } else { "清除" }),
                 Err(e) => {
                     log!("保存 hub token 失败：{e}");
-                    st.send(&ServerMsg::Error { message: format!("保存 hub token 失败：{e}") });
+                    st.send(&ServerMsg::Error { message: tr!("session.save_hub_token_failed", error = e) });
                 }
             }
             if st.config.hub.enabled {
@@ -662,7 +673,7 @@ impl Session {
 fn fs_spawn(state: &Shared, st: &State, req_id: u64, session_id: u32, op: fs::Op) {
     match st.sessions.get(&session_id) {
         Some(s) => drop(tokio::spawn(fs::run(state.clone(), req_id, s.fs.clone(), op))),
-        None => st.send(&ServerMsg::FsResult { req_id, error: Some("会话已不存在".into()) }),
+        None => st.send(&ServerMsg::FsResult { req_id, error: Some(tr!("common.session_gone")) }),
     }
 }
 
@@ -682,14 +693,14 @@ pub fn create_local(state: &Shared, command: Option<String>, cwd: String, cols: 
     }
     result.map_err(|e| {
         log!("启动 shell 失败（{shell}）：{e}");
-        format!("启动 shell 失败（{shell}）：{e}")
+        tr!("session.shell_start_failed", shell = shell, error = e)
     })
 }
 
 /// 启动配置中的 shell，登记会话并起读线程、等待线程
 fn spawn(state: &Shared, shell: &str, cwd: String, cols: u16, rows: u16) -> Result<u32, String> {
     let argv = config::split_command(shell);
-    let (program, args) = argv.split_first().ok_or("默认 shell 未配置")?;
+    let (program, args) = argv.split_first().ok_or_else(|| tr!("session.no_default_shell"))?;
     let pair = native_pty_system().openpty(pty_size(cols, rows)).map_err(|e| e.to_string())?;
     // 先分配 id：写入环境变量供会话内的 `tetherd hook` 回报（启动失败时该 id 作废，不影响后续）
     let id = alloc_id(state);
@@ -948,7 +959,7 @@ fn fire(state: &Shared, id: u32) {
     let Some(s) = st.sessions.get_mut(&id) else { return };
     s.timer_armed = false;
     s.muted_until = Instant::now() + Duration::from_secs(1);
-    let message = s.pending_msg.take().filter(|m| !m.is_empty()).unwrap_or_else(|| DEFAULT_MSG.into());
+    let message = s.pending_msg.take().filter(|m| !m.is_empty()).unwrap_or_else(|| tr!("notify.attention"));
     // 去抖期间收到了 hook 事件：交给 hook 通知
     if hooked(s) {
         return;
@@ -1192,7 +1203,7 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
             if a.bg > 0 {
                 return set(Some(ClaudeStatus::Background));
             }
-            Some(Step { next: Some(ClaudeStatus::Done), message: None, body: Some("任务已完成".into()) })
+            Some(Step { next: Some(ClaudeStatus::Done), message: None, body: Some(tr!("notify.task_done")) })
         }
         "Notification" => {
             let message = message.clone().filter(|m| !m.trim().is_empty());
@@ -1203,7 +1214,7 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
                 Some("idle_prompt") => set(Some(ClaudeStatus::Idle)),
                 // 需要用户操作的确认 / 输入（含后台子代理的权限请求，显示在主会话中）；旧版不带 notification_type 时同样处理
                 None | Some("permission_prompt" | "elicitation_dialog" | "elicitation_url_dialog" | "agent_needs_input") => {
-                    let body = message.clone().unwrap_or_else(|| "Claude 需要你的关注".into());
+                    let body = message.clone().unwrap_or_else(|| tr!("notify.claude_attention"));
                     Some(Step { next: Some(ClaudeStatus::Waiting), message, body: Some(body) })
                 }
                 // 其余只是告知（agent_completed、quota_auto_resume_*、plugin_notification、auth_success 等）：不改状态、不通知

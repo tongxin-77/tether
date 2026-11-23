@@ -147,12 +147,14 @@ describe("classifyDiff", () => {
 describe("relTime", () => {
   const now = Date.UTC(2026, 0, 31, 12);
   const ago = (s: number) => now / 1000 - s;
-  it("刚刚 / 分钟 / 小时 / 天 / 月 / 年", () => {
+  it("刚刚 / 分钟 / 小时 / 天 / 月 / 年（按语言，Intl.RelativeTimeFormat）", () => {
+    const rtf = new Intl.RelativeTimeFormat("zh-CN", { numeric: "auto" });
     expect(relTime(ago(10), now)).toBe("刚刚");
-    expect(relTime(ago(5 * 60), now)).toBe("5 分钟前");
-    expect(relTime(ago(3 * 3600), now)).toBe("3 小时前");
-    expect(relTime(ago(2 * 86400), now)).toBe("2 天前");
-    expect(relTime(ago(65 * 86400), now)).toBe("2 个月前");
-    expect(relTime(ago(800 * 86400), now)).toBe("2 年前");
+    expect(relTime(ago(5 * 60), now)).toBe(rtf.format(-5, "minute"));
+    expect(relTime(ago(3 * 3600), now)).toBe(rtf.format(-3, "hour"));
+    expect(relTime(ago(5 * 86400), now)).toBe(rtf.format(-5, "day"));
+    expect(relTime(ago(65 * 86400), now)).toBe(rtf.format(-2, "month"));
+    expect(relTime(ago(800 * 86400), now)).toBe(rtf.format(-2, "year"));
+    expect(relTime(ago(5 * 60), now)).toMatch(/^5\s?分钟前$/);
   });
 });

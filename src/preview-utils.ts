@@ -1,4 +1,5 @@
 // 文件预览的纯逻辑：可预览 / 编辑类型判定、编辑器语言、纯文本分块、Markdown 顶层块分组（便于单测）
+import { t } from "./i18n";
 
 /** 超过此大小的文件只读预览、不提供编辑 */
 export const MAX_EDIT = 5 * 1024 * 1024;
@@ -47,8 +48,8 @@ export function editorLang(path: string): EditorLang {
 
 /** 不可编辑的原因（只读预览）；可编辑返回 undefined。encoding 为 null 表示解码时有非法字节被替换 */
 export function editBlock(size: number, encoding: string | null): string | undefined {
-  if (size > MAX_EDIT) return `文件超过 ${MAX_EDIT / 1024 / 1024} MB，只读预览`;
-  if (encoding === null) return "文件含无法识别的字节，为免保存时损坏，只读预览";
+  if (size > MAX_EDIT) return t("preview.tooLarge", { n: MAX_EDIT / 1024 / 1024 });
+  if (encoding === null) return t("preview.badEncoding");
   return undefined;
 }
 

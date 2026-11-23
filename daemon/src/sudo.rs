@@ -46,13 +46,13 @@ enum Failure {
 impl Failure {
     fn message(&self) -> String {
         match self {
-            Failure::NeedPassword => "sudo 需要密码".into(),
-            Failure::WrongPassword => "sudo 密码错误".into(),
-            Failure::NotAllowed => "当前用户不在 sudoers 中，无权使用 sudo".into(),
-            Failure::RequireTty => "sudoers 要求在终端中使用 sudo（requiretty），无法用于文件面板".into(),
-            Failure::NoSudo => "远程主机没有安装 sudo".into(),
-            Failure::NoSftpServer => format!("远程主机上找不到 sftp-server（已尝试 {}）", SFTP_SERVERS.join("、")),
-            Failure::Other(s) => format!("sudo 失败：{s}"),
+            Failure::NeedPassword => tr!("sudo.need_password"),
+            Failure::WrongPassword => tr!("sudo.wrong_password"),
+            Failure::NotAllowed => tr!("sudo.not_allowed"),
+            Failure::RequireTty => tr!("sudo.requiretty"),
+            Failure::NoSudo => tr!("sudo.no_sudo"),
+            Failure::NoSftpServer => tr!("sudo.no_sftp_server", paths = SFTP_SERVERS.join(&tr!("common.list_sep"))),
+            Failure::Other(s) => tr!("sudo.failed", error = s),
         }
     }
 }
@@ -61,9 +61,9 @@ impl Failure {
 /// 先推送会话列表（fs_root 变化）再以 FsResult 回复
 pub async fn toggle(state: Shared, req_id: u64, backend: fs::Backend, enabled: bool) {
     let result = match backend {
-        fs::Backend::Local => Err("本地会话不支持以 root 浏览".to_string()),
+        fs::Backend::Local => Err(tr!("sudo.local")),
         fs::Backend::Remote { conn, .. } => match conn.upgrade().filter(|c| !c.handle.is_closed()) {
-            None => Err("SSH 连接已断开".into()),
+            None => Err(tr!("common.ssh_disconnected")),
             Some(conn) if !enabled => {
                 conn.set_root(None);
                 log!("文件树恢复普通身份：{}", conn.label);
@@ -97,14 +97,14 @@ async fn elevate(state: &Shared, conn: &Conn) -> Result<(), String> {
 /// 取得可用的 sudo 密码：先试凭据管理器中保存的该主机登录密码，不对再弹窗询问（最多 3 次）；
 /// sudo 因密码以外的原因失败（不在 sudoers 等）立即报错
 async fn password(state: &Shared, conn: &Conn) -> Result<String, String> {
-    let mut message = format!("请输入 {} 的 sudo 密码，用于以 root 浏览文件", conn.label);
+    let mut message = tr!("sudo.prompt", host = conn.label);
     if let Some(saved) = ssh::Keyring.get(&conn.label) {
         match verify(conn, &saved).await? {
             Ok(()) => {
                 log!("已保存的登录密码通过 sudo 验证：{}", conn.label);
                 return Ok(saved);
             }
-            Err(Failure::WrongPassword) => message = format!("已保存的登录密码不能用于 sudo，请输入 {} 的 sudo 密码", conn.label),
+            Err(Failure::WrongPassword) => message = tr!("sudo.saved_rejected", host = conn.label),
             Err(f) => return Err(f.message()),
         }
     }
@@ -112,11 +112,11 @@ async fn password(state: &Shared, conn: &Conn) -> Result<String, String> {
         let (password, _) = ssh::ask(state, PromptKind::Sudo, &conn.label, message, None).await?;
         match verify(conn, &password).await? {
             Ok(()) => return Ok(password),
-            Err(Failure::WrongPassword) => message = format!("sudo 密码错误，请重新输入 {} 的 sudo 密码", conn.label),
+            Err(Failure::WrongPassword) => message = tr!("sudo.retry", host = conn.label),
             Err(f) => return Err(f.message()),
         }
     }
-    Err("sudo 密码错误次数过多".into())
+    Err(tr!("sudo.too_many"))
 }
 
 /// 用密码执行一次 sudo（同时确认 sftp-server 存在）；外层 Err 为 channel 层面的失败
@@ -137,10 +137,10 @@ fn command(password: bool, exec: bool) -> String {
 
 /// 在连接上开 exec channel 运行命令；password 有值时先向 stdin 写入 `密码\n`。返回 (退出码, stderr)，stderr 中的密码替换为 ***
 async fn run(conn: &Conn, cmd: &str, password: Option<&str>) -> Result<(Option<u32>, String), String> {
-    let mut ch = conn.handle.channel_open_session().await.map_err(|e| format!("打开 channel 失败：{e}"))?;
-    ch.exec(true, cmd).await.map_err(|e| format!("执行 sudo 失败：{e}"))?;
+    let mut ch = conn.handle.channel_open_session().await.map_err(|e| tr!("common.open_channel_failed", error = e))?;
+    ch.exec(true, cmd).await.map_err(|e| tr!("sudo.exec_failed", error = e))?;
     if let Some(p) = password {
-        ch.data_bytes(format!("{p}\n").into_bytes()).await.map_err(|e| format!("写入 sudo 密码失败：{e}"))?;
+        ch.data_bytes(format!("{p}\n").into_bytes()).await.map_err(|e| tr!("sudo.write_password_failed", error = e))?;
     }
     let _ = ch.eof().await;
     let read = async {
@@ -157,21 +157,21 @@ async fn run(conn: &Conn, cmd: &str, password: Option<&str>) -> Result<(Option<u
     };
     let result = tokio::time::timeout(RUN_TIMEOUT, read).await;
     let _ = ch.close().await;
-    let (status, err) = result.map_err(|_| "等待 sudo 响应超时".to_string())?;
+    let (status, err) = result.map_err(|_| tr!("sudo.timeout"))?;
     Ok((status, scrub(&String::from_utf8_lossy(&err), password)))
 }
 
 /// 开 sftp channel：sudo 启动 sftp-server（需要密码时先写入 stdin 首行，由 sudo 读走），channel stream 交给 SftpSession
 async fn open(conn: &Conn, password: Option<&str>) -> Result<SftpSession, String> {
-    let ch = conn.handle.channel_open_session().await.map_err(|e| format!("打开 SFTP channel 失败：{e}"))?;
-    ch.exec(true, command(password.is_some(), true)).await.map_err(|e| format!("执行 sudo 失败：{e}"))?;
+    let ch = conn.handle.channel_open_session().await.map_err(|e| tr!("common.open_sftp_channel_failed", error = e))?;
+    ch.exec(true, command(password.is_some(), true)).await.map_err(|e| tr!("sudo.exec_failed", error = e))?;
     if let Some(p) = password {
-        ch.data_bytes(format!("{p}\n").into_bytes()).await.map_err(|e| format!("写入 sudo 密码失败：{e}"))?;
+        ch.data_bytes(format!("{p}\n").into_bytes()).await.map_err(|e| tr!("sudo.write_password_failed", error = e))?;
     }
     match tokio::time::timeout(RUN_TIMEOUT, SftpSession::new(ch.into_stream())).await {
         Ok(Ok(s)) => Ok(s),
-        Ok(Err(e)) => Err(format!("启动 root SFTP 失败：{e}")),
-        Err(_) => Err("启动 root SFTP 超时".into()),
+        Ok(Err(e)) => Err(tr!("sudo.root_sftp_failed", error = e)),
+        Err(_) => Err(tr!("sudo.root_sftp_timeout")),
     }
 }
 
@@ -200,11 +200,11 @@ fn classify(status: Option<u32>, stderr: &str) -> Result<(), Failure> {
 
 /// stderr 前 3 个非空行（最多 200 字符）；为空时给出退出码
 fn summary(status: Option<u32>, stderr: &str) -> String {
-    let text = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).take(3).collect::<Vec<_>>().join("；");
+    let text = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).take(3).collect::<Vec<_>>().join(&tr!("common.sep"));
     match (text.is_empty(), status) {
         (false, _) => text.chars().take(200).collect(),
-        (true, Some(code)) => format!("退出码 {code}"),
-        (true, None) => "未返回退出状态".into(),
+        (true, Some(code)) => tr!("sudo.exit_code", code = code),
+        (true, None) => tr!("sudo.no_exit_status"),
     }
 }
 

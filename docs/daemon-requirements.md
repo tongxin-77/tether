@@ -128,10 +128,16 @@
 
 协议与安全细节见 [tether-hub 需求文档](https://github.com/tongxin-77/tether-hub/blob/main/docs/requirements.md)。
 
+### 3.8 多语言
+
+- 支持 zh-CN（源语言、默认）、en、zh-TW、ja。GUI 在 Hello 之后及切换语言时发送 `SetLocale{locale}`（解析后的代码），daemon 按回退链归一（zh-HK / zh-MO / zh-Hant → zh-TW，其余 zh → zh-CN，ja-* → ja，其它 → en），记入 `config.json` 的 `locale` 字段（SetConfig 不修改它），重启后 GUI 未连接时也按该语言发通知；旧 daemon 忽略该消息。
+- 按当前语言生成：系统通知正文、发往 GUI 的 Error / FsResult / TestHost / TestHub / ClaudeHooks 错误、Prompt 说明（SSH 密码 / 私钥口令 / 主机指纹、sudo 密码）、文件操作 / sudo / SSH / 主机信息错误、hub 连接状态原因与网页新建 / 历史的 message、shell 选项名（自动 / 命令提示符）。hub 的 reason 码不变；daemon.log 日志保持中文。
+- 词条表 `daemon/src/i18n.rs`（每条四种语言同行，`tr!("key", name = value)`），引擎与语言解析在 `proto/src/i18n.rs`；单测校验译文齐全、占位符一致、源码中 `tr!` 的键与参数与表一致且无未用词条。GUI 的 Rust 侧错误文字（`src-tauri/src/i18n.rs`）启动时取 config.json 的 `locale`（没有则按 Windows 显示语言），前端经 `send` 发 SetLocale 时同步。
+
 ## 4. 接口：GUI ↔ daemon 管道协议
 
 - 传输：本机命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），每行一条 JSON，`type` 字段区分消息，终端数据 base64。类型定义在 `proto/src/lib.rs`，GUI（Rust 侧透传 + TS 类型）与 daemon 共用。
-- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / FsWrite / Upload / Download / FsCopy / FsRoot）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
+- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / FsWrite / Upload / Download / FsCopy / FsRoot）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）、界面语言（SetLocale）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
 - **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsSaved / FsResult、Transfer、Recent、ClaudeHooks、ResetModes、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
 - 文件类请求以 `reqId` 关联回复；Prompt 以 `reqId` 关联 PromptReply，`value=null` 表示取消。
 - 版本策略：GUI 与 daemon 同包发布，但更新时只替换 GUI、旧 daemon 继续运行，因此新 GUI 须兼容上一版 daemon（新增消息旧 daemon 会记日志后忽略）；连接时以 Hello 交换版本（`proto::PROTO_VERSION`，0.1.0 视为 0），不一致时提示重启后台。

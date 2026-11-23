@@ -106,7 +106,7 @@ pub async fn run(state: Shared, req_id: u64, backend: Backend, op: Op) {
                 Ok(sftp) => remote(&mut p, &sftp, &label, op).await,
                 Err(e) => Err(e),
             },
-            None => Err("SSH 连接已断开".into()),
+            None => Err(tr!("common.ssh_disconnected")),
         },
     };
     reply(&state, req_id, result);
@@ -124,7 +124,7 @@ pub async fn copy(state: Shared, req_id: u64, dest: Backend, source: Option<Host
         };
         let dst_conn = match dest {
             Backend::Local => None,
-            Backend::Remote { conn, .. } => Some(conn.upgrade().ok_or("SSH 连接已断开")?),
+            Backend::Remote { conn, .. } => Some(conn.upgrade().ok_or_else(|| tr!("common.ssh_disconnected"))?),
         };
         let src_sftp = match &src_conn {
             Some(c) => Some(c.sftp().await?),
@@ -180,7 +180,7 @@ async fn local(p: &mut Progress, op: Op) -> Res<Reply> {
         Op::Rename(from, to) => {
             // Windows 上 rename 会覆盖已存在的目标文件；仅大小写不同的改名放行
             if !from.eq_ignore_ascii_case(&to) && tokio::fs::try_exists(&to).await.unwrap_or(false) {
-                return Err(format!("{to}：已存在"));
+                return Err(tr!("fs.exists", path = to));
             }
             tokio::fs::rename(&from, &to).await.map_err(at(&from))?
         }
@@ -334,10 +334,10 @@ async fn read_text(end: End<'_>, path: &str) -> Res<TextFile> {
     let mut buf = Vec::new();
     end.reader(path).await?.take(MAX_READ + 1).read_to_end(&mut buf).await.map_err(at(path))?;
     if buf.len() as u64 > MAX_READ {
-        return Err(format!("{path}：文件超过 {} MB，不支持预览，请用默认程序打开", MAX_READ / 1024 / 1024));
+        return Err(tr!("fs.too_large", path = path, mb = MAX_READ / 1024 / 1024));
     }
     if looks_binary(&buf) {
-        return Err(format!("{path}：看起来是二进制文件，无法以文本打开"));
+        return Err(tr!("fs.binary", path = path));
     }
     let (text, encoding) = decode_text(buf);
     let crlf = crlf_majority(&text);
@@ -428,7 +428,7 @@ fn encode_text(text: &str, encoding: TextEncoding, crlf: bool) -> Res<Vec<u8>> {
                 .enumerate()
                 .find_map(|(i, l)| l.chars().find(|c| ansi_encode(&c.to_string()).is_none()).map(|c| (i + 1, c)))
                 .unwrap_or((0, '?'));
-            format!("第 {line} 行的字符“{c}”无法用文件原编码（系统代码页 {}）保存，未写入；删去该字符后再保存", acp())
+            tr!("fs.unencodable", line = line, char = c, codepage = acp())
         })?,
     })
 }
@@ -497,7 +497,7 @@ fn replace_local(path: &str, bytes: &[u8]) -> Res<()> {
         return std::fs::write(path, bytes).map_err(at(path));
     };
     if std::fs::metadata(&target).map_err(at(path))?.permissions().readonly() {
-        return Err(format!("{path}：文件为只读，未写入"));
+        return Err(tr!("fs.readonly", path = path));
     }
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = target.with_file_name(format!(".{name}.{}.tether-tmp", uuid::Uuid::new_v4().simple()));
@@ -573,8 +573,8 @@ fn pct(c: char) -> String {
 /// 用默认浏览器打开 URL（直接 CreateProcess，不经 shell）
 fn browser_open(url: &str) -> Res<()> {
     let cmdline = default_browser_command()?;
-    let (exe, args) = browser_command(&cmdline, url).ok_or_else(|| format!("无法解析浏览器命令行：{cmdline}"))?;
-    Command::new(&exe).raw_arg(&args).spawn().map(drop).map_err(|e| format!("启动 {exe} 失败：{e}"))
+    let (exe, args) = browser_command(&cmdline, url).ok_or_else(|| tr!("fs.bad_browser_cmd", cmdline = cmdline))?;
+    Command::new(&exe).raw_arg(&args).spawn().map(drop).map_err(|e| tr!("fs.launch_failed", exe = exe, error = e))
 }
 
 /// 默认浏览器的打开命令行模板：https（取不到再试 http）协议 UserChoice 的 ProgId → HKCR\<ProgId>\shell\open\command
@@ -586,10 +586,10 @@ fn default_browser_command() -> Res<String> {
             let key = HKCU.open_subkey(format!(r"{ASSOC}\{scheme}\UserChoice")).ok()?;
             key.get_value::<String, _>("ProgId").ok().filter(|s| !s.is_empty())
         })
-        .ok_or("未找到默认浏览器")?;
+        .ok_or_else(|| tr!("fs.no_browser"))?;
     HKCR.open_subkey(format!(r"{prog_id}\shell\open\command"))
         .and_then(|k| k.get_value::<String, _>(""))
-        .map_err(|e| format!("读取 {prog_id} 的打开命令失败：{e}"))
+        .map_err(|e| tr!("fs.read_open_cmd_failed", prog_id = prog_id, error = e))
 }
 
 /// 由命令行模板生成（可执行文件, 参数串）：可执行文件路径可带引号；第一种出现的占位符 `%1` / `%L` 原样替换为 URL
@@ -644,7 +644,7 @@ fn shell_open(path: &Path) -> Res<()> {
         .raw_arg(format!("\"{}\"", path.display()))
         .spawn()
         .map(drop)
-        .map_err(|e| format!("打开 {} 失败：{e}", path.display()))
+        .map_err(|e| tr!("fs.open_failed", path = path.display(), error = e))
 }
 
 /// 远程文件下载到 %TEMP%\tether\<user@host_port>\<远程绝对路径各段>，保留路径层级避免同名冲突；返回本地路径
@@ -802,7 +802,7 @@ fn remote_name(path: &str) -> Option<&str> {
 fn local_tops(srcs: &[String]) -> Res<Vec<(String, String)>> {
     srcs.iter()
         .map(|src| {
-            let name = Path::new(src).file_name().ok_or_else(|| format!("{src}：不支持传输整个磁盘"))?;
+            let name = Path::new(src).file_name().ok_or_else(|| tr!("fs.whole_disk", path = src))?;
             Ok((src.clone(), name.to_string_lossy().into_owned()))
         })
         .collect()
@@ -811,7 +811,7 @@ fn local_tops(srcs: &[String]) -> Res<Vec<(String, String)>> {
 /// 远程源路径与其在目标目录下的名称（取最后一段）
 fn remote_tops(srcs: &[String]) -> Res<Vec<(String, String)>> {
     srcs.iter()
-        .map(|src| Ok((src.clone(), remote_name(src).ok_or_else(|| format!("{src}：不支持传输根目录"))?.to_string())))
+        .map(|src| Ok((src.clone(), remote_name(src).ok_or_else(|| tr!("fs.root_dir", path = src))?.to_string())))
         .collect()
 }
 
@@ -904,7 +904,7 @@ async fn copy_items(p: &mut Progress, src: End<'_>, dst: End<'_>, items: Vec<Cop
                     break;
                 }
             }
-            name = found.ok_or_else(|| format!("{name}：找不到可用的新名称"))?;
+            name = found.ok_or_else(|| tr!("fs.no_new_name", name = name))?;
         }
         taken.insert(key(&name));
         tops.push((path, name));

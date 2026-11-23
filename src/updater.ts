@@ -7,7 +7,8 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask } from "./files";
 import { renderMarkdown } from "./markdown";
-import { notesSince } from "./update-notes";
+import { notesForLocale, notesSince } from "./update-notes";
+import { locale, onLocaleChange, t } from "./i18n";
 
 const AUTO_KEY = "tether.update.auto"; // "0" 为关闭启动时自动检查
 const SKIP_KEY = "tether.update.skip"; // 用户跳过的版本号
@@ -24,6 +25,10 @@ let helloTimer: ReturnType<typeof setTimeout> | undefined;
 let daemon: { version: string | null; proto: number } | undefined;
 let sessionCount = () => 0;
 let onBanner = () => {};
+/** 设置面板中更新状态文字的当前渲染，切换语言时重绘 */
+let statusText: (() => string) | undefined;
+/** 更新对话框中显示的版本（切换语言时重绘标题与说明） */
+let shownUpdate: Update | undefined;
 
 function load(key: string) {
   try {
@@ -43,6 +48,14 @@ function store(key: string, value: string) {
 export async function initUpdater(count: () => number, banner: () => void) {
   sessionCount = count;
   onBanner = banner;
+  renderBadgeLabel();
+  onLocaleChange(() => {
+    renderBadgeLabel();
+    if (found) $("update-badge").textContent = t("update.badgeVersion", { version: found.version });
+    if (statusText) $("update-status").textContent = statusText();
+    if (daemon) renderDaemon();
+    if (shownUpdate && $<HTMLDialogElement>("update-dialog").open) renderDialog(shownUpdate);
+  });
   $("about-version").textContent = $("brand-ver").textContent = await version;
   const auto = $<HTMLInputElement>("update-auto");
   auto.checked = load(AUTO_KEY) !== "0";
@@ -52,7 +65,7 @@ export async function initUpdater(count: () => number, banner: () => void) {
   $("daemon-restart-settings").addEventListener("click", restartDaemon);
   if (await invoke<boolean>("is_debug")) {
     $<HTMLButtonElement>("update-check").disabled = true;
-    $("update-status").textContent = "开发版不检查更新";
+    setStatus(() => t("update.devBuild"));
     return;
   }
   $("update-check").addEventListener("click", () => checkNow(true));
@@ -63,34 +76,31 @@ export async function initUpdater(count: () => number, banner: () => void) {
 
 /** manual：设置面板手动检查，显示结果与错误，且不受“跳过此版本”影响；自动检查失败只写控制台（网络不通时不打扰） */
 async function checkNow(manual: boolean) {
-  const status = $("update-status");
-  if (manual) status.textContent = "正在检查…";
+  if (manual) setStatus(() => t("update.checking"));
   try {
     const update = await check();
     store(LAST_KEY, String(Date.now()));
     found = update ?? undefined;
     $("update-badge").hidden = true;
     if (!update) {
-      if (manual) status.textContent = "已是最新版本";
+      if (manual) setStatus(() => t("update.upToDate"));
       return;
     }
-    status.textContent = `发现新版本 ${update.version}`;
+    setStatus(() => t("update.found", { version: update.version }));
     if (manual) return showDialog(update);
     if (load(SKIP_KEY) === update.version) return;
-    $("update-badge").textContent = `新版本 ${update.version}`;
+    $("update-badge").textContent = t("update.badgeVersion", { version: update.version });
     $("update-badge").hidden = false;
   } catch (err) {
-    if (manual) status.textContent = `检查失败：${err}`;
-    else console.warn("检查更新失败", err);
+    if (manual) setStatus(() => t("update.checkFailed", { error: String(err) }));
+    else console.warn("Update check failed", err);
   }
 }
 
 function showDialog(update: Update) {
   const dlg = $<HTMLDialogElement>("update-dialog");
   if (dlg.open) return;
-  $("upd-title").textContent = `发现新版本 ${update.version}`;
-  // 更新说明取自 CHANGELOG.md（含历次版本段），只显示当前版本之后的各版本，按 Markdown 渲染
-  $("upd-notes").innerHTML = renderMarkdown(notesSince(update.body?.trim() ?? "", update.currentVersion) || "（无更新说明）");
+  renderDialog(update);
   $("upd-progress").hidden = true;
   for (const b of dlg.querySelectorAll("button")) b.disabled = false;
   dlg.returnValue = "";
@@ -106,6 +116,24 @@ function showDialog(update: Update) {
     { once: true },
   );
   $("upd-install").onclick = () => install(update);
+}
+
+function setStatus(text: () => string) {
+  statusText = text;
+  $("update-status").textContent = text();
+}
+
+/** 侧栏更新标签右侧的“更新”字样（CSS ::after 取 data-label） */
+function renderBadgeLabel() {
+  $("update-badge").dataset.label = t("update.badge");
+}
+
+function renderDialog(update: Update) {
+  shownUpdate = update;
+  $("upd-title").textContent = t("update.found", { version: update.version });
+  // 更新说明取自 CHANGELOG（含历次版本段，按语言分段），按界面语言选段后只显示当前版本之后的各版本，按 Markdown 渲染
+  const notes = notesSince(notesForLocale(update.body?.trim() ?? "", locale()), update.currentVersion);
+  $("upd-notes").innerHTML = renderMarkdown(notes || t("update.noNotes"));
 }
 
 /** 下载并安装：Windows 上安装程序启动后应用自动退出；安装期间会话由 daemon 继续持有 */
@@ -128,7 +156,7 @@ async function install(update: Update) {
     await relaunch();
   } catch (err) {
     dlg.close();
-    alert(`更新失败：${err}`);
+    alert(t("update.failed", { error: String(err) }));
   }
 }
 
@@ -146,19 +174,21 @@ export function afterConnect() {
 export async function onHello(daemonVersion: string | null, proto: number) {
   clearTimeout(helloTimer);
   daemon = { version: daemonVersion, proto };
-  $("daemon-version").textContent = daemonVersion ?? "0.1.0 或更早";
   const own = await version;
   const banner = $("daemon-old-banner");
   const show = daemonVersion !== own;
-  if (show) {
-    const n = sessionCount();
-    $("daemon-old-text").textContent =
-      `后台进程为旧版本（${daemonVersion ?? "0.1.0 或更早"}），重启后台以完成更新` +
-      (n ? `：${n} 个会话将在原目录重开、Claude 对话自动恢复、SSH 重连` : "");
-  }
+  renderDaemon();
   if (banner.hidden === !show) return;
   banner.hidden = !show;
   onBanner();
+}
+
+/** 设置面板的后台版本与旧版本提示条文字 */
+function renderDaemon() {
+  const v = daemon?.version ?? t("update.daemonOld");
+  $("daemon-version").textContent = v;
+  const n = sessionCount();
+  $("daemon-old-text").textContent = t("update.daemonBanner", { version: v }) + (n ? t("update.daemonBannerSessions", { n }) : "");
 }
 
 export function daemonBannerShown() {
@@ -169,14 +199,12 @@ export function daemonBannerShown() {
  *  随后 GUI 的断线重连会拉起新的 tetherd.exe 并恢复会话 */
 async function restartDaemon() {
   const n = sessionCount();
-  const msg = n
-    ? `重启后台进程将结束 ${n} 个会话中正在运行的程序，随后在原目录重开（Claude 对话自动恢复，SSH 重连）。继续？`
-    : "重启后台进程？";
-  if ((await ask(msg, "重启后台")) === null) return;
+  const msg = n ? t("update.restartConfirmN", { n }) : t("update.restartConfirm");
+  if ((await ask(msg, t("daemon.restart"))) === null) return;
   try {
     if ((daemon?.proto ?? 0) >= 1) await invoke("send", { msg: { type: "shutdown" } });
     else await invoke("kill_daemon");
   } catch (err) {
-    alert(`重启后台失败：${err}`);
+    alert(t("update.restartFailed", { error: String(err) }));
   }
 }

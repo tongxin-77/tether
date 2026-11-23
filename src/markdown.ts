@@ -2,6 +2,7 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { groupBlocks } from "./preview-utils";
+import { t } from "./i18n";
 
 const PURIFY_CONFIG = {
   // 只保留 HTML（不允许 SVG / MathML）
@@ -22,7 +23,8 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "IMG") {
     const span = node.ownerDocument.createElement("span");
     span.className = "md-img";
-    span.textContent = `[图片${node.getAttribute("alt") ? "：" + node.getAttribute("alt") : ""}]`;
+    const alt = node.getAttribute("alt");
+    span.textContent = alt ? t("markdown.imageAlt", { alt }) : t("markdown.image");
     node.replaceWith(span);
   }
 });

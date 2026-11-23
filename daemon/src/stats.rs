@@ -47,7 +47,7 @@ pub async fn run(state: Shared, req_id: u64, backend: fs::Backend) {
         fs::Backend::Local => tokio::task::spawn_blocking(local).await.map_err(|e| e.to_string()).and_then(|r| r),
         fs::Backend::Remote { conn, label } => match conn.upgrade() {
             Some(conn) => remote(&conn, &label).await,
-            None => Err("SSH 连接已断开".into()),
+            None => Err(tr!("common.ssh_disconnected")),
         },
     };
     let (stats, error) = match result {
@@ -99,8 +99,8 @@ async fn remote(conn: &Conn, key: &str) -> Result<HostStats, String> {
 
 /// 在已有连接上开 exec channel 运行命令，收集 stdout 直到 channel 关闭；超时也会关闭 channel
 async fn exec(conn: &Conn, cmd: &str) -> Result<String, String> {
-    let mut ch = conn.handle.channel_open_session().await.map_err(|e| format!("打开 channel 失败：{e}"))?;
-    ch.exec(true, cmd).await.map_err(|e| format!("执行失败：{e}"))?;
+    let mut ch = conn.handle.channel_open_session().await.map_err(|e| tr!("common.open_channel_failed", error = e))?;
+    ch.exec(true, cmd).await.map_err(|e| tr!("stats.exec_failed", error = e))?;
     let read = async {
         let mut out = Vec::new();
         while let Some(msg) = ch.wait().await {
@@ -114,7 +114,7 @@ async fn exec(conn: &Conn, cmd: &str) -> Result<String, String> {
     };
     let result = tokio::time::timeout(REMOTE_TIMEOUT, read).await;
     let _ = ch.close().await;
-    let out = result.map_err(|_| "读取主机信息超时".to_string())?;
+    let out = result.map_err(|_| tr!("stats.timeout"))?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -129,7 +129,7 @@ pub fn parse_remote(out: &str, at: Instant) -> Result<(HostStats, Counters), Str
         }
     }
     let get = |k: &str| sections.get(k).map(Vec::as_slice).unwrap_or(&[]);
-    let cpu = parse_stat(get("stat")).ok_or("不支持：远程主机不是 Linux（无 /proc/stat）")?;
+    let cpu = parse_stat(get("stat")).ok_or_else(|| tr!("stats.not_linux"))?;
     let (mem_used, mem_total) = parse_meminfo(get("mem")).unwrap_or_default();
     let net = parse_net_dev(get("net"), get("phys"));
     let stats = HostStats {
@@ -229,8 +229,8 @@ struct Adapter {
 fn local() -> Result<HostStats, String> {
     static INFO: OnceLock<LocalInfo> = OnceLock::new();
     let info = INFO.get_or_init(|| LocalInfo { cpu_model: cpu_model(), cores: cores(), adapters: adapters() });
-    let cpu = cpu_times().ok_or("读取 CPU 时间失败")?;
-    let (mem_used, mem_total) = memory().ok_or("读取内存信息失败")?;
+    let cpu = cpu_times().ok_or_else(|| tr!("stats.cpu_failed"))?;
+    let (mem_used, mem_total) = memory().ok_or_else(|| tr!("stats.mem_failed"))?;
     let mut stats = HostStats {
         cpu_model: info.cpu_model.clone(),
         cores: info.cores,

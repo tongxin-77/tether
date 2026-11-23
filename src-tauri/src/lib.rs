@@ -9,6 +9,9 @@ use std::{
 };
 
 use proto::{ClientMsg, ServerMsg};
+
+#[macro_use]
+mod i18n;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -56,7 +59,7 @@ async fn open_pipe() -> Result<NamedPipeClient, String> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err("无法连接后台进程 tetherd".into())
+    Err(tr!("daemon.unreachable"))
 }
 
 /// 启动参数 `--session <id>`：启动后切到该会话
@@ -106,6 +109,10 @@ async fn connect(app: AppHandle, pipe: State<'_, Pipe>, daemon_pid: State<'_, Da
 
 #[tauri::command]
 fn send(pipe: State<'_, Pipe>, msg: ClientMsg) {
+    // 前端切换语言时发给 daemon 的 SetLocale，本进程的错误文字同步使用
+    if let ClientMsg::SetLocale { locale } = &msg {
+        i18n::set(locale);
+    }
     let guard = pipe.0.lock().unwrap();
     if let (Some(tx), Ok(json)) = (guard.as_ref(), serde_json::to_string(&msg)) {
         let _ = tx.send(json + "\n");
@@ -120,15 +127,15 @@ fn kill_daemon(daemon_pid: State<'_, DaemonPid>) -> Result<(), String> {
         Foundation::CloseHandle,
         System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess},
     };
-    let pid = daemon_pid.0.lock().unwrap().ok_or("未连接后台进程")?;
+    let pid = daemon_pid.0.lock().unwrap().ok_or_else(|| tr!("daemon.not_connected"))?;
     unsafe {
         let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if h.is_null() {
-            return Err(format!("无法打开后台进程 {pid}"));
+            return Err(tr!("daemon.open_failed", pid = pid));
         }
         let ok = TerminateProcess(h, 0);
         CloseHandle(h);
-        if ok == 0 { Err(format!("结束后台进程 {pid} 失败")) } else { Ok(()) }
+        if ok == 0 { Err(tr!("daemon.kill_failed", pid = pid)) } else { Ok(()) }
     }
 }
 
@@ -204,7 +211,7 @@ const DIFF_LIMIT: usize = 512 * 1024;
 fn run_git(dir: &str, args: &[&str], limit: Option<usize>) -> Result<(String, bool), String> {
     use std::{io::Read, process::Stdio};
     if !std::path::Path::new(dir).is_dir() {
-        return Err(format!("目录不存在：{dir}"));
+        return Err(tr!("git.dir_not_found", dir = dir));
     }
     let mut child = Command::new("git")
         // 路径中的非 ASCII 字符不转义
@@ -217,7 +224,7 @@ fn run_git(dir: &str, args: &[&str], limit: Option<usize>) -> Result<(String, bo
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
-        .map_err(|e| if e.kind() == ErrorKind::NotFound { "未找到 git，请安装 Git 并加入 PATH".into() } else { format!("运行 git 失败：{e}") })?;
+        .map_err(|e| if e.kind() == ErrorKind::NotFound { tr!("git.not_found") } else { tr!("git.run_failed", error = e) })?;
     // stderr 另起线程读，避免两个管道互相写满阻塞
     let mut stderr = child.stderr.take().unwrap();
     let err_reader = std::thread::spawn(move || {
@@ -236,7 +243,7 @@ fn run_git(dir: &str, args: &[&str], limit: Option<usize>) -> Result<(String, bo
     let status = child.wait().map_err(|e| e.to_string())?;
     let err = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).trim().to_string();
     if !truncated && !status.success() {
-        return Err(if err.is_empty() { format!("git 执行失败（{status}）") } else { err });
+        return Err(if err.is_empty() { tr!("git.exit_failed", status = status) } else { err });
     }
     Ok((String::from_utf8_lossy(&out).into_owned(), truncated))
 }
@@ -259,7 +266,7 @@ fn list_refs(dir: &str) -> Result<String, String> {
 /// `git switch <name>`；track 时 name 为远程分支（如 origin/x），`git switch --track` 创建同名本地分支并跟踪
 fn switch_branch(dir: &str, name: &str, track: bool) -> Result<(), String> {
     if !valid_ref_arg(name) {
-        return Err(format!("无效的分支名：{name}"));
+        return Err(tr!("git.bad_branch", name = name));
     }
     let args: &[&str] = if track { &["switch", "--track", "--", name] } else { &["switch", "--", name] };
     run_git(dir, args, None).map(|_| ())
@@ -275,7 +282,7 @@ fn log_graph(dir: &str, limit: u32) -> Result<String, String> {
 /// 提交改动：(numstat, diff, diff 是否截断)。合并提交按第一父提交比较；不调用外部 diff / textconv 程序
 fn show_commit(dir: &str, hash: &str) -> Result<(String, String, bool), String> {
     if !valid_hash(hash) {
-        return Err(format!("无效的提交哈希：{hash}"));
+        return Err(tr!("git.bad_hash", hash = hash));
     }
     let base = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv", "--diff-merges=first-parent"];
     let numstat = run_git(dir, &[&base[..], &["--numstat", hash, "--"]].concat(), None)?.0;
@@ -313,7 +320,7 @@ async fn git_show(dir: String, hash: String) -> Result<(String, String, bool), S
 async fn claude_history(dir: String) -> Result<Vec<serde_json::Value>, String> {
     use proto::claude_history;
     blocking(move || {
-        let root = claude_history::projects_dir().ok_or("未找到用户目录")?;
+        let root = claude_history::projects_dir().ok_or_else(|| tr!("claude.no_home"))?;
         let items = claude_history::list(&root, &dir).into_iter().map(|c| {
             let s = c.summary;
             serde_json::json!({ "id": c.id, "title": s.title, "mtime": c.mtime, "messages": s.messages, "permissionMode": s.permission_mode, "bypass": s.bypass })
@@ -389,7 +396,7 @@ fn clipboard_png() -> Result<Option<Vec<u8>>, String> {
         },
     };
     if png.len() > proto::image::MAX_BYTES {
-        return Err(format!("图片超过 {} MB", proto::image::MAX_BYTES >> 20));
+        return Err(tr!("image.too_large", mb = proto::image::MAX_BYTES >> 20));
     }
     Ok(Some(png))
 }
@@ -422,7 +429,7 @@ fn clipboard_raw_png() -> Option<Vec<u8>> {
 
 /// RGBA 像素编码为 PNG
 fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
-    let img = image::RgbaImage::from_raw(width, height, rgba).ok_or("剪贴板图片数据不完整")?;
+    let img = image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| tr!("image.incomplete"))?;
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
     Ok(out.into_inner())
@@ -444,6 +451,7 @@ fn remove_legacy_backgrounds(app: &AppHandle) {
 pub fn run() {
     // 关闭窗口即退出 GUI 进程，会话由 daemon 继续持有
     // debug 构建改用独立 identifier：应用数据目录、WebView2 数据（localStorage）、单实例键均与安装版隔离
+    i18n::init();
     let mut context = tauri::generate_context!();
     if cfg!(debug_assertions) {
         let config = context.config_mut();

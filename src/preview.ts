@@ -4,6 +4,7 @@
 import type { Editor } from "./editor";
 import { renderMarkdownSections } from "./markdown";
 import { chunkLines, type EditorLang } from "./preview-utils";
+import { t } from "./i18n";
 
 interface Deps {
   /** 用默认浏览器打开 http(s) 链接（走 daemon） */
@@ -114,7 +115,7 @@ export function closePreview() {
 
 async function confirmDiscard() {
   if (!previewDirty()) return true;
-  return (await deps.ask(`“${baseName(file!.path)}”有未保存的修改，确定放弃？`, "放弃修改")) !== null;
+  return (await deps.ask(t("preview.discardConfirm", { name: baseName(file!.path) }), t("preview.discard"))) !== null;
 }
 
 /** 渲染预览（Markdown）或只读纯文本 */
@@ -172,7 +173,7 @@ async function save(force = false) {
   if (!f || !ed || saving) return;
   if (!force) {
     const e = ed.yamlError();
-    if (e && (await deps.ask(`YAML 有语法错误（第 ${e.line} 行：${e.message}），仍要保存？`, "仍要保存")) === null) return;
+    if (e && (await deps.ask(t("preview.yamlError", { line: e.line, message: e.message }), t("preview.saveAnyway"))) === null) return;
   }
   const doc = ed.view.state.doc;
   const text = doc.toString();
@@ -181,7 +182,7 @@ async function save(force = false) {
   const r = await f.save(text, force).finally(() => (saving = false));
   if (file !== f || editor !== ed) return;
   updateTitle();
-  if (r.error) return alert(`保存失败：${r.error}`);
+  if (r.error) return alert(t("preview.saveFailed", { error: r.error }));
   if (r.conflict) {
     const choice = await askConflict(baseName(f.path));
     if (choice === "overwrite") return save(true);
@@ -203,7 +204,7 @@ async function save(force = false) {
 
 /** 文件已被外部修改：覆盖 / 重新加载 / 取消 */
 function askConflict(name: string): Promise<"overwrite" | "reload" | ""> {
-  $("pv-c-msg").textContent = `“${name}”已在别处被修改（或已删除）。`;
+  $("pv-c-msg").textContent = t("preview.conflict.msg", { name });
   conflictDlg.returnValue = "";
   conflictDlg.showModal();
   return new Promise((resolve) =>

@@ -8,6 +8,8 @@ import { editBlock, editorLang, previewKind } from "./preview-utils";
 import { icon } from "./icons";
 import { clampFilesWidth } from "./term-utils";
 import { claudeMentions } from "./claude-paths";
+// 本文件中 t 多为目录树（Tree）变量，词条函数以 tr 引入
+import { type MessageKey, fmtDateTime, fmtNum, onLocaleChange, t as tr, tn } from "./i18n";
 
 // 与 proto crate 的文件树协议保持一致
 export interface FsEntry {
@@ -159,6 +161,7 @@ export function initFiles(d: Deps) {
   } catch {}
   applyOpened();
   initResize();
+  onLocaleChange(applyOpened);
 
   toggleBtn.addEventListener("click", () => {
     opened = !opened;
@@ -340,7 +343,7 @@ function initResize() {
 function applyOpened() {
   panel.classList.toggle("collapsed", !opened);
   toggleBtn.innerHTML = icon(opened ? "panel-right-close" : "panel-right-open");
-  toggleBtn.title = opened ? "收起文件树" : "展开文件树";
+  toggleBtn.title = opened ? tr("files.collapse") : tr("files.expand");
   if (opened) render();
 }
 
@@ -395,10 +398,10 @@ function call(msg: FsClientMsg): Promise<Reply> {
   return new Promise((resolve) => waiting.set(msg.reqId, resolve));
 }
 
-/** 失败时提示并返回 true */
-function failed(r: Reply, what: string) {
+/** 失败时提示并返回 true；action 为操作名词条 */
+function failed(r: Reply, action: MessageKey) {
   if (!r.error) return false;
-  alert(`${what}失败：${r.error}`);
+  alert(tr("files.failed", { action: tr(action), error: r.error }));
   return true;
 }
 
@@ -409,7 +412,7 @@ async function setRoot(s: FsSession, enabled: boolean) {
   render();
   const r = await call({ type: "fsRoot", reqId: nextId(), sessionId: s.id, enabled });
   rootPending = false;
-  if (!failed(r, enabled ? "以 root 浏览" : "恢复普通身份")) rootHints.delete(s.id);
+  if (!failed(r, enabled ? "files.action.rootOn" : "files.action.rootOff")) rootHints.delete(s.id);
   render();
 }
 
@@ -423,7 +426,7 @@ async function load(s: FsSession, t: Tree, dir: string, link = false) {
     // 远程符号链接按目录列出失败：当作文件
     t.notDir.add(dir);
     t.expanded.delete(dir);
-  } else t.cache.set(dir, r.error ?? "读取失败");
+  } else t.cache.set(dir, r.error ?? tr("files.readFailed"));
   if (deps.active()?.id === s.id) render();
 }
 
@@ -475,7 +478,7 @@ function render() {
     pathEl.textContent = "";
     pathEl.title = "";
     upBtn.disabled = true;
-    treeEl.replaceChildren(note("没有会话", 0));
+    treeEl.replaceChildren(note(tr("files.noSession"), 0));
     return;
   }
   const t = tree(s);
@@ -486,8 +489,8 @@ function render() {
     t.notDir.clear();
   }
   t.asRoot = asRoot;
-  pathEl.textContent = t.root || "此电脑";
-  pathEl.title = t.root || "此电脑";
+  pathEl.textContent = t.root || tr("files.thisPc");
+  pathEl.title = t.root || tr("files.thisPc");
   upBtn.disabled = parentOf(s, t.root) === null;
   const scroll = treeEl.scrollTop;
   treeEl.replaceChildren(...rows(s, t, t.root, 0));
@@ -501,7 +504,7 @@ function renderRoot(s: FsSession | undefined) {
   rootBtn.hidden = !remote;
   rootBtn.disabled = rootPending;
   rootBtn.classList.toggle("on", on);
-  rootBtn.title = on ? "恢复普通身份浏览" : "以 root 浏览（sudo）";
+  rootBtn.title = on ? tr("files.rootOffTitle") : tr("files.rootOnTitle");
   rootTag.hidden = !on;
   rootBanner.hidden = !on;
   panel.classList.toggle("as-root", on);
@@ -513,10 +516,10 @@ function rows(s: FsSession, t: Tree, dir: string, depth: number): HTMLElement[] 
   const c = t.cache.get(dir);
   if (c === undefined) {
     load(s, t, dir, depth > 0 && t.expanded.has(dir) && isLinkCandidate(s, t, dir));
-    return [note("加载中…", depth)];
+    return [note(tr("common.loading"), depth)];
   }
   if (typeof c === "string") return [note(c, depth, true)];
-  if (!c.length) return [note("（空）", depth)];
+  if (!c.length) return [note(tr("files.empty"), depth)];
   const out: HTMLElement[] = [];
   for (const e of c) {
     const path = join(s, dir, e.name);
@@ -551,7 +554,7 @@ function row(t: Tree, e: FsEntry, path: string, depth: number, folder: boolean, 
   el.querySelector(".fs-name")!.textContent = e.name;
   const info = [e.name];
   if (!folder) info.push(fmtSize(e.size));
-  if (e.mtime) info.push(new Date(e.mtime).toLocaleString());
+  if (e.mtime) info.push(fmtDateTime(e.mtime));
   el.title = info.join("\n");
   return el;
 }
@@ -581,68 +584,72 @@ function fmtSize(n: number) {
     n /= 1024;
     i++;
   }
-  return `${i ? n.toFixed(1) : n} ${units[i]}`;
+  return `${i ? fmtNum(n, 1) : n} ${units[i]}`;
 }
 
 // ---------------- 右键菜单 ----------------
 
 function menuItems(s: FsSession, t: Tree, row: HTMLElement | undefined, pasteCount: number): MenuItem[] {
-  const copy = (p: string): MenuItem => ["复制路径", () => navigator.clipboard.writeText(p).catch(() => {})];
-  const here = (p: string): MenuItem => ["在此目录新建会话", () => newSessionAt(s, p)];
-  const pasteItem: MenuItem = [pasteCount ? `粘贴（${pasteCount} 项）` : "粘贴", () => paste(s, dirFor(s, t, row)), !pasteCount];
+  const copy = (p: string): MenuItem => [tr("files.copyPath"), () => navigator.clipboard.writeText(p).catch(() => {})];
+  const here = (p: string): MenuItem => [tr("files.newSessionHere"), () => newSessionAt(s, p)];
+  const pasteItem: MenuItem = [pasteCount ? tn("files.pasteN", pasteCount) : tr("files.paste"), () => paste(s, dirFor(s, t, row)), !pasteCount];
   const n = t.selected.size;
-  const copyItem: MenuItem = [n > 1 ? `复制（${n} 项）` : "复制", () => copySelection(s, t)];
+  const copyItem: MenuItem = [n > 1 ? tn("files.copyN", n) : tr("files.copy"), () => copySelection(s, t)];
+  const refresh = tr("common.refresh");
+  const newFolder = tr("files.newFolder");
+  const newFile = tr("files.newFile");
+  const openDefault = tr("files.openDefault");
   // 盘符列表：只能进入 / 在盘符根新建会话
   if (t.root === "") {
-    if (!row) return [["刷新", () => refreshAll(s)]];
+    if (!row) return [[refresh, () => refreshAll(s)]];
     return [here(row.dataset.path!), copy(row.dataset.path!)];
   }
   if (!row) {
     return [
-      ["新建文件夹", () => create(s, t, t.root, false)],
-      ["新建文件", () => create(s, t, t.root, true)],
+      [newFolder, () => create(s, t, t.root, false)],
+      [newFile, () => create(s, t, t.root, true)],
       null,
       pasteItem,
       null,
       here(t.root),
       null,
       copy(t.root),
-      ["刷新", () => refreshAll(s)],
+      [refresh, () => refreshAll(s)],
     ];
   }
   const path = row.dataset.path!;
   const common: MenuItem[] = [
-    [n > 1 ? `发给 Claude（${n} 项）` : "发给 Claude", () => sendToClaude(s, t)],
-    ["下载到…", () => download(s, path)],
+    [n > 1 ? tn("files.sendToClaudeN", n) : tr("files.sendToClaude"), () => sendToClaude(s, t)],
+    [tr("files.downloadTo"), () => download(s, path)],
     null,
     copyItem,
     pasteItem,
     null,
-    ["重命名", () => rename(s, t, path)],
-    ["删除", () => remove(s, t, path, !!row.dataset.dir)],
+    [tr("files.rename"), () => rename(s, t, path)],
+    [tr("common.delete"), () => remove(s, t, path, !!row.dataset.dir)],
     null,
     copy(path),
   ];
   if (!row.dataset.dir) {
     const kind = previewKind(path);
-    const asText: MenuItem = ["以文本打开", () => preview(s, path, "text")];
+    const asText: MenuItem = [tr("files.openAsText"), () => preview(s, path, "text")];
     const open: MenuItem[] =
       kind === "md"
-        ? [["预览", () => preview(s, path)], asText, ["用默认程序打开", () => openFile(s, path)]]
+        ? [[tr("files.preview"), () => preview(s, path)], asText, [openDefault, () => openFile(s, path)]]
         : kind === "text"
-          ? [["编辑", () => preview(s, path)], ["用默认程序打开", () => openFile(s, path)]]
+          ? [[tr("common.edit"), () => preview(s, path)], [openDefault, () => openFile(s, path)]]
           : isHtml(path)
-            ? [["在浏览器中打开", () => openFile(s, path, "browser")], ["用默认程序打开", () => openFile(s, path)], asText]
-            : [["打开", () => openFile(s, path)], asText];
+            ? [[tr("files.openBrowser"), () => openFile(s, path, "browser")], [openDefault, () => openFile(s, path)], asText]
+            : [[tr("files.open"), () => openFile(s, path)], asText];
     return [...open, ...common];
   }
   return [
-    ["新建文件夹", () => create(s, t, path, false)],
-    ["新建文件", () => create(s, t, path, true)],
+    [newFolder, () => create(s, t, path, false)],
+    [newFile, () => create(s, t, path, true)],
     null,
     here(path),
     ...common,
-    ["刷新", () => refreshDir(s, t, path)],
+    [refresh, () => refreshDir(s, t, path)],
   ];
 }
 
@@ -653,7 +660,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
       const b = document.createElement("button");
       b.textContent = it[0];
       b.disabled = !!it[2];
-      if (it[0] === "删除") b.className = "danger";
+      if (it[0] === tr("common.delete")) b.className = "danger";
       b.addEventListener("click", () => {
         menu.hidden = true;
         it[1]();
@@ -674,7 +681,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
 export function ask(message: string, ok: string, input?: string): Promise<string | null> {
   dlgMsg.textContent = message;
   dlgOk.textContent = ok;
-  dlgOk.classList.toggle("danger", ok === "删除");
+  dlgOk.classList.toggle("danger", ok === tr("common.delete"));
   dlgInput.hidden = input === undefined;
   dlgInput.value = input ?? "";
   dlg.returnValue = "";
@@ -692,10 +699,10 @@ export function ask(message: string, ok: string, input?: string): Promise<string
 
 /** 读名称：空或含路径分隔符时返回 null */
 async function askName(message: string, initial: string) {
-  const name = await ask(message, "确定", initial);
+  const name = await ask(message, tr("common.ok"), initial);
   if (!name) return null;
   if (/[\\/]/.test(name)) {
-    alert("名称不能包含 / 或 \\");
+    alert(tr("files.invalidName"));
     return null;
   }
   return name;
@@ -704,11 +711,11 @@ async function askName(message: string, initial: string) {
 // ---------------- 操作 ----------------
 
 async function create(s: FsSession, t: Tree, dir: string, file: boolean) {
-  const name = await askName(file ? "新建文件" : "新建文件夹", "");
+  const name = await askName(file ? tr("files.newFile") : tr("files.newFolder"), "");
   if (!name) return;
   const path = join(s, dir, name);
   const r = await call({ type: file ? "fsCreateFile" : "fsMkdir", reqId: nextId(), sessionId: s.id, path });
-  if (failed(r, file ? "新建文件" : "新建文件夹")) return;
+  if (failed(r, file ? "files.newFile" : "files.newFolder")) return;
   if (dir !== t.root) t.expanded.add(dir);
   select(t, path);
   refreshDir(s, t, dir);
@@ -716,12 +723,12 @@ async function create(s: FsSession, t: Tree, dir: string, file: boolean) {
 
 async function rename(s: FsSession, t: Tree, path: string) {
   const old = baseName(path);
-  const name = await askName(`重命名“${old}”`, old);
+  const name = await askName(tr("files.renameTitle", { name: old }), old);
   const dir = parentOf(s, path);
   if (!name || name === old || dir === null) return;
   const to = join(s, dir, name);
   const r = await call({ type: "fsRename", reqId: nextId(), sessionId: s.id, from: path, to });
-  if (failed(r, "重命名")) return;
+  if (failed(r, "files.rename")) return;
   if (t.expanded.delete(path)) t.expanded.add(to);
   select(t, to);
   refreshDir(s, t, dir);
@@ -729,10 +736,10 @@ async function rename(s: FsSession, t: Tree, path: string) {
 
 async function remove(s: FsSession, t: Tree, path: string, folder: boolean) {
   const name = baseName(path);
-  const msg = folder ? `确定删除文件夹“${name}”及其全部内容？此操作不可撤销。` : `确定删除“${name}”？此操作不可撤销。`;
-  if ((await ask(msg, "删除")) === null) return;
+  const msg = tr(folder ? "files.confirmDeleteFolder" : "files.confirmDelete", { name });
+  if ((await ask(msg, tr("common.delete"))) === null) return;
   const r = await call({ type: "fsDelete", reqId: nextId(), sessionId: s.id, path });
-  if (failed(r, "删除")) return;
+  if (failed(r, "common.delete")) return;
   t.expanded.delete(path);
   const dir = parentOf(s, path);
   if (dir !== null) refreshDir(s, t, dir);
@@ -741,14 +748,14 @@ async function remove(s: FsSession, t: Tree, path: string, folder: boolean) {
 /** 本地直接用默认程序 / 默认浏览器打开；远程先下载到临时目录（显示传输进度）再打开 */
 async function openFile(s: FsSession, path: string, mode: OpenMode = "default") {
   const reqId = nextId();
-  if (isRemote(s)) startTransfer(reqId, `打开 ${baseName(path)}`);
-  failed(await call({ type: "fsOpen", reqId, sessionId: s.id, path, mode }), "打开");
+  if (isRemote(s)) startTransfer(reqId, tr("files.transfer.open", { name: baseName(path) }));
+  failed(await call({ type: "fsOpen", reqId, sessionId: s.id, path, mode }), "files.open");
 }
 
 /** 终端输出中的文件路径链接：同 openFile，但失败（如文件不存在）静默忽略 */
 export function openPathQuiet(s: FsSession, path: string) {
   const reqId = nextId();
-  if (isRemote(s)) startTransfer(reqId, `打开 ${baseName(path)}`);
+  if (isRemote(s)) startTransfer(reqId, tr("files.transfer.open", { name: baseName(path) }));
   call({ type: "fsOpen", reqId, sessionId: s.id, path, mode: "default" });
 }
 
@@ -756,7 +763,7 @@ export function openPathQuiet(s: FsSession, path: string) {
  *  编码、换行、mtime 留在闭包里，保存时按原样带回 daemon，保存成功后更新 mtime / size */
 async function preview(s: FsSession, path: string, kind = previewKind(path) ?? "text", edit?: boolean) {
   const r = await call({ type: "fsRead", reqId: nextId(), sessionId: s.id, path });
-  if (failed(r, "打开") || !r.file || deps.active()?.id !== s.id) return;
+  if (failed(r, "files.open") || !r.file || deps.active()?.id !== s.id) return;
   let meta = r.file;
   showPreview(
     {
@@ -781,18 +788,18 @@ async function preview(s: FsSession, path: string, kind = previewKind(path) ?? "
 }
 
 async function download(s: FsSession, path: string) {
-  const dir = await open({ directory: true, title: "下载到…" });
+  const dir = await open({ directory: true, title: tr("files.downloadTo") });
   if (typeof dir !== "string") return;
   const reqId = nextId();
-  startTransfer(reqId, `下载 ${baseName(path)}`);
-  failed(await call({ type: "download", reqId, sessionId: s.id, paths: [path], localDir: dir }), "下载");
+  startTransfer(reqId, tr("files.transfer.download", { name: baseName(path) }));
+  failed(await call({ type: "download", reqId, sessionId: s.id, paths: [path], localDir: dir }), "files.download");
 }
 
 async function upload(s: FsSession, dir: string, paths: string[]) {
   const reqId = nextId();
-  startTransfer(reqId, paths.length === 1 ? `上传 ${baseName(paths[0])}` : `上传 ${paths.length} 项`);
+  startTransfer(reqId, paths.length === 1 ? tr("files.transfer.upload", { name: baseName(paths[0]) }) : tn("files.transfer.uploadN", paths.length));
   const r = await call({ type: "upload", reqId, sessionId: s.id, localPaths: paths, destDir: dir });
-  if (failed(r, "上传")) return;
+  if (failed(r, "files.upload")) return;
   const t = tree(s);
   if (dir !== t.root) t.expanded.add(dir);
   refreshDir(s, t, dir);
@@ -842,7 +849,7 @@ async function paste(s: FsSession, dir: string) {
   const src = await pasteSource();
   if (!src) return;
   const listing = await call({ type: "fsList", reqId: nextId(), sessionId: s.id, path: dir });
-  if (failed(listing, "粘贴")) return;
+  if (failed(listing, "files.paste")) return;
   // 本地不区分大小写
   const fold = (n: string) => (isRemote(s) ? n : n.toLowerCase());
   const existing = new Map((listing.entries ?? []).map((e) => [fold(e.name), e]));
@@ -872,9 +879,9 @@ async function paste(s: FsSession, dir: string) {
   }
   if (!items.length) return;
   const reqId = nextId();
-  startTransfer(reqId, items.length === 1 ? `粘贴 ${baseName(items[0].path)}` : `粘贴 ${items.length} 项`);
+  startTransfer(reqId, items.length === 1 ? tr("files.transfer.paste", { name: baseName(items[0].path) }) : tn("files.transfer.pasteN", items.length));
   const r = await call({ type: "fsCopy", reqId, sessionId: s.id, source: src.source, items, destDir: dir });
-  failed(r, "粘贴");
+  failed(r, "files.paste");
   // 失败时也刷新：可能已复制了一部分
   const t = tree(s);
   if (dir !== t.root) t.expanded.add(dir);
@@ -883,14 +890,12 @@ async function paste(s: FsSession, dir: string) {
 
 /** 同名冲突对话框：返回选择与是否应用到其余 left 个同名项；Esc 取消整个粘贴返回 null */
 function askConflict(name: string, isDir: boolean, left: number): Promise<{ choice: Conflict; all: boolean } | null> {
-  $("fs-c-msg").textContent = `目标位置已存在${isDir ? "文件夹" : "文件"}“${name}”。`;
-  $("fs-c-hint").textContent = isDir
-    ? "覆盖：合并并覆盖同名文件（文件夹内的同名文件不再逐个询问），其余文件保留。都保留：复制为“名称 (1)”。Esc 取消粘贴。"
-    : "都保留：复制为“名称 (1).扩展名”。Esc 取消粘贴。";
+  $("fs-c-msg").textContent = tr(isDir ? "files.conflict.msgDir" : "files.conflict.msgFile", { name });
+  $("fs-c-hint").textContent = tr(isDir ? "files.conflict.hintDir" : "files.conflict.hintFile");
   const allBox = $<HTMLInputElement>("fs-c-all");
   allBox.checked = false;
   $("fs-c-all-row").hidden = left === 0;
-  $("fs-c-all-text").textContent = `对其余 ${left} 个同名项应用相同操作`;
+  $("fs-c-all-text").textContent = tn("files.conflict.all", left);
   conflictDlg.returnValue = "";
   conflictDlg.showModal();
   return new Promise((resolve) =>
@@ -938,8 +943,9 @@ function highlight(el: HTMLElement | undefined) {
 function startTransfer(reqId: number, label: string) {
   const el = document.createElement("div");
   el.className = "fs-transfer";
-  el.innerHTML = `<div class="fs-t-line"><span class="fs-t-name"></span><span class="fs-t-pct">准备中…</span></div><div class="fs-t-bar"><i></i></div>`;
+  el.innerHTML = `<div class="fs-t-line"><span class="fs-t-name"></span><span class="fs-t-pct"></span></div><div class="fs-t-bar"><i></i></div>`;
   el.querySelector(".fs-t-name")!.textContent = label;
+  el.querySelector(".fs-t-pct")!.textContent = tr("files.transfer.preparing");
   el.title = label;
   transfersEl.appendChild(el);
   transfers.set(reqId, el);

@@ -1,5 +1,6 @@
 // 终端相关的小纯函数（无副作用，便于单元测试）
 import type { ITerminalOptions, IWindowsPty } from "@xterm/xterm";
+import { fmtNum, t } from "./i18n";
 
 /** 所有终端共用的固定选项：表格单元格选择（table-select.ts）用到 registerDecoration，属 proposed API，须开启 */
 export const TERMINAL_OPTIONS: ITerminalOptions = { allowProposedApi: true };
@@ -101,8 +102,8 @@ export function parseFontAdj(stored: string | null): number {
 
 /** 界面字号偏移的选项文字，如“小 2 号（默认）”“原始大小”“大 1 号” */
 export function fontAdjLabel(adj: number): string {
-  const s = adj < 0 ? `小 ${-adj} 号` : adj > 0 ? `大 ${adj} 号` : "原始大小";
-  return adj === FONT_ADJ_DEFAULT ? `${s}（默认）` : s;
+  const s = adj < 0 ? t("settings.fontAdj.smaller", { n: -adj }) : adj > 0 ? t("settings.fontAdj.larger", { n: adj }) : t("settings.fontAdj.original");
+  return adj === FONT_ADJ_DEFAULT ? t("settings.fontAdj.default", { label: s }) : s;
 }
 
 /** Ctrl+滚轮每累计这么多像素的 deltaY 调一号 */
@@ -137,7 +138,7 @@ const GIB = 1024 ** 3;
 /** 会话内存占用显示：不足 1 GB 按 MB 取整（如 812 MB），否则按 GB 保留一位（如 1.3 GB） */
 export function formatMemory(bytes: number): string {
   const mb = Math.round(bytes / MIB);
-  return mb < 1024 ? `${mb} MB` : `${(bytes / GIB).toFixed(1)} GB`;
+  return mb < 1024 ? `${mb} MB` : `${fmtNum(bytes / GIB, 1)} GB`;
 }
 
 /** 内存占用超过 1 GB 时用警示色标出 */

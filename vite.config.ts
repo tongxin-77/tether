@@ -5,6 +5,8 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
+  // vitest：单测默认按简体中文（源语言）断言界面文字
+  test: { setupFiles: ["src/test-setup.ts"] },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
