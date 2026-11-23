@@ -4,6 +4,15 @@
 
 ## [未发布]
 
+## [0.6.0] - 2026-11-23
+
+### ✨ 新增
+
+- **界面支持多语言：简体中文、English、繁體中文、日本語**
+  - 默认跟随 Windows 显示语言，可在设置「外观 → 语言」中切换，立即生效
+  - 后台进程发出的系统通知、错误提示与 SSH / sudo 输入提示同样使用所选语言
+  - 安装程序按系统语言显示；更新说明按语言显示中文或英文
+
 ## [0.5.9] - 2026-11-23
 
 ### ✨ 新增
@@ -269,7 +278,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.9...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tongxin-77/tether/releases/tag/v0.6.0
 [0.5.9]: https://github.com/tongxin-77/tether/releases/tag/v0.5.9
 [0.5.8]: https://github.com/tongxin-77/tether/releases/tag/v0.5.8
 [0.5.7]: https://github.com/tongxin-77/tether/releases/tag/v0.5.7
