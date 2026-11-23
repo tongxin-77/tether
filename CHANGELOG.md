@@ -4,6 +4,32 @@
 
 ## [未发布]
 
+## [0.5.9] - 2026-11-23
+
+### ✨ 新增
+
+- **文件可在预览面板中编辑保存**
+  - YAML、`.env`、`.gitignore`、`env.example`、JSON、TOML、INI、`Dockerfile`、脚本、txt 等双击直接进入编辑器
+  - Markdown 默认显示预览，点「编辑」修改源码，`Ctrl+S` 保存后回到预览
+  - 任意文件右键可「以文本打开」，二进制文件会提示无法打开
+  - 编辑器带行号、语法高亮、查找替换（`Ctrl+F` / `Ctrl+H`），配色跟随主题
+  - YAML 标出语法错误行，有错时保存前确认
+  - 保存时保持原编码（GBK、UTF-8、BOM、UTF-16）与换行风格；文件被外部修改时提示覆盖 / 重新加载 / 取消
+  - 有未保存修改时，关闭面板、切换会话或打开其它文件前先确认
+  - SSH 远程文件同样可编辑，文件面板提权为 root 时以 root 写入；超过 5 MB 的文件只读
+- **预览支持 txt / log 文件**
+
+### 🔧 变更
+
+- **预览内容撑满面板宽度，大文件滚动更流畅**
+  - 预览上限提高到 20 MB；GBK 编码的文本不再乱码
+
+### 🐛 修复
+
+- **开启 GPU 加速后切换会话不再卡顿**
+  - 最近使用的 8 个会话保留 GPU 渲染，来回切换无需重建
+- **Claude 团队成员空闲后不再一直显示「后台运行中」**
+
 ## [0.5.8] - 2026-11-19
 
 ### 🐛 修复
@@ -243,7 +269,8 @@
 - 拖动侧栏会话到主窗口外，成为只含该会话的独立窗口；关闭后回到主窗口。
 - 应用图标。
 
-[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.8...HEAD
+[未发布]: https://github.com/tongxin-77/tether/compare/v0.5.9...HEAD
+[0.5.9]: https://github.com/tongxin-77/tether/releases/tag/v0.5.9
 [0.5.8]: https://github.com/tongxin-77/tether/releases/tag/v0.5.8
 [0.5.7]: https://github.com/tongxin-77/tether/releases/tag/v0.5.7
 [0.5.6]: https://github.com/tongxin-77/tether/releases/tag/v0.5.6

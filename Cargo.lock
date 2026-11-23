@@ -3958,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -5680,7 +5680,7 @@ dependencies = [
 
 [[package]]
 name = "tether"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "arboard",
  "image",
@@ -5699,7 +5699,7 @@ dependencies = [
 
 [[package]]
 name = "tetherd"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
