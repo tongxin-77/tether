@@ -84,6 +84,8 @@ pub struct Session {
 #[derive(Default)]
 struct Agents {
     running: HashMap<String, Instant>,
+    /// 已 SubagentStop、尚未再次 SubagentStart 的代理 id：teammate 空闲等待时 background_tasks 仍报 running，计数时扣除
+    idle: HashSet<String>,
     bg: u32,
     session: Option<String>,
 }
@@ -402,6 +404,10 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             fs_spawn(state, st, req_id, session_id, fs::Op::Open(path, mode))
         }
         ClientMsg::FsRead { req_id, session_id, path } => fs_spawn(state, st, req_id, session_id, fs::Op::Read(path)),
+        ClientMsg::FsWrite { req_id, session_id, path, text, encoding, crlf, mtime, size, force } => {
+            let w = fs::WriteReq { path, text, encoding, crlf, mtime, size, force };
+            fs_spawn(state, st, req_id, session_id, fs::Op::Write(Box::new(w)))
+        }
         ClientMsg::Upload { req_id, session_id, local_paths, dest_dir } => {
             fs_spawn(state, st, req_id, session_id, fs::Op::Upload(local_paths, dest_dir))
         }
@@ -1094,8 +1100,13 @@ fn slash_command(prompt: &str) -> bool {
 /// Claude 状态机（不含推送 / 通知，便于测试）。返回 None 表示忽略该事件（状态不变、不推送）。
 /// 主代理 Stop 时仍有后台任务（子代理、后台 shell 等）在运行 → Background（不通知）；新版 Claude Code 在后台任务结束后
 /// 经 UserPromptSubmit 唤起 Claude 处理结果（转为 Thinking），等到下一次没有后台任务的 Stop 才算 Done 并通知
+/// teammates 中已空闲的个数
+fn idle_count(idle: &HashSet<String>, teammates: &[String]) -> u32 {
+    teammates.iter().filter(|t| idle.contains(*t)).count() as u32
+}
+
 fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<Step> {
-    let ClientMsg::ClaudeEvent { event, message, notification_type, agent_id, agent_type, background, prompt, claude_session, source, .. } = ev
+    let ClientMsg::ClaudeEvent { event, message, notification_type, agent_id, agent_type, background, teammates, prompt, claude_session, source, .. } = ev
     else {
         return None;
     };
@@ -1133,6 +1144,7 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
         "SubagentStart" => {
             if let (true, Some(id)) = (subagent, agent_id) {
                 a.running.insert(id.clone(), Instant::now());
+                a.idle.remove(id);
             }
             None
         }
@@ -1142,11 +1154,12 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
             }
             if let Some(id) = agent_id {
                 a.running.remove(id);
+                a.idle.insert(id.clone());
             }
             // 新版带 background_tasks（父会话视角，已除去该子代理自身）：只刷新计数、不自行退出 Background——
             // 子代理留下的后台任务可能仍在运行；Claude 被唤起时有 UserPromptSubmit，最终由 Stop 判断是否完成
             if let Some(n) = background {
-                a.bg = *n;
+                a.bg = n.saturating_sub(idle_count(&a.idle, teammates));
                 return (prev == Some(ClaudeStatus::Background)).then(|| set(Some(ClaudeStatus::Background))).flatten();
             }
             // 旧版：每个 SubagentStop 减一，最后一个结束时 Claude 将被唤起处理结果（不经 UserPromptSubmit）
@@ -1169,7 +1182,7 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
                     if *n == 0 {
                         a.running.clear();
                     }
-                    *n
+                    n.saturating_sub(idle_count(&a.idle, teammates))
                 }
                 None => {
                     a.running.retain(|_, t| t.elapsed() < AGENT_EXPIRE);
@@ -1225,6 +1238,7 @@ mod tests {
                 agent_type: agent.map(|a| a.1.into()),
                 background,
                 tasks: None,
+                teammates: vec![],
                 prompt: None,
                 claude_session: None,
                 cwd: None,
@@ -1338,6 +1352,7 @@ mod tests {
             agent_type: None,
             background: None,
             tasks: None,
+            teammates: vec![],
             prompt: None,
             claude_session: None,
             cwd: None,
@@ -1359,6 +1374,7 @@ mod tests {
             agent_type: None,
             background: None,
             tasks: None,
+            teammates: vec![],
             prompt: None,
             claude_session: None,
             cwd: None,
@@ -1427,6 +1443,7 @@ mod tests {
             agent_type: None,
             background: None,
             tasks: None,
+            teammates: vec![],
             prompt: None,
             claude_session: sid.map(Into::into),
             cwd: cwd.map(Into::into),
@@ -1588,6 +1605,28 @@ mod tests {
         s.feed("UserPromptSubmit", None, None);
         let cron = r#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[{"id":"c1","schedule":"0 9 * * 1-5","recurring":true}]}"#;
         assert_eq!(s.hook(cron), Some(Done));
+    }
+
+    #[test]
+    fn idle_teammates_not_counted() {
+        // agent teams：teammate 完成工作后进入空闲等待（已 SubagentStop），background_tasks 中仍标 running，不应算后台运行中
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        s.feed("SubagentStart", Some(("t1", "backend")), None);
+        s.feed("SubagentStart", Some(("t2", "frontend")), None);
+        let both = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"teammate","status":"running"},{"id":"t2","type":"teammate","status":"running"}]}"#;
+        assert_eq!(s.hook(both), Some(Background));
+        assert_eq!(s.agents.bg, 2);
+        s.hook(r#"{"hook_event_name":"SubagentStop","agent_id":"t1","agent_type":"backend","background_tasks":[{"id":"t1","type":"teammate","status":"running"},{"id":"t2","type":"teammate","status":"running"}]}"#);
+        assert_eq!(s.agents.bg, 1);
+        s.hook(r#"{"hook_event_name":"SubagentStop","agent_id":"t2","agent_type":"frontend","background_tasks":[{"id":"t1","type":"teammate","status":"running"},{"id":"t2","type":"teammate","status":"running"}]}"#);
+        s.feed("UserPromptSubmit", None, None);
+        assert_eq!(s.hook(both), Some(Done));
+        // 空闲的 teammate 被再次派活：重新计入
+        s.feed("UserPromptSubmit", None, None);
+        s.feed("SubagentStart", Some(("t1", "backend")), None);
+        assert_eq!(s.hook(both), Some(Background));
+        assert_eq!(s.agents.bg, 1);
     }
 
     #[test]

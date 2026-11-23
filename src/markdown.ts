@@ -1,6 +1,7 @@
 // Markdown 渲染 + 净化：md 可能来自远程主机或他人，而 webview 能调用 Tauri invoke，输出必须经 DOMPurify 净化后才能插入页面
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { groupBlocks } from "./preview-utils";
 
 const PURIFY_CONFIG = {
   // 只保留 HTML（不允许 SVG / MathML）
@@ -30,4 +31,13 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 export function renderMarkdown(text: string): string {
   const html = marked.parse(text, { async: false, gfm: true });
   return DOMPurify.sanitize(html, PURIFY_CONFIG);
+}
+
+/** 同 renderMarkdown，但按顶层块分组输出多段（大文档分段渲染，屏外段落可跳过布局）；lines 为该段原文行数 */
+export function renderMarkdownSections(text: string): { html: string; lines: number }[] {
+  // 引用式链接在 lexer 阶段已解析进 token，分组后单独 parser 不受影响
+  return groupBlocks(marked.lexer(text, { gfm: true })).map((group) => ({
+    html: DOMPurify.sanitize(marked.parser(group, { gfm: true }), PURIFY_CONFIG),
+    lines: group.reduce((n, t) => n + (t.raw.match(/\n/g)?.length ?? 0), 0) + 1,
+  }));
 }

@@ -1,7 +1,7 @@
 // 卡片头分支的菜单（切换分支 / 查看历史）与提交历史面板；git 命令由后端执行，输出解析见 git-utils.ts
 import { invoke } from "@tauri-apps/api/core";
 import { icon } from "./icons";
-import { closePreview } from "./preview";
+import { requestClosePreview } from "./preview";
 import { type Commit, type Refs, classifyDiff, filterRefs, graphRuns, parseDecor, parseLog, parseNumstat, parseRefs, relTime, switchTarget } from "./git-utils";
 
 interface Deps {
@@ -73,7 +73,7 @@ async function openMenu() {
   history.append("查看历史");
   history.addEventListener("click", () => {
     menu.hidden = true;
-    openHistory(dir);
+    void openHistory(dir);
   });
   const list = el("div", "gm-list", "正在读取分支…");
   const status = el("pre", "gm-status");
@@ -158,8 +158,8 @@ function showStatus(status: HTMLElement, text: string, error: boolean) {
 
 // ---------------- 提交历史 ----------------
 
-function openHistory(dir: string) {
-  closePreview();
+async function openHistory(dir: string) {
+  if (!(await requestClosePreview())) return;
   panelDir = dir;
   panel.hidden = false;
   loadHistory();

@@ -1123,18 +1123,29 @@ li:hover .close, li.active .close { visibility: visible; }
 /* 表格单元格内拖选的高亮，与 xterm 选区同色 */
 .cell-sel { background: rgba(227, 168, 103, 0.3); pointer-events: none; }
 
-/* ================= Markdown 预览：覆盖终端卡片（.term 样式不变） ================= */
+/* ================= 文件预览（Markdown / 纯文本）：覆盖终端卡片（.term 样式不变） ================= */
 /* 打开时隐藏下方终端，半透明下也不透出终端文字 */
 #preview { position: absolute; inset: var(--top) 0 var(--bottom) 0; z-index: 5; display: flex; flex-direction: column; overflow: hidden; background: var(--popover); border-radius: var(--r-xl); box-shadow: var(--shadow-modal); }
 #terminals:has(> #preview:not([hidden])) > .term { visibility: hidden; }
 #pv-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 14px 14px 14px 18px; border-bottom: 1px solid var(--border); }
 .pv-ico { color: var(--accent); }
 #pv-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--f-mono); font-size: calc(14px + var(--font-adj)); font-weight: 700; }
-#pv-open { height: 32px; padding: 0 16px; font-weight: 800; color: var(--text); background: var(--surface); border: none; border-radius: 99px; cursor: pointer; }
-#pv-open:hover { background: var(--surface-hover); }
+.pv-btn { flex-shrink: 0; height: 32px; padding: 0 16px; font-weight: 800; color: var(--text); background: var(--surface); border: none; border-radius: 99px; cursor: pointer; }
+.pv-btn:hover { background: var(--surface-hover); }
+.pv-btn.primary { color: var(--on-accent); background: var(--accent); }
+.pv-btn.primary:hover { background: var(--accent-strong); }
+.pv-btn:disabled { opacity: 0.5; cursor: default; }
+.pv-btn.primary:disabled:hover { background: var(--accent); }
+#pv-note { flex-shrink: 0; padding: 3px 10px; font-size: calc(12px + var(--font-adj)); font-weight: 700; color: var(--warning-text); background: var(--warning-soft); border-radius: 99px; }
+/* 编辑器（CodeMirror，配色见 editor.ts）：占满正文区域，自身滚动 */
+#pv-editor { flex: 1; min-height: 0; padding-top: 6px; }
 #pv-body { flex: 1; overflow: auto; outline: none; }
-#pv-doc { max-width: 860px; margin: 0 auto; padding: 22px 34px 40px; font-size: calc(14px + var(--font-adj)); line-height: 1.75; color: var(--text); word-wrap: break-word; }
-#pv-doc > :first-child { margin-top: 0; }
+#pv-doc { padding: 22px 34px 40px; font-size: calc(14px + var(--font-adj)); line-height: 1.75; color: var(--text); word-wrap: break-word; }
+/* 分段：屏外段落跳过布局与绘制，未渲染时高度取 JS 按行数估算的 contain-intrinsic-size */
+#pv-doc > .pv-sec { content-visibility: auto; }
+#pv-doc > .pv-sec:first-child > :first-child { margin-top: 0; }
+/* 纯文本：等宽、保留空白、长行自动折行 */
+#pv-doc.plain { font-family: var(--f-mono); font-size: calc(13px + var(--font-adj)); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
 #pv-doc h1, #pv-doc h2, #pv-doc h3, #pv-doc h4, #pv-doc h5, #pv-doc h6 { margin: 1.3em 0 0.4em; font-weight: 800; line-height: 1.35; }
 #pv-doc h1 { font-size: calc(24px + var(--font-adj)); }
 #pv-doc h2 { font-size: calc(17px + var(--font-adj)); color: var(--accent-strong); }

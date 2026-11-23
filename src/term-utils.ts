@@ -166,3 +166,8 @@ export function nextRootSeen(seen: boolean, kind: "root" | "user" | null): { see
 export function pastedPath(path: string): string {
   return path.includes(" ") ? `"${path}"` : path;
 }
+
+/** 最近使用列表：把 id 移到末尾，只保留最后 cap 个 */
+export function touchRecent(list: number[], id: number, cap: number): number[] {
+  return [...list.filter((x) => x !== id), id].slice(-cap);
+}

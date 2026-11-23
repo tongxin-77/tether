@@ -93,10 +93,15 @@
         <div id="pv-head">
           <svg class="i pv-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
           <span id="pv-name"></span>
-          <button id="pv-open">用默认程序打开</button>
+          <span id="pv-note" hidden></span>
+          <button id="pv-edit" class="pv-btn" hidden>编辑</button>
+          <button id="pv-cancel" class="pv-btn" hidden>取消</button>
+          <button id="pv-save" class="pv-btn primary" title="保存（Ctrl+S）" hidden>保存</button>
+          <button id="pv-open" class="pv-btn">用默认程序打开</button>
           <button id="pv-close" class="fs-btn" title="关闭（Esc）"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
         <div id="pv-body" tabindex="-1"><article id="pv-doc"></article></div>
+        <div id="pv-editor" hidden></div>
       </div>
       <!-- 提交历史：覆盖在终端卡片上方（git-panel.ts 渲染）；上为 log --graph 列表，选中提交后下方显示改动 -->
       <div id="git-panel" hidden>
@@ -157,6 +162,18 @@
           <button value="keep" autofocus>都保留</button>
           <button value="skip">跳过</button>
           <button value="overwrite">覆盖</button>
+        </div>
+      </form>
+    </dialog>
+    <!-- 编辑器保存时发现文件已被外部修改（preview.ts） -->
+    <dialog id="pv-conflict">
+      <form method="dialog">
+        <p id="pv-c-msg"></p>
+        <p class="hint">覆盖：用编辑器中的内容替换；重新加载：放弃未保存的修改，读取最新内容。</p>
+        <div class="actions">
+          <button value="overwrite" class="danger">覆盖</button>
+          <button value="reload">重新加载</button>
+          <button value="cancel" autofocus>取消</button>
         </div>
       </form>
     </dialog>

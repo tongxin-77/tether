@@ -99,12 +99,13 @@
 |------|------|----------|------|
 | D-6.1 | 以 sessionId 定位后端：本地磁盘或该会话连接上懒建、复用的 SFTP；同 reqId 回复 | 远程文件树不新增 SSH 连接 | 已实现 |
 | D-6.2 | 列目录（目录在前、名称排序；本地空路径列盘符）、新建、重命名、递归删除（符号链接只删链接） | 各操作返回成功 / 错误信息 | 已实现 |
-| D-6.3 | 读文本（UTF-8 lossy，>2 MB 拒绝）供 Markdown 预览 | 超限文件返回错误 | 已实现 |
+| D-6.3 | 读文本（BOM / UTF-8 / 系统 ANSI 代码页解码，>20 MB 拒绝；前 8 KB 含 NUL 且无 UTF-16 BOM 判为二进制拒绝）供预览 / 编辑；回复带编码（解码有替换时为空，表示不可写回）、换行风格（CRLF / LF 取占多数者）、mtime 与大小 | 超限 / 二进制文件返回错误 | 已实现 |
 | D-6.4 | 打开：本地默认程序 / 默认浏览器（https UserChoice，失败回退）；远程先下载到 `%TEMP%\tether\<user@host_port>\<路径>` | 远程文件下载后打开 | 已实现 |
 | D-6.5 | 上传 / 下载：递归、同名覆盖、文件夹合并，推送累计字节进度 | 进度事件单调递增至 total | 已实现 |
 | D-6.6 | `OpenUrl` 仅接受 http(s)，其它协议忽略 | `file:` / `javascript:` 链接不被打开 | 已实现 |
 | D-6.7 | `FsCopy`：源为本地或 hostId（经连接池复用 / 重连，传完释放），目标为会话后端；远程 → 远程按块流式中转、不落临时文件；`keepBoth` 项在目标已有同名项时改名 `name (n).ext`（隐藏文件 / 文件夹不拆扩展名，同批次互不冲突），其余同名覆盖、文件夹合并 | 四种方向递归复制正确，进度推送至 total | 已实现 |
 | D-6.8 | `FsRoot`（仅 SSH 会话）：文件树以 root 浏览，按 SSH 连接生效、连接断开即恢复。同一连接上开 exec channel 经 sudo 启动 sftp-server（依次尝试常见路径）代替 sftp 子系统，提权会话与普通会话分开缓存，关闭即丢弃；先 `sudo -n` 探测，需要密码时先试凭据管理器中保存的登录密码、再以 Prompt（`sudo`，不保存）询问最多 3 次，用 `sudo -k -S` 单独验证后再开 sftp channel；密码只经 stdin，不进命令行 / 日志 / 错误信息；失败按 sudo stderr 分类报错（需要密码 / 密码错误 / 不在 sudoers / requiretty / 无 sudo / 找不到 sftp-server），保持普通身份；状态以 `SessionInfo.fsRoot` 推送（只发 GUI） | 免密 / 密码 sudo 均可切换为 root 浏览，删除 / 上传以 root 执行；关闭或重连后恢复普通身份 | 已实现未实测 |
+| D-6.9 | `FsWrite`：编辑器保存，按读取时的编码（UTF-8 / UTF-8 BOM / UTF-16 LE/BE / ANSI）与换行风格写回（换行统一转换），ANSI 代码页无法表示的字符报错、不写入；写前比对 mtime / 大小，不一致或文件已删除回 `FsSaved { conflict }` 不写入，`force` 跳过比对；本地同目录写临时文件后 `ReplaceFileW` 原子替换（保留属性 / ACL，失败退回 rename；符号链接写到目标，只读文件拒绝），远程（含 root 浏览的提权 SFTP）截断写入（非原子，保留权限）；成功回 `FsSaved` 带新 mtime / 大小 | 编码与换行往返字节不变；外部修改后保存提示冲突 | 已实现 |
 
 ### 3.7 hub 客户端（第二阶段）
 
@@ -130,8 +131,8 @@
 ## 4. 接口：GUI ↔ daemon 管道协议
 
 - 传输：本机命名管道 `\\.\pipe\tetherd-<用户名>`（dev：`tetherd-dev-<用户名>`），每行一条 JSON，`type` 字段区分消息，终端数据 base64。类型定义在 `proto/src/lib.rs`，GUI（Rust 侧透传 + TS 类型）与 daemon 共用。
-- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / Upload / Download / FsCopy / FsRoot）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
-- **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsResult、Transfer、Recent、ClaudeHooks、ResetModes、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
+- **GUI → daemon（ClientMsg）**：会话（List / Create / Attach / Input / Resize / Rename / Close / Focus）、配置（GetConfig / SetConfig / SetHostPassword）、交互回复（PromptReply）、文件（FsList / FsMkdir / FsCreateFile / FsRename / FsDelete / FsOpen / FsRead / FsWrite / Upload / Download / FsCopy / FsRoot）、OpenUrl、RemoveRecent、Claude 集成（GetClaudeHooks / SetClaudeHooks）、hub（SetHubToken / TestHub / HubReclaim）；`ClaudeEvent` 仅由 `tetherd hook` 一次性连接发送。
+- **daemon → GUI（ServerMsg）**：Sessions（全量）、Snapshot、Output、Notify、Activate、Error、Config（含探测到的 shell、合并后主机、ssh config 原值、有已保存密码的主机 id）、Prompt、FsEntries / FsContent / FsSaved / FsResult、Transfer、Recent、ClaudeHooks、ResetModes、HubStatus（disabled / connecting / connected / failed + 原因）、TestHub（耗时 + hubVersion 或分阶段错误）；Config 另带 `hubTokenSaved`（只表示是否已保存，不含 token）。
 - 文件类请求以 `reqId` 关联回复；Prompt 以 `reqId` 关联 PromptReply，`value=null` 表示取消。
 - 版本策略：GUI 与 daemon 同包发布，但更新时只替换 GUI、旧 daemon 继续运行，因此新 GUI 须兼容上一版 daemon（新增消息旧 daemon 会记日志后忽略）；连接时以 Hello 交换版本（`proto::PROTO_VERSION`，0.1.0 视为 0），不一致时提示重启后台。
 

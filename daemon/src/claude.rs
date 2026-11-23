@@ -70,7 +70,15 @@ pub(crate) fn event_msg(session: u32, stdin: &str, arg: Option<String>) -> Optio
     });
     let tasks = input.get("background_tasks").and_then(Value::as_array).map(|tasks| {
         let field = |t: &Value, k: &str| t.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
-        tasks.iter().map(|t| format!("{}:{}", field(t, "type"), field(t, "status"))).collect::<Vec<_>>().join(",")
+        tasks.iter().map(|t| format!("{}:{}:{}", field(t, "type"), field(t, "status"), field(t, "id"))).collect::<Vec<_>>().join(",")
+    });
+    let teammates = input.get("background_tasks").and_then(Value::as_array).map_or_else(Vec::new, |tasks| {
+        let teammate = |t: &Value| t.get("type").and_then(Value::as_str) == Some("teammate");
+        tasks
+            .iter()
+            .filter(|t| teammate(t) && !own(t) && !finished(t))
+            .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect()
     });
     Some(ClientMsg::ClaudeEvent {
         session,
@@ -81,6 +89,7 @@ pub(crate) fn event_msg(session: u32, stdin: &str, arg: Option<String>) -> Optio
         agent_type: text("agent_type"),
         background,
         tasks,
+        teammates,
         prompt: text("prompt").map(|p| p.chars().take(20).collect()),
         claude_session: text("session_id"),
         cwd: text("cwd"),
@@ -395,10 +404,10 @@ mod tests {
         let stop = "\u{feff}{\"hook_event_name\":\"Stop\",\"background_tasks\":[{\"id\":\"a\",\"type\":\"subagent\"},{\"id\":\"b\",\"type\":\"shell\"},{\"id\":\"c\",\"type\":\"subagent\"}]}";
         let ClientMsg::ClaudeEvent { session, event, background, .. } = event_msg(3, stop, None).unwrap() else { panic!() };
         assert_eq!((session, event.as_str(), background), (3, "Stop", Some(2)));
-        // SubagentStop：不计该子代理自身，后台 shell 也不计；日志摘要列出各项 type:status
+        // SubagentStop：不计该子代理自身，后台 shell 也不计；日志摘要列出各项 type:status:id
         let sub = r#"{"hook_event_name":"SubagentStop","agent_id":"a","background_tasks":[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"shell","status":"running"}]}"#;
         let ClientMsg::ClaudeEvent { background, tasks, .. } = event_msg(1, sub, None).unwrap() else { panic!() };
-        assert_eq!((background, tasks.as_deref()), (Some(0), Some("subagent:running,shell:running")));
+        assert_eq!((background, tasks.as_deref()), (Some(0), Some("subagent:running:a,shell:running:b")));
         // prompt 只转发前 20 个字符
         let ups = r#"{"hook_event_name":"UserPromptSubmit","prompt":"/hello 一二三四五六七八九十一二三四五"}"#;
         let ClientMsg::ClaudeEvent { prompt, .. } = event_msg(1, ups, None).unwrap() else { panic!() };

@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use proto::{CopyItem, FsEntry, Host, OpenMode, ServerMsg};
+use proto::{CopyItem, FsEntry, Host, OpenMode, ServerMsg, TextEncoding};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use winreg::{HKCR, HKCU};
@@ -24,8 +24,10 @@ const CHUNK: usize = 64 * 1024;
 const PROGRESS_STEP: u64 = 512 * 1024;
 /// 下载远程目录时跟随符号链接的最大深度，防止链接成环
 const MAX_DEPTH: usize = 32;
-/// FsRead 允许读取的最大字节数（Markdown 预览用）
-const MAX_READ: u64 = 2 * 1024 * 1024;
+/// FsRead 允许读取的最大字节数（Markdown / 纯文本预览用；日志可能较大）
+const MAX_READ: u64 = 20 * 1024 * 1024;
+/// 读取时检查是否含 NUL 字节（判为二进制）的前缀长度
+const BINARY_PROBE: usize = 8 * 1024;
 /// “都保留”改名时最多尝试的序号
 const MAX_RENAME: u32 = 10_000;
 
@@ -53,13 +55,35 @@ pub enum Op {
     Open(String, OpenMode),
     /// 读取文本内容
     Read(String),
+    /// 写回文本（编辑器保存）
+    Write(Box<WriteReq>),
     /// (本地路径列表, 会话侧目标目录)
     Upload(Vec<String>, String),
     /// (会话侧路径列表, 本地目标目录)
     Download(Vec<String>, String),
 }
 
+/// FsWrite 的参数，含义见 proto
+pub struct WriteReq {
+    pub path: String,
+    pub text: String,
+    pub encoding: TextEncoding,
+    pub crlf: bool,
+    pub mtime: u64,
+    pub size: u64,
+    pub force: bool,
+}
+
 type Res<T> = Result<T, String>;
+
+/// 读取到的文本及其格式
+struct TextFile {
+    text: String,
+    encoding: Option<TextEncoding>,
+    crlf: bool,
+    mtime: u64,
+    size: u64,
+}
 
 /// 操作成功时的回复内容
 enum Reply {
@@ -67,7 +91,9 @@ enum Reply {
     /// (目录, 目录项)
     Entries(String, Vec<FsEntry>),
     /// (文件路径, 文本)
-    Content(String, String),
+    Content(String, TextFile),
+    /// 写回结果：conflict 时未写入；(mtime, size) 为文件当前值
+    Saved { conflict: bool, mtime: u64, size: u64 },
 }
 
 /// 执行一个文件请求并回复 GUI
@@ -120,7 +146,10 @@ pub async fn copy(state: Shared, req_id: u64, dest: Backend, source: Option<Host
 fn reply(state: &Shared, req_id: u64, result: Res<Reply>) {
     let msg = match result {
         Ok(Reply::Entries(path, entries)) => ServerMsg::FsEntries { req_id, path, entries },
-        Ok(Reply::Content(path, text)) => ServerMsg::FsContent { req_id, path, text },
+        Ok(Reply::Content(path, f)) => {
+            ServerMsg::FsContent { req_id, path, text: f.text, encoding: f.encoding, crlf: f.crlf, mtime: f.mtime, size: f.size }
+        }
+        Ok(Reply::Saved { conflict, mtime, size }) => ServerMsg::FsSaved { req_id, conflict, mtime, size },
         Ok(Reply::Done) => ServerMsg::FsResult { req_id, error: None },
         Err(error) => {
             log!("文件操作失败（请求 {req_id}）：{error}");
@@ -161,6 +190,7 @@ async fn local(p: &mut Progress, op: Op) -> Res<Reply> {
             let text = read_text(End::Local, &path).await?;
             return Ok(Reply::Content(path, text));
         }
+        Op::Write(w) => return write_text(End::Local, *w).await,
         // 本地会话的上传 / 下载都是复制
         Op::Upload(srcs, dir) | Op::Download(srcs, dir) => {
             let items = blocking(move || walk_local(&local_tops(&srcs)?, &dir, false)).await?;
@@ -208,6 +238,7 @@ async fn remote(p: &mut Progress, sftp: &SftpSession, label: &str, op: Op) -> Re
             let text = read_text(End::Remote(sftp), &path).await?;
             return Ok(Reply::Content(path, text));
         }
+        Op::Write(w) => return write_text(End::Remote(sftp), *w).await,
         Op::Upload(srcs, dir) => {
             let items = blocking(move || walk_local(&local_tops(&srcs)?, &dir, true)).await?;
             transfer(p, End::Local, End::Remote(sftp), items).await?
@@ -294,16 +325,209 @@ async fn remove_remote(sftp: &SftpSession, path: &str) -> Res<()> {
     Ok(())
 }
 
-// ---------------- 读取 ----------------
+// ---------------- 读取 / 写回 ----------------
 
-/// 读取文本：最多读 MAX_READ + 1 字节，超出即拒绝（不依赖元数据中的大小，远程可能缺失）；UTF-8 lossy 解码
-async fn read_text(end: End<'_>, path: &str) -> Res<String> {
+/// 读取文本：最多读 MAX_READ + 1 字节，超出即拒绝（不依赖元数据中的大小，远程可能缺失）；二进制见 looks_binary，编码见 decode_text。
+/// 读取前记下 mtime / size，供写回时检测外部修改
+async fn read_text(end: End<'_>, path: &str) -> Res<TextFile> {
+    let (mtime, size) = end.stat(path).await?;
     let mut buf = Vec::new();
     end.reader(path).await?.take(MAX_READ + 1).read_to_end(&mut buf).await.map_err(at(path))?;
     if buf.len() as u64 > MAX_READ {
-        return Err(format!("{path}：文件超过 {} MB，不支持预览", MAX_READ / 1024 / 1024));
+        return Err(format!("{path}：文件超过 {} MB，不支持预览，请用默认程序打开", MAX_READ / 1024 / 1024));
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    if looks_binary(&buf) {
+        return Err(format!("{path}：看起来是二进制文件，无法以文本打开"));
+    }
+    let (text, encoding) = decode_text(buf);
+    let crlf = crlf_majority(&text);
+    Ok(TextFile { text, encoding, crlf, mtime, size })
+}
+
+/// 前 BINARY_PROBE 字节含 NUL 字节，且不是带 BOM 的 UTF-16 文本
+fn looks_binary(buf: &[u8]) -> bool {
+    !buf.starts_with(b"\xFF\xFE") && !buf.starts_with(b"\xFE\xFF") && buf[..buf.len().min(BINARY_PROBE)].contains(&0)
+}
+
+/// 解码文本：有 BOM 按 BOM（UTF-8 / UTF-16 LE / BE，并去掉 BOM）；否则合法 UTF-8 直接用，
+/// 不合法时按系统 ANSI 代码页（中文系统为 GBK）严格解码，仍失败则 UTF-8 lossy。
+/// 编码为 None 表示有非法字节被替换（按原编码写回会损坏文件）
+fn decode_text(buf: Vec<u8>) -> (String, Option<TextEncoding>) {
+    if let Some(b) = buf.strip_prefix(b"\xEF\xBB\xBF") {
+        return match std::str::from_utf8(b) {
+            Ok(s) => (s.to_string(), Some(TextEncoding::Utf8Bom)),
+            Err(_) => (String::from_utf8_lossy(b).into_owned(), None),
+        };
+    }
+    let utf16 = |b: &[u8], f: fn([u8; 2]) -> u16, enc| {
+        let (units, rest) = b.as_chunks::<2>();
+        let units: Vec<u16> = units.iter().map(|c| f(*c)).collect();
+        match String::from_utf16(&units) {
+            Ok(s) if rest.is_empty() => (s, Some(enc)),
+            _ => (String::from_utf16_lossy(&units), None),
+        }
+    };
+    if let Some(b) = buf.strip_prefix(b"\xFF\xFE") {
+        return utf16(b, u16::from_le_bytes, TextEncoding::Utf16Le);
+    }
+    if let Some(b) = buf.strip_prefix(b"\xFE\xFF") {
+        return utf16(b, u16::from_be_bytes, TextEncoding::Utf16Be);
+    }
+    match String::from_utf8(buf) {
+        Ok(s) => (s, Some(TextEncoding::Utf8)),
+        Err(e) => {
+            let buf = e.into_bytes();
+            match ansi_decode(&buf) {
+                Some(s) => (s, Some(TextEncoding::Ansi)),
+                None => (String::from_utf8_lossy(&buf).into_owned(), None),
+            }
+        }
+    }
+}
+
+/// 按系统 ANSI 代码页严格解码（遇非法字节返回 None）；代码页本身是 UTF-8 时无意义，直接返回 None
+fn ansi_decode(buf: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{CP_ACP, CP_UTF8, GetACP, MB_ERR_INVALID_CHARS, MultiByteToWideChar};
+    let len = i32::try_from(buf.len()).ok()?;
+    // SAFETY: 输入 / 输出缓冲区及其长度均来自有效切片
+    unsafe {
+        if GetACP() == CP_UTF8 {
+            return None;
+        }
+        let n = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, buf.as_ptr(), len, std::ptr::null_mut(), 0);
+        if n <= 0 {
+            return None;
+        }
+        let mut wide = vec![0u16; n as usize];
+        let n = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, buf.as_ptr(), len, wide.as_mut_ptr(), n);
+        (n > 0).then(|| String::from_utf16_lossy(&wide[..n as usize]))
+    }
+}
+
+/// 换行风格：CRLF 多于单独的 LF 时为 true（没有换行时为 LF）
+fn crlf_majority(text: &str) -> bool {
+    let crlf = text.matches("\r\n").count();
+    crlf > text.matches('\n').count() - crlf
+}
+
+/// 编码要写回的文本：换行先统一为 LF 再按 crlf 转换，BOM 按原编码保留；
+/// ANSI 代码页无法表示的字符报错（不静默替换、也不擅自改存为 UTF-8）
+fn encode_text(text: &str, encoding: TextEncoding, crlf: bool) -> Res<Vec<u8>> {
+    let lf = text.replace("\r\n", "\n");
+    let text = if crlf { lf.replace('\n', "\r\n") } else { lf.clone() };
+    let utf16 = |bom: &[u8], f: fn(u16) -> [u8; 2]| bom.iter().copied().chain(text.encode_utf16().flat_map(f)).collect();
+    Ok(match encoding {
+        TextEncoding::Utf8 => text.into_bytes(),
+        TextEncoding::Utf8Bom => [b"\xEF\xBB\xBF", text.as_bytes()].concat(),
+        TextEncoding::Utf16Le => utf16(b"\xFF\xFE", u16::to_le_bytes),
+        TextEncoding::Utf16Be => utf16(b"\xFE\xFF", u16::to_be_bytes),
+        TextEncoding::Ansi => ansi_encode(&text).ok_or_else(|| {
+            // 只在出错时逐字符定位第一个无法表示的字符
+            let (line, c) = lf
+                .split('\n')
+                .enumerate()
+                .find_map(|(i, l)| l.chars().find(|c| ansi_encode(&c.to_string()).is_none()).map(|c| (i + 1, c)))
+                .unwrap_or((0, '?'));
+            format!("第 {line} 行的字符“{c}”无法用文件原编码（系统代码页 {}）保存，未写入；删去该字符后再保存", acp())
+        })?,
+    })
+}
+
+fn acp() -> u32 {
+    // SAFETY: 无参数的系统调用
+    unsafe { windows_sys::Win32::Globalization::GetACP() }
+}
+
+/// 按系统 ANSI 代码页严格编码：有字符无法表示（会被替换为默认字符）时返回 None
+fn ansi_encode(text: &str) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Globalization::{CP_ACP, WC_NO_BEST_FIT_CHARS, WideCharToMultiByte};
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let len = i32::try_from(wide.len()).ok()?;
+    let mut used = 0;
+    // SAFETY: 输入 / 输出缓冲区及其长度均来自有效切片
+    unsafe {
+        let n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide.as_ptr(), len, std::ptr::null_mut(), 0, std::ptr::null(), &mut used);
+        if n <= 0 || used != 0 {
+            return None;
+        }
+        let mut out = vec![0u8; n as usize];
+        let n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide.as_ptr(), len, out.as_mut_ptr(), n, std::ptr::null(), &mut used);
+        (n > 0 && used == 0).then(|| {
+            out.truncate(n as usize);
+            out
+        })
+    }
+}
+
+/// 写回文本：先比对 mtime / size（force 跳过；文件已不存在也算冲突），一致才写入；回复写入后的 mtime / size
+async fn write_text(end: End<'_>, w: WriteReq) -> Res<Reply> {
+    let bytes = encode_text(&w.text, w.encoding, w.crlf).map_err(|e| format!("{}：{e}", w.path))?;
+    if !w.force {
+        let cur = end.stat(&w.path).await.ok();
+        if cur != Some((w.mtime, w.size)) {
+            let (mtime, size) = cur.unwrap_or((0, 0));
+            return Ok(Reply::Saved { conflict: true, mtime, size });
+        }
+    }
+    match end {
+        End::Local => {
+            let path = w.path.clone();
+            blocking(move || replace_local(&path, &bytes)).await?
+        }
+        // SFTP 没有原子替换：打开已有文件截断后写入（保留原权限与属主），不存在时新建
+        End::Remote(sftp) => {
+            let flags = OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE;
+            let mut f = sftp.open_with_flags(w.path.as_str(), flags).await.map_err(at(&w.path))?;
+            f.write_all(&bytes).await.map_err(at(&w.path))?;
+            f.shutdown().await.map_err(at(&w.path))?
+        }
+    }
+    let (mtime, size) = end.stat(&w.path).await?;
+    Ok(Reply::Saved { conflict: false, mtime, size })
+}
+
+/// 本地原子写：同目录写临时文件并落盘，再 ReplaceFileW 替换（保留原文件的属性、ACL、创建时间）；
+/// 符号链接写到其目标；只读文件拒绝；文件已不存在时直接新建
+fn replace_local(path: &str, bytes: &[u8]) -> Res<()> {
+    use std::io::Write;
+    let Ok(target) = std::fs::canonicalize(path) else {
+        return std::fs::write(path, bytes).map_err(at(path));
+    };
+    if std::fs::metadata(&target).map_err(at(path))?.permissions().readonly() {
+        return Err(format!("{path}：文件为只读，未写入"));
+    }
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = target.with_file_name(format!(".{name}.{}.tether-tmp", uuid::Uuid::new_v4().simple()));
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        replace_file(&target, &tmp)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(at(path))
+}
+
+/// ReplaceFileW 失败时（如部分网络文件系统不支持）退回 std::fs::rename：Windows 上同样原子覆盖已存在的目标，但不保留 ACL
+fn replace_file(target: &Path, tmp: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_IGNORE_ACL_ERRORS, REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW};
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let (t, r) = (wide(target), wide(tmp));
+    let flags = REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS;
+    // SAFETY: 两个路径均为以 0 结尾的宽字符串，其余指针参数允许为空
+    let ok = unsafe { ReplaceFileW(t.as_ptr(), r.as_ptr(), std::ptr::null(), flags, std::ptr::null(), std::ptr::null()) };
+    if ok != 0 {
+        return Ok(());
+    }
+    log!("ReplaceFileW 失败，改用 rename：{}", std::io::Error::last_os_error());
+    std::fs::rename(tmp, target)
 }
 
 // ---------------- 打开 ----------------
@@ -487,6 +711,20 @@ impl End<'_> {
         match self {
             End::Local => tokio::fs::metadata(path).await.map(|m| m.is_dir()).map_err(at(path)),
             End::Remote(sftp) => sftp.metadata(path).await.map(|m| m.file_type().is_dir()).map_err(at(path)),
+        }
+    }
+
+    /// (mtime Unix 毫秒, 大小)，跟随符号链接；远程 mtime 精度为秒
+    async fn stat(self, path: &str) -> Res<(u64, u64)> {
+        match self {
+            End::Local => {
+                let md = tokio::fs::metadata(path).await.map_err(at(path))?;
+                Ok((md.modified().map_or(0, unix_ms), md.len()))
+            }
+            End::Remote(sftp) => {
+                let md = sftp.metadata(path).await.map_err(at(path))?;
+                Ok((md.mtime.map_or(0, |t| t as u64 * 1000), md.size.unwrap_or(0)))
+            }
         }
     }
 
@@ -767,6 +1005,147 @@ mod tests {
         assert_eq!(keep_both_name(".config.json", false, 3), ".config (3).json");
         assert_eq!(keep_both_name("my.dir", true, 1), "my.dir (1)");
         assert_eq!(keep_both_name("src", true, 12), "src (12)");
+    }
+
+    #[test]
+    fn decode_text_encodings() {
+        use TextEncoding::*;
+        let d = |b: &[u8]| decode_text(b.to_vec());
+        assert_eq!(d(b"\xEF\xBB\xBF# \xE6\xA0\x87\xE9\xA2\x98\r\n"), ("# 标题\r\n".into(), Some(Utf8Bom)));
+        assert_eq!(d("中文 ok".as_bytes()), ("中文 ok".into(), Some(Utf8)));
+        assert_eq!(d(b"\xFF\xFEa\x00-N"), ("a中".into(), Some(Utf16Le)));
+        assert_eq!(d(b"\xFE\xFF\x00aN-"), ("a中".into(), Some(Utf16Be)));
+        assert_eq!(d(b""), (String::new(), Some(Utf8)));
+        // 有非法字节被替换的不可写回
+        assert_eq!(d(b"\xEF\xBB\xBFa\xFF").1, None);
+        assert_eq!(d(b"\xFF\xFEa\x00b").1, None);
+        assert_eq!(d(b"\xFF\xFE\x00\xD8").1, None);
+        // GBK 的“中文”：中文系统（代码页 936）按 GBK 解码，其它系统至少不 panic
+        let gbk = d(b"\xD6\xD0\xCE\xC4");
+        if acp() == 936 {
+            assert_eq!(gbk, ("中文".into(), Some(Ansi)));
+        }
+    }
+
+    #[test]
+    fn binary_detection() {
+        assert!(looks_binary(b"PK\x03\x04\x00\x00"));
+        assert!(!looks_binary(b"\xFF\xFEa\x00"));
+        assert!(!looks_binary(b"plain\r\ntext"));
+        // 只看前 8KB
+        let mut late = vec![b'a'; BINARY_PROBE];
+        late.push(0);
+        assert!(!looks_binary(&late));
+    }
+
+    #[test]
+    fn newline_style() {
+        assert!(!crlf_majority(""));
+        assert!(!crlf_majority("no newline"));
+        assert!(crlf_majority("a\r\nb\r\nc\n"));
+        assert!(!crlf_majority("a\r\nb\nc\n"));
+        assert!(!crlf_majority("a\r\nb\n"));
+    }
+
+    /// 编码 / 换行往返：读出的文本按原编码与换行写回，字节不变；编辑器给的 LF 文本按原换行风格写回
+    #[test]
+    fn encode_round_trip() {
+        use TextEncoding::*;
+        let mut cases: Vec<Vec<u8>> = vec![
+            "a: 1\nb: 中文\n".into(),
+            "a: 1\r\nb: 中文\r\n".into(),
+            b"\xEF\xBB\xBFa\r\n\xE4\xB8\xAD\r\n".to_vec(),
+            b"\xFF\xFEa\x00\r\x00\n\x00-N=\xD8\x00\xDE".to_vec(),
+            b"\xFE\xFF\x00a\x00\nN-".to_vec(),
+            Vec::new(),
+        ];
+        if acp() == 936 {
+            cases.push(b"\xD6\xD0\xCE\xC4\r\nok\r\n".to_vec());
+        }
+        for bytes in cases {
+            let (text, enc) = decode_text(bytes.clone());
+            let enc = enc.unwrap();
+            let crlf = crlf_majority(&text);
+            assert_eq!(encode_text(&text, enc, crlf).unwrap(), bytes, "{enc:?}");
+            // 编辑器内部统一 LF
+            assert_eq!(encode_text(&text.replace("\r\n", "\n"), enc, crlf).unwrap(), bytes, "{enc:?} (LF)");
+        }
+        // 混合换行按占多数者统一
+        assert_eq!(encode_text("a\nb\r\nc\n", Utf8, true).unwrap(), b"a\r\nb\r\nc\r\n");
+        assert_eq!(encode_text("a\r\nb\n", Utf8, false).unwrap(), b"a\nb\n");
+        assert_eq!(encode_text("中", Utf8Bom, false).unwrap(), b"\xEF\xBB\xBF\xE4\xB8\xAD");
+    }
+
+    /// GBK 无法表示的字符：报错并指出行号，不静默替换
+    #[test]
+    fn ansi_unencodable() {
+        if acp() != 936 {
+            return;
+        }
+        let e = encode_text("ok\n中文😀\n", TextEncoding::Ansi, false).unwrap_err();
+        assert!(e.contains("第 2 行") && e.contains('😀'), "{e}");
+        assert!(encode_text("中文 ½", TextEncoding::Ansi, false).is_err());
+    }
+
+    /// 写回：mtime / size 一致才写入；外部修改或删除后回冲突、不写入；force 覆盖；只读文件拒绝
+    #[tokio::test]
+    async fn write_conflict() {
+        let root = std::env::temp_dir().join(format!("tether-writetest-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let file = root.join("a.yaml");
+        write(&file, "a: 1\r\nb: 2\r\n");
+        let path = file.display().to_string();
+        let f = read_text(End::Local, &path).await.unwrap();
+        assert_eq!((f.encoding, f.crlf, f.size), (Some(TextEncoding::Utf8), true, 12));
+        let req = |text: &str, mtime, size, force| WriteReq {
+            path: path.clone(),
+            text: text.into(),
+            encoding: TextEncoding::Utf8,
+            crlf: true,
+            mtime,
+            size,
+            force,
+        };
+
+        let Reply::Saved { conflict: false, mtime, size } = write_text(End::Local, req("a: 3\n", f.mtime, f.size, false)).await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(read(&file), "a: 3\r\n");
+        assert_eq!((mtime, size), End::Local.stat(&path).await.unwrap());
+        // 没有遗留临时文件
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+
+        // 外部修改：大小变化即冲突，文件不动
+        write(&file, "external\n");
+        let r = write_text(End::Local, req("a: 4\n", mtime, size, false)).await.unwrap();
+        assert!(matches!(r, Reply::Saved { conflict: true, size: 9, .. }));
+        assert_eq!(read(&file), "external\n");
+        // 强制覆盖
+        let r = write_text(End::Local, req("a: 4\n", 0, 0, true)).await.unwrap();
+        assert!(matches!(r, Reply::Saved { conflict: false, size: 6, .. }));
+        assert_eq!(read(&file), "a: 4\r\n");
+
+        // 已删除：冲突（mtime / size 为 0）；强制则新建
+        std::fs::remove_file(&file).unwrap();
+        let r = write_text(End::Local, req("x\n", mtime, size, false)).await.unwrap();
+        assert!(matches!(r, Reply::Saved { conflict: true, mtime: 0, size: 0 }));
+        write_text(End::Local, req("x\n", 0, 0, true)).await.unwrap();
+        assert_eq!(read(&file), "x\r\n");
+
+        // 只读：拒绝
+        let mut perm = std::fs::metadata(&file).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&file, perm.clone()).unwrap();
+        assert!(write_text(End::Local, req("y\n", 0, 0, true)).await.is_err());
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        std::fs::set_permissions(&file, perm).unwrap();
+
+        // 二进制拒绝读取
+        std::fs::write(&file, b"\x00\x01bin").unwrap();
+        assert!(read_text(End::Local, &path).await.is_err_and(|e| e.contains("二进制")));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn write(path: &Path, text: &str) {

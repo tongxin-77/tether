@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）
 import { readFileSync } from "node:fs";
-import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, touchRecent, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -347,5 +347,13 @@ describe("modeResetSeq", () => {
   it("仅备用缓冲时退出备用缓冲", () => {
     expect(modeResetSeq("normal")).not.toContain("1049");
     expect(modeResetSeq("alternate")).toContain("\x1b[?1049l");
+  });
+});
+
+describe("touchRecent", () => {
+  it("移到末尾并按上限截断", () => {
+    expect(touchRecent([], 1, 3)).toEqual([1]);
+    expect(touchRecent([1, 2, 3], 1, 3)).toEqual([2, 3, 1]);
+    expect(touchRecent([1, 2, 3], 4, 3)).toEqual([2, 3, 4]);
   });
 });

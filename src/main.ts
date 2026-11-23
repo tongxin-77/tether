@@ -23,14 +23,14 @@ import { attachFileLinks } from "./file-links";
 import { dropText } from "./claude-paths";
 import { type ClaudeResume, initClaudeHistory, openClaudeHistory } from "./claude-history";
 import { attachTableSelect, cellSelectionText, clearCellSelection } from "./table-select";
-import { closePreview, initPreview } from "./preview";
+import { closePreview, initPreview, previewDirty, requestClosePreview } from "./preview";
 import { closeGitPanel, initGitPanel } from "./git-panel";
 import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
 import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostStats, showHostInfo } from "./host-info";
 import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
 import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
 import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, touchRecent, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
 
 // 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
@@ -400,10 +400,14 @@ window.addEventListener("storage", (ev) => {
 loadFontAdj();
 loadTermFont();
 
-// GPU 加速渲染：WebGL 上下文数量有限（约 16 个），只给当前显示的终端加载，隐藏时释放；立即生效并记在本机，其它窗口经 storage 事件同步
+// GPU 加速渲染：WebGL 上下文数量有限（约 16 个），只给最近显示过的 GPU_KEEP 个终端加载（新建上下文与字形纹理较慢，
+// 切走时不释放，来回切换不卡），更早的释放；立即生效并记在本机，其它窗口经 storage 事件同步
 const GPU_KEY = "tether.term.gpu";
 const gpuCheck = $<HTMLInputElement>("gpu-check");
 let gpuOn = true;
+const GPU_KEEP = 8;
+/** 最近显示过的会话 id，新的在后 */
+let gpuRecent: number[] = [];
 function loadGpu() {
   gpuOn = parseGpu(readStore(GPU_KEY));
   gpuCheck.checked = gpuOn;
@@ -412,8 +416,9 @@ function loadGpu() {
 /** 按开关与当前会话加载 / 释放各终端的 WebGL；渲染器切换后单元格尺寸可能变化，当前会话重新 fit */
 function syncGpu() {
   let changed = false;
+  if (activeId !== undefined) gpuRecent = touchRecent(gpuRecent, activeId, GPU_KEEP);
   for (const v of views.values()) {
-    const want = gpuOn && v.info.id === activeId && !v.gpuFailed;
+    const want = gpuOn && gpuRecent.includes(v.info.id) && !v.gpuFailed;
     if (want && !v.webgl) {
       const addon = new WebglAddon();
       try {
@@ -592,6 +597,7 @@ initHostInfo({ send, active: () => activeView()?.info });
 initHub({ send });
 initPreview({
   openUrl: (url) => send({ type: "openUrl", url }),
+  ask,
   onClose: () => {
     const v = activeView();
     v?.fit.fit();
@@ -737,6 +743,7 @@ async function init() {
         return;
       case "fsEntries":
       case "fsContent":
+      case "fsSaved":
       case "fsResult":
       case "transfer":
         return onFsMessage(m);
@@ -841,6 +848,7 @@ function onDetachedMsg(m: ServerMsg) {
       return applyAppearance(savedAppearance);
     case "fsEntries":
     case "fsContent":
+    case "fsSaved":
     case "fsResult":
     case "transfer":
       return onFsMessage(m);
@@ -1531,6 +1539,7 @@ function removeView(id: number) {
   v.box.remove();
   v.item.remove();
   views.delete(id);
+  gpuRecent = gpuRecent.filter((x) => x !== id);
   forgetFiles(id);
   if (activeId !== id) return;
   activeId = undefined;
@@ -1567,7 +1576,11 @@ function activeView() {
 }
 
 function activate(id: number) {
-  // 预览属于切换前的会话
+  // 预览属于切换前的会话；编辑器有未保存的修改时先确认，放弃后再切换
+  if (id !== activeId && previewDirty()) {
+    void requestClosePreview().then((ok) => ok && activate(id));
+    return;
+  }
   if (id !== activeId) {
     closePreview();
     closeGitPanel();
@@ -1582,7 +1595,7 @@ function activate(id: number) {
   v.item.classList.remove("unread");
   renderCardHead();
   refreshBranch();
-  // 显示后再加载 WebGL（display:none 时尺寸为 0），其余会话释放；fit 在其后，按最终渲染器的单元格尺寸计算
+  // 显示后再加载 WebGL（display:none 时尺寸为 0），超出最近 GPU_KEEP 个的释放；fit 在其后，按最终渲染器的单元格尺寸计算
   syncGpu();
   // 隐藏期间容器尺寸为 0，显示后再 fit；行列未变时 onResize 不触发，无条件补发一次，覆盖 hub 网页留下的尺寸
   v.fit.fit();

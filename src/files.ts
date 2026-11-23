@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { showPreview } from "./preview";
+import { editBlock, editorLang, previewKind } from "./preview-utils";
 import { icon } from "./icons";
 import { clampFilesWidth } from "./term-utils";
 import { claudeMentions } from "./claude-paths";
@@ -19,7 +20,9 @@ export interface FsEntry {
 
 export type FsServerMsg =
   | { type: "fsEntries"; reqId: number; path: string; entries: FsEntry[] }
-  | { type: "fsContent"; reqId: number; path: string; text: string }
+  | ({ type: "fsContent"; reqId: number; path: string } & FsText)
+  /** fsWrite 的结果：conflict 时文件已被外部修改、未写入 */
+  | { type: "fsSaved"; reqId: number; conflict: boolean; mtime: number; size: number }
   | { type: "fsResult"; reqId: number; error: string | null }
   | { type: "transfer"; reqId: number; name: string; done: number; total: number };
 
@@ -27,11 +30,23 @@ export type FsClientMsg =
   | { type: "fsList" | "fsMkdir" | "fsCreateFile" | "fsDelete" | "fsRead"; reqId: number; sessionId: number; path: string }
   | { type: "fsOpen"; reqId: number; sessionId: number; path: string; mode: OpenMode }
   | { type: "fsRename"; reqId: number; sessionId: number; from: string; to: string }
+  /** 写回文本（按原编码与换行），mtime / size 与读取时不一致则回 fsSaved conflict，force 跳过比对 */
+  | ({ type: "fsWrite"; reqId: number; sessionId: number; path: string; text: string; encoding: TextEncoding; force: boolean } & Omit<FsText, "text" | "encoding">)
   | { type: "upload"; reqId: number; sessionId: number; localPaths: string[]; destDir: string }
   | { type: "download"; reqId: number; sessionId: number; paths: string[]; localDir: string }
   | { type: "fsCopy"; reqId: number; sessionId: number; source: FsSource; items: CopyItem[]; destDir: string }
   /** SSH 会话所属连接的文件树以 root 浏览（sudo 启动 sftp-server）/ 恢复普通身份，回 fsResult */
   | { type: "fsRoot"; reqId: number; sessionId: number; enabled: boolean };
+
+type TextEncoding = "utf8" | "utf8Bom" | "utf16Le" | "utf16Be" | "ansi";
+/** 读取的文本：encoding 为 null 表示有非法字节被替换（不可写回）；crlf 为原文件换行风格；mtime / size 供写回时检测外部修改 */
+interface FsText {
+  text: string;
+  encoding: TextEncoding | null;
+  crlf: boolean;
+  mtime: number;
+  size: number;
+}
 
 /** 复制源位置：本地，或按主机 id（源会话关闭后，主机可连接即可粘贴） */
 type FsSource = { kind: "local" } | { kind: "remote"; hostId: string };
@@ -88,7 +103,7 @@ interface Clip {
   seq: number;
 }
 
-type Reply = { entries?: FsEntry[]; text?: string; error?: string | null };
+type Reply = { entries?: FsEntry[]; file?: FsText; saved?: { conflict: boolean; mtime: number; size: number }; error?: string | null };
 /** [文字, 动作, 是否禁用] */
 export type MenuItem = [string, () => void, boolean?] | null;
 type Conflict = "overwrite" | "skip" | "keep";
@@ -211,7 +226,7 @@ export function initFiles(d: Deps) {
     if (!s || !row) return;
     const path = row.dataset.path!;
     if (row.dataset.dir) enter(s, path);
-    else if (isMarkdown(path)) preview(s, path);
+    else if (previewKind(path)) preview(s, path);
     else openFile(s, path, isHtml(path) ? "browser" : "default");
   });
   panel.addEventListener("contextmenu", async (ev) => {
@@ -256,7 +271,8 @@ export function onFsMessage(m: FsServerMsg) {
   transfers.get(m.reqId)?.remove();
   transfers.delete(m.reqId);
   if (m.type === "fsEntries") done({ entries: m.entries });
-  else if (m.type === "fsContent") done({ text: m.text });
+  else if (m.type === "fsContent") done({ file: m });
+  else if (m.type === "fsSaved") done({ saved: m });
   else done({ error: m.error });
 }
 
@@ -608,11 +624,16 @@ function menuItems(s: FsSession, t: Tree, row: HTMLElement | undefined, pasteCou
     copy(path),
   ];
   if (!row.dataset.dir) {
-    const open: MenuItem[] = isMarkdown(path)
-      ? [["预览", () => preview(s, path)], ["用默认程序打开", () => openFile(s, path)]]
-      : isHtml(path)
-        ? [["在浏览器中打开", () => openFile(s, path, "browser")], ["用默认程序打开", () => openFile(s, path)]]
-        : [["打开", () => openFile(s, path)]];
+    const kind = previewKind(path);
+    const asText: MenuItem = ["以文本打开", () => preview(s, path, "text")];
+    const open: MenuItem[] =
+      kind === "md"
+        ? [["预览", () => preview(s, path)], asText, ["用默认程序打开", () => openFile(s, path)]]
+        : kind === "text"
+          ? [["编辑", () => preview(s, path)], ["用默认程序打开", () => openFile(s, path)]]
+          : isHtml(path)
+            ? [["在浏览器中打开", () => openFile(s, path, "browser")], ["用默认程序打开", () => openFile(s, path)], asText]
+            : [["打开", () => openFile(s, path)], asText];
     return [...open, ...common];
   }
   return [
@@ -731,11 +752,32 @@ export function openPathQuiet(s: FsSession, path: string) {
   call({ type: "fsOpen", reqId, sessionId: s.id, path, mode: "default" });
 }
 
-/** 读取 Markdown 并在应用内预览；读取期间已切换会话则不再显示 */
-async function preview(s: FsSession, path: string) {
+/** 读取文本并在应用内预览 / 编辑（kind 默认按文件类型，“以文本打开”强制 text）；读取期间已切换会话则不再显示。
+ *  编码、换行、mtime 留在闭包里，保存时按原样带回 daemon，保存成功后更新 mtime / size */
+async function preview(s: FsSession, path: string, kind = previewKind(path) ?? "text", edit?: boolean) {
   const r = await call({ type: "fsRead", reqId: nextId(), sessionId: s.id, path });
-  if (failed(r, "预览") || r.text === undefined || deps.active()?.id !== s.id) return;
-  showPreview(path, r.text, () => openFile(s, path));
+  if (failed(r, "打开") || !r.file || deps.active()?.id !== s.id) return;
+  let meta = r.file;
+  showPreview(
+    {
+      path,
+      text: meta.text,
+      kind,
+      lang: editorLang(path),
+      readonly: editBlock(meta.size, meta.encoding),
+      openDefault: () => openFile(s, path),
+      save: async (text, force) => {
+        const { encoding, crlf, mtime, size } = meta;
+        const w = await call({ type: "fsWrite", reqId: nextId(), sessionId: s.id, path, text, encoding: encoding!, crlf, mtime, size, force });
+        if (w.error) return { error: w.error };
+        if (w.saved?.conflict) return { conflict: true };
+        meta = { ...meta, mtime: w.saved!.mtime, size: w.saved!.size };
+        return {};
+      },
+      reload: (edit) => preview(s, path, kind, edit),
+    },
+    edit,
+  );
 }
 
 async function download(s: FsSession, path: string) {

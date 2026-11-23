@@ -349,6 +349,18 @@ pub enum OpenMode {
     Browser,
 }
 
+/// 文本文件的编码：FsRead 识别，FsWrite 按原编码写回
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextEncoding {
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    /// 系统 ANSI 代码页（中文系统为 GBK）
+    Ansi,
+}
+
 /// FsCopy 的源位置：本地磁盘，或某台主机（按 host id 经连接池复用该主机的 SSH 连接，已断开则重新连接）
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -458,8 +470,23 @@ pub enum ClientMsg {
         #[serde(default)]
         mode: OpenMode,
     },
-    /// 读取文本文件（UTF-8，非法字节按 lossy 替换；超过 2MB 拒绝），回 FsContent，失败时回 FsResult
+    /// 读取文本文件（按 BOM / UTF-8 / 系统 ANSI 代码页解码；超过 20MB、前 8KB 含 NUL 字节（二进制）拒绝），回 FsContent，失败时回 FsResult
     FsRead { req_id: u64, session_id: u32, path: String },
+    /// 写回文本文件（编辑器保存）：text 按 encoding 编码，换行统一为 CRLF（crlf）或 LF；mtime / size 为读取（或上次保存）时的值，
+    /// 文件已被外部修改（不一致或已删除）时不写入、回 FsSaved { conflict: true }，force 为 true 时跳过比对直接覆盖。
+    /// 本地写临时文件后原子替换（保留属性与 ACL），远程截断写入（保留权限）。回 FsSaved，失败时回 FsResult
+    FsWrite {
+        req_id: u64,
+        session_id: u32,
+        path: String,
+        text: String,
+        encoding: TextEncoding,
+        crlf: bool,
+        mtime: u64,
+        size: u64,
+        #[serde(default)]
+        force: bool,
+    },
     /// 本地文件 / 文件夹传到会话侧目录 dest_dir（同名文件覆盖、文件夹合并），过程中推送 Transfer
     Upload { req_id: u64, session_id: u32, local_paths: Vec<String>, dest_dir: String },
     /// 会话侧文件 / 文件夹传到本地目录 local_dir（同名文件覆盖、文件夹合并），过程中推送 Transfer
@@ -494,6 +521,10 @@ pub enum ClientMsg {
         /// background_tasks 各项的 `type:status`（逗号分隔），仅用于日志
         #[serde(default)]
         tasks: Option<String>,
+        /// background_tasks 中未结束的 teammate 的 id（计入 background 的那些）；daemon 据此扣除已空闲的 teammate
+        /// （已 SubagentStop、未再 SubagentStart：完成工作后等待消息，Claude Code 仍报 running）
+        #[serde(default)]
+        teammates: Vec<String>,
         /// UserPromptSubmit 的 prompt 前 20 个字符（判断斜杠命令、写日志），不转发完整内容
         #[serde(default)]
         prompt: Option<String>,
@@ -596,8 +627,19 @@ pub enum ServerMsg {
     },
     /// FsList 的结果（目录在前、名称排序）；失败时改回 FsResult
     FsEntries { req_id: u64, path: String, entries: Vec<FsEntry> },
-    /// FsRead 的结果
-    FsContent { req_id: u64, path: String, text: String },
+    /// FsRead 的结果：encoding 为 None 表示解码时有非法字节被替换（写回会损坏文件，不可编辑）；
+    /// crlf 为 CRLF 占多数；mtime（Unix 毫秒）/ size 供 FsWrite 检测外部修改
+    FsContent {
+        req_id: u64,
+        path: String,
+        text: String,
+        encoding: Option<TextEncoding>,
+        crlf: bool,
+        mtime: u64,
+        size: u64,
+    },
+    /// FsWrite 的结果：conflict 为 true 表示文件已被外部修改、未写入；mtime / size 为文件当前值（已删除为 0）
+    FsSaved { req_id: u64, conflict: bool, mtime: u64, size: u64 },
     /// 文件操作结果，error 为 None 表示成功
     FsResult { req_id: u64, error: Option<String> },
     /// 传输进度：name 为当前文件名，done / total 为整个请求的累计字节
@@ -697,6 +739,25 @@ mod tests {
         assert_eq!(serde_json::to_string(&msg).unwrap(), json);
         let clear: super::ClientMsg = serde_json::from_str(r#"{"type":"setHostPassword","hostId":"h1","password":null}"#).unwrap();
         assert!(matches!(clear, super::ClientMsg::SetHostPassword { password: None, .. }));
+    }
+
+    #[test]
+    fn fs_write_json() {
+        let json = r#"{"type":"fsWrite","reqId":1,"sessionId":2,"path":"/a.yaml","text":"a: 1\n","encoding":"utf8Bom","crlf":true,"mtime":3,"size":4}"#;
+        let msg: super::ClientMsg = serde_json::from_str(json).unwrap();
+        let super::ClientMsg::FsWrite { encoding, crlf, force, .. } = msg else { panic!() };
+        assert_eq!((encoding, crlf, force), (super::TextEncoding::Utf8Bom, true, false));
+        let reply = super::ServerMsg::FsContent {
+            req_id: 1,
+            path: "a".into(),
+            text: String::new(),
+            encoding: Some(super::TextEncoding::Utf16Le),
+            crlf: false,
+            mtime: 5,
+            size: 6,
+        };
+        let v = serde_json::to_value(&reply).unwrap();
+        assert_eq!((v["type"].as_str(), v["encoding"].as_str()), (Some("fsContent"), Some("utf16Le")));
     }
 
     #[test]
