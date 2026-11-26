@@ -1,4 +1,8 @@
 <p align="center">
+  <b>简体中文</b> | <a href="README.en.md">English</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ja.md">日本語</a>
+</p>
+
+<p align="center">
   <img src="src-tauri/icons/128x128@2x.png" width="112" alt="Tether">
 </p>
 
