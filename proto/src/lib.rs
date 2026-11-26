@@ -64,6 +64,22 @@ pub struct SessionInfo {
     /// SSH 会话所属连接的文件树正以 root 浏览（FsRoot 开启，连接断开即恢复）；只发给 GUI，未提权时不写出
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fs_root: bool,
+    /// 用户在 Tether 中手动改过名：显示名用 name，不被 Claude 对话标题覆盖；未改过时不写出
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_custom: bool,
+    /// 会话中 Claude Code 对话的标题（取法同「恢复对话」列表），Claude 退出后保留最后一次的值；没有时不写出
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_title: Option<String>,
+}
+
+impl SessionInfo {
+    /// 显示名：手动改过的名字 > Claude 对话标题 > 原名
+    pub fn display_name(&self) -> &str {
+        match &self.claude_title {
+            Some(t) if !self.name_custom && !t.is_empty() => t,
+            _ => &self.name,
+        }
+    }
 }
 
 /// 新建本地会话后恢复的 Claude Code 对话：shell 就绪后输入 `claude --resume`，带上原来的权限模式
@@ -407,6 +423,55 @@ pub struct HostStats {
     pub net_tx: Option<u64>,
 }
 
+/// 仓库未提交改动的原始 git 输出（GUI 解析）：本地由 Tauri 直接运行 git，远程由 daemon 在 SSH 连接上运行
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitChanges {
+    /// 仓库根目录（`git rev-parse --show-toplevel`）
+    pub root: String,
+    /// `git status --porcelain=v2 -z --branch -unormal`
+    pub status: String,
+    /// `git diff --numstat -z HEAD`（空仓库为 `--cached`）
+    pub numstat: String,
+    /// `git log -n<n> --format=%H%x1f%h%x1f%D%x1f%an%x1f%at%x1f%s`，每行一个提交；空仓库为空串
+    pub log: String,
+}
+
+/// ClientMsg::Git 的操作
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GitOp {
+    /// 未提交改动与最近 log_n 个提交
+    Changes {
+        dir: String,
+        #[serde(default = "default_log_n")]
+        log_n: u32,
+    },
+    /// 单个文件相对 HEAD 的 diff；untracked 时与 /dev/null 比较
+    Diff {
+        dir: String,
+        path: String,
+        #[serde(default)]
+        untracked: bool,
+    },
+}
+
+fn default_log_n() -> u32 {
+    5
+}
+
+/// ServerMsg::Git 的结果
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GitOut {
+    Changes(GitChanges),
+    Diff {
+        text: String,
+        #[serde(default)]
+        truncated: bool,
+    },
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuStats {
@@ -419,6 +484,8 @@ pub struct GpuStats {
 }
 
 /// GUI → daemon
+// ClaudeEvent 字段多、远大于其余变体；消息只是收到即处理的一次性值，不值得装箱
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ClientMsg {
@@ -533,6 +600,9 @@ pub enum ClientMsg {
         /// （已 SubagentStop、未再 SubagentStart：完成工作后等待消息，Claude Code 仍报 running）
         #[serde(default)]
         teammates: Vec<String>,
+        /// background_tasks 中未结束的子代理的 id（与 SubagentStart / SubagentStop 的 agent_id 一致；teammate 的则不一致）
+        #[serde(default)]
+        subagents: Vec<String>,
         /// UserPromptSubmit 的 prompt 前 20 个字符（判断斜杠命令、写日志），不转发完整内容
         #[serde(default)]
         prompt: Option<String>,
@@ -541,6 +611,9 @@ pub enum ClientMsg {
         claude_session: Option<String>,
         #[serde(default)]
         cwd: Option<String>,
+        /// hook JSON 的 transcript_path（对话文件路径），daemon 据此读对话标题；旧版 tetherd hook 不带
+        #[serde(default)]
+        transcript_path: Option<String>,
         /// SessionEnd 的 reason（clear / logout / prompt_input_exit / other 等）
         #[serde(default)]
         reason: Option<String>,
@@ -567,6 +640,9 @@ pub enum ClientMsg {
     Shutdown,
     /// 采样会话所在机器的主机信息，daemon 以同一 req_id 回 HostStats（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
     HostStats { req_id: u64, session_id: u32 },
+    /// 在会话所在机器上查询 git（仅远程会话；本地由 Tauri 直接运行 git），daemon 以同一 req_id 回 Git
+    /// （旧 daemon 不认识、不回复，GUI 超时后不显示）
+    Git { req_id: u64, session_id: u32, op: GitOp },
     /// 主机对话框“测试连接”：用对话框当前填写的配置（未保存）做 DNS 解析 → TCP 连接 → 主机密钥校验 → 认证，成功后立即断开，
     /// 不进连接池、不建会话。password 为对话框填写（或设置面板中尚未提交）的密码；为 None 且 use_saved 时用凭据管理器中
     /// 已保存的密码（按保存配置时的迁移规则查找）。daemon 以同一 req_id 回 TestHost（旧 daemon 不认识、不回复，GUI 超时后提示重启后台）
@@ -670,6 +746,14 @@ pub enum ServerMsg {
     Hello { version: String, proto: u32 },
     /// HostStats 的结果：成功时 stats 有值，失败（会话不存在、远程非 Linux、SSH 断开等）时 error 有值
     HostStats { req_id: u64, stats: Option<HostStats>, error: Option<String> },
+    /// Git 的结果：成功时 out 有值，失败（未装 git、不是仓库、safe.directory、超时等）时 error 有值
+    Git {
+        req_id: u64,
+        #[serde(default)]
+        out: Option<GitOut>,
+        #[serde(default)]
+        error: Option<String>,
+    },
     /// TestHost 的结果：成功时 elapsed_ms 为耗时（毫秒），失败时 error 为按阶段区分的原因
     TestHost { req_id: u64, elapsed_ms: Option<u64>, error: Option<String> },
     /// hub 连接状态：GUI 请求配置时随 Config 推送，之后状态或原因变化时推送。
@@ -813,6 +897,20 @@ mod tests {
     }
 
     #[test]
+    fn git_json() {
+        let req: super::ClientMsg = serde_json::from_str(r#"{"type":"git","reqId":1,"sessionId":2,"op":{"kind":"changes","dir":"/r"}}"#).unwrap();
+        let super::ClientMsg::Git { req_id: 1, session_id: 2, op } = req else { panic!() };
+        assert_eq!(op, super::GitOp::Changes { dir: "/r".into(), log_n: 5 });
+        let diff: super::GitOp = serde_json::from_str(r#"{"kind":"diff","dir":"/r","path":"a b"}"#).unwrap();
+        assert_eq!(diff, super::GitOp::Diff { dir: "/r".into(), path: "a b".into(), untracked: false });
+        let out = super::GitOut::Changes(super::GitChanges { root: "/r".into(), ..Default::default() });
+        let v = serde_json::to_value(super::ServerMsg::Git { req_id: 1, out: Some(out), error: None }).unwrap();
+        assert_eq!((v["type"].as_str(), v["out"]["kind"].as_str(), v["out"]["root"].as_str()), (Some("git"), Some("changes"), Some("/r")));
+        let d = serde_json::to_value(super::GitOut::Diff { text: "x".into(), truncated: true }).unwrap();
+        assert_eq!(d, serde_json::json!({ "kind": "diff", "text": "x", "truncated": true }));
+    }
+
+    #[test]
     fn test_host_json() {
         let json = r#"{"type":"testHost","reqId":7,"host":{"id":"h1","name":"n","host":"example.com","port":2222,"user":"u","auth":"password"},"password":"s3cret","useSaved":false}"#;
         let msg: super::ClientMsg = serde_json::from_str(json).unwrap();
@@ -911,5 +1009,23 @@ mod tests {
         assert!(!serde_json::to_string(&info).unwrap().contains("fsRoot"));
         info.fs_root = true;
         assert!(serde_json::to_string(&info).unwrap().contains(r#""fsRoot":true"#));
+    }
+
+    #[test]
+    fn display_name_priority() {
+        let mut info: super::SessionInfo =
+            serde_json::from_str(r#"{"id":1,"name":"p","cwd":"/p","command":"pwsh","status":"running","startedAt":0,"lastActivityAt":0}"#).unwrap();
+        // 旧版没有这两个字段：默认值，且不写出
+        assert_eq!((info.name_custom, info.claude_title.as_deref(), info.display_name()), (false, None, "p"));
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("nameCustom") && !json.contains("claudeTitle"));
+        info.claude_title = Some("修复登录".into());
+        assert_eq!(info.display_name(), "修复登录");
+        info.claude_title = Some(String::new());
+        assert_eq!(info.display_name(), "p");
+        info.claude_title = Some("修复登录".into());
+        info.name_custom = true;
+        assert_eq!(info.display_name(), "p");
+        assert!(serde_json::to_string(&info).unwrap().contains(r#""nameCustom":true,"claudeTitle":"修复登录""#));
     }
 }

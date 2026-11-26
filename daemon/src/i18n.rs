@@ -158,12 +158,27 @@ pub static TABLE: &[Entry] = &[
     ("sudo.exit_code", ["退出码 {code}", "exit code {code}", "結束代碼 {code}", "終了コード {code}"]),
     ("sudo.no_exit_status", ["未返回退出状态", "no exit status returned", "未回傳結束狀態", "終了ステータスが返されませんでした"]),
     // ---------------- 主机信息 ----------------
-    ("stats.exec_failed", ["执行失败：{error}", "Command failed: {error}", "執行失敗：{error}", "実行に失敗しました：{error}"]),
-    ("stats.timeout", ["读取主机信息超时", "Timed out reading host information", "讀取主機資訊逾時", "ホスト情報の取得がタイムアウトしました"]),
     ("stats.not_linux", ["不支持：远程主机不是 Linux（无 /proc/stat）", "Not supported: the remote host is not Linux (no /proc/stat)", "不支援：遠端主機不是 Linux（無 /proc/stat）", "サポートされていません：リモート ホストが Linux ではありません（/proc/stat なし）"]),
     ("stats.cpu_failed", ["读取 CPU 时间失败", "Failed to read CPU times", "讀取 CPU 時間失敗", "CPU 時間を取得できませんでした"]),
     ("stats.mem_failed", ["读取内存信息失败", "Failed to read memory information", "讀取記憶體資訊失敗", "メモリ情報を取得できませんでした"]),
+    // ---------------- git（远程） ----------------
+    ("git.local_only", ["本地会话的 git 由界面直接查询", "Git for local sessions is queried by the app directly", "本機工作階段的 git 由介面直接查詢", "ローカル セッションの git はアプリが直接取得します"]),
+    ("git.not_installed", ["远程主机未安装 git", "git is not installed on the remote host", "遠端主機未安裝 git", "リモート ホストに git がインストールされていません"]),
+    ("git.not_repo", ["不是 git 仓库：{dir}", "Not a git repository: {dir}", "不是 git 儲存庫：{dir}", "git リポジトリではありません：{dir}"]),
+    (
+        "git.unsafe_dir",
+        [
+            "git 拒绝访问该仓库（所有者不是当前用户），可在远程执行 git config --global --add safe.directory {dir}",
+            "git refused to access the repository (owned by another user); run git config --global --add safe.directory {dir} on the remote host",
+            "git 拒絕存取該儲存庫（擁有者不是目前使用者），可在遠端執行 git config --global --add safe.directory {dir}",
+            "git がリポジトリへのアクセスを拒否しました（所有者が現在のユーザーではありません）。リモートで git config --global --add safe.directory {dir} を実行してください",
+        ],
+    ),
+    ("git.status_failed", ["git status 执行失败（需要 git 2.11 及以上）", "git status failed (git 2.11 or later is required)", "git status 執行失敗（需要 git 2.11 以上）", "git status に失敗しました（git 2.11 以降が必要です）"]),
+    ("git.failed", ["git 执行失败：{error}", "git failed: {error}", "git 執行失敗：{error}", "git の実行に失敗しました：{error}"]),
     // ---------------- SSH ----------------
+    ("ssh.exec_failed", ["执行失败：{error}", "Command failed: {error}", "執行失敗：{error}", "実行に失敗しました：{error}"]),
+    ("ssh.exec_timeout", ["远程命令 {secs} 秒内未完成", "Remote command did not finish within {secs} s", "遠端命令 {secs} 秒內未完成", "リモート コマンドが {secs} 秒以内に完了しませんでした"]),
     (
         "ssh.no_prompt",
         [

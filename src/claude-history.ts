@@ -2,7 +2,6 @@
 // 点击在该目录新建本地会话并 `claude --resume`（daemon 带上原权限模式）；已在会话中打开的直接切换过去
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { filesDir } from "./files";
 import { onLocaleChange, t, tn } from "./i18n";
 
 /** 与 src-tauri claude_history 命令的返回一致 */
@@ -30,6 +29,8 @@ interface Deps {
   /** 在 cwd 新建本地会话并恢复对话 */
   resume: (cwd: string, r: ClaudeResume) => void;
   relativeTime: (ms: number) => string;
+  /** 文件栏当前浏览目录（仅本地会话） */
+  filesDir: () => string | undefined;
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -47,7 +48,7 @@ export function initClaudeHistory(d: Deps) {
   // 输入框里回车不提交表单（会关闭弹窗）
   $("cch-filter").addEventListener("keydown", (ev) => ev.key === "Enter" && ev.preventDefault());
   $("cch-files").addEventListener("click", () => {
-    const d = filesDir();
+    const d = deps.filesDir();
     if (d) load(d);
   });
   onLocaleChange(() => $<HTMLDialogElement>("cc-history").open && render());
@@ -85,7 +86,7 @@ async function load(cwd: string) {
 function render() {
   $("cch-dir").textContent = dir;
   $("cch-dir").title = dir;
-  const fd = filesDir();
+  const fd = deps.filesDir();
   $("cch-files").hidden = !fd || fd.toLowerCase() === dir.toLowerCase();
   const q = $<HTMLInputElement>("cch-filter").value.trim().toLowerCase();
   const shown = loadState ? [] : items.filter((c) => c.title.toLowerCase().includes(q));

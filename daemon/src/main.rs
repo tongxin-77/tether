@@ -27,6 +27,7 @@ mod claude;
 mod config;
 mod crash;
 mod fs;
+mod git;
 mod history;
 mod hub;
 mod image;

@@ -66,6 +66,17 @@ pub fn list(projects: &Path, cwd: &str) -> Vec<Conversation> {
     out
 }
 
+/// 对话文件路径：`<projects>\<project_dir_name(cwd)>\<id>.jsonl`（项目目录按 find_dir 规则匹配）；目录不存在为 None
+pub fn transcript(projects: &Path, cwd: &str, id: &str) -> Option<PathBuf> {
+    Some(find_dir(projects, &project_dir_name(cwd))?.join(format!("{id}.jsonl")))
+}
+
+/// 读对话文件的标题（取法同列表：custom-title > ai-title > summary > 首条用户消息）；文件不存在或没有标题为 None
+pub fn title(path: &Path) -> Option<String> {
+    let t = parse(std::io::BufReader::new(std::fs::File::open(path).ok()?)).title;
+    (!t.is_empty()).then_some(t)
+}
+
 /// 按名称找项目目录（不区分大小写：盘符大小写可能不同）；超过 200 字符的名称 Claude Code 截断后追加哈希，按前 200 字符匹配
 fn find_dir(projects: &Path, name: &str) -> Option<PathBuf> {
     let same = |a: Option<&str>, b: Option<&str>| a.zip(b).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
@@ -317,6 +328,26 @@ mod tests {
         assert_eq!(ids, [("bbbb", "新", 2_000_000), ("aaaa", "旧", 1_000_000)]);
         assert!(list(&root, r"C:\nowhere").is_empty());
         assert!(list(&root.join("missing"), r"C:\work\p").is_empty());
+    }
+
+    #[test]
+    fn transcript_path_and_title() {
+        let root = temp("title");
+        let dir = root.join("C--work-p");
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = lines(&[
+            r#"{"isSidechain":false,"type":"user","message":{"role":"user","content":"首条"}}"#,
+            r#"{"type":"ai-title","aiTitle":"自动标题","sessionId":"s"}"#,
+        ]);
+        std::fs::write(dir.join("s1.jsonl"), body).unwrap();
+        // 由 cwd 推导（大小写、末尾分隔符不影响）
+        let p = transcript(&root, r"c:\work\p\", "s1").unwrap();
+        assert_eq!(title(&p).as_deref(), Some("自动标题"));
+        // 项目目录不存在；文件不存在；没有标题
+        assert_eq!(transcript(&root, r"C:\nowhere", "s1"), None);
+        assert_eq!(title(&dir.join("missing.jsonl")), None);
+        std::fs::write(dir.join("empty.jsonl"), r#"{"type":"permission-mode","permissionMode":"plan"}"#).unwrap();
+        assert_eq!(title(&dir.join("empty.jsonl")), None);
     }
 
     #[test]

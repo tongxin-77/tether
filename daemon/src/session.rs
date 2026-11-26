@@ -14,7 +14,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use proto::{ClaudeState, ClaudeStatus, ClientMsg, Config, FsSource, HostSource, RecentItem, ServerMsg, SessionInfo, Status, Target};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-use crate::{claude, config, fs, history, hub, notify, now_ms, recent, saved, ssh, stats, sudo};
+use crate::{claude, config, fs, git, history, hub, notify, now_ms, recent, saved, ssh, stats, sudo};
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -83,8 +83,9 @@ pub struct Session {
 #[derive(Default)]
 struct Agents {
     running: HashMap<String, Instant>,
-    /// 已 SubagentStop、尚未再次 SubagentStart 的代理 id：teammate 空闲等待时 background_tasks 仍报 running，计数时扣除
-    idle: HashSet<String>,
+    /// 在 background_tasks 中以子代理出现过的 id：running 里其余的登记即忙碌的 teammate
+    /// （teammate 空闲等待时 background_tasks 仍报 running，且其 id 与 agent_id 不同，无法按 id 扣除）
+    subagents: HashSet<String>,
     bg: u32,
     session: Option<String>,
 }
@@ -231,6 +232,8 @@ impl State {
             command: s.info.command.clone(),
             host_id: s.info.host_id.clone(),
             claude: s.resume.clone(),
+            name_custom: s.info.name_custom,
+            claude_title: s.info.claude_title.clone(),
         });
         saved::save(&live.chain(self.pending.iter().cloned()).collect::<Vec<_>>());
     }
@@ -329,6 +332,8 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
         ClientMsg::Rename { id, name } => {
             let Some(s) = st.sessions.get_mut(&id) else { return true };
             s.info.name = name;
+            // 手动改过名后不再被 Claude 对话标题覆盖
+            s.info.name_custom = true;
             st.push_sessions();
             st.save_sessions();
         }
@@ -476,6 +481,10 @@ pub fn dispatch(state: &Shared, conn: u64, msg: ClientMsg) -> bool {
             Some(s) => drop(tokio::spawn(stats::run(state.clone(), req_id, s.fs.clone()))),
             None => st.send(&ServerMsg::HostStats { req_id, stats: None, error: Some(tr!("common.session_gone")) }),
         },
+        ClientMsg::Git { req_id, session_id, op } => match st.sessions.get(&session_id) {
+            Some(s) => drop(tokio::spawn(git::run(state.clone(), req_id, s.fs.clone(), op))),
+            None => st.send(&ServerMsg::Git { req_id, out: None, error: Some(tr!("common.session_gone")) }),
+        },
         ClientMsg::TestHost { req_id, host, password, use_saved } => {
             let password = match password {
                 Some(p) => Some(p.0),
@@ -576,13 +585,28 @@ pub fn local_pids(st: &State) -> Vec<(u32, u32)> {
 /// 关闭鼠标跟踪（各模式与编码）、显示光标、关闭焦点上报、恢复 DECCKM；不动 bracketed paste（PSReadLine 自己会开）
 const MODE_RESET: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?25h\x1b[?1004l\x1b[?1l";
 
+/// Claude Code 会话状态文件处于 idle 时的 (sessionId, statusUpdatedAt 毫秒)
+pub type ClaudeIdle = (String, u64);
+
 /// 内存采样时顺带检查 Claude 进程：alive 为（会话 id, 进程树中是否有 Claude 进程）。有 Claude 状态却连续两次不见 Claude 进程
 /// 视为异常退出（未触发 SessionEnd）：按 SessionEnd（reason 为 other，保留 resume 以便恢复）清除状态，复位 vt100 的终端模式
-/// （之后的快照不再带鼠标跟踪 / 备用缓冲），并让 GUI 复位 xterm
-pub fn check_claude(st: &mut State, alive: &[(u32, bool)]) {
+/// （之后的快照不再带鼠标跟踪 / 备用缓冲），并让 GUI 复位 xterm。
+/// idle 为 Claude Code 会话状态文件处于 idle 时的 (sessionId, statusUpdatedAt)：Esc 中断不触发 Stop（也不发 idle_prompt），
+/// 思考中之后同一对话变为 idle 即视为已中断，回到空闲
+pub fn check_claude(st: &mut State, alive: &[(u32, bool, Option<ClaudeIdle>)]) {
     let mut changed = false;
-    for &(id, present) in alive {
+    for (id, present, idle) in alive {
+        let (id, present) = (*id, *present);
         let Some(s) = st.sessions.get_mut(&id).filter(|s| s.info.status != Status::Exited) else { continue };
+        if let (Some(c), Some((sid, at))) = (s.info.claude.as_mut(), idle)
+            && c.state == ClaudeStatus::Thinking
+            && *at > c.at
+            && s.agents.session.as_ref().is_none_or(|cur| cur == sid)
+        {
+            log!("会话 #{id}：思考中后 Claude 已空闲（未收到 Stop，多为 Esc 中断），回到空闲");
+            *c = claude_state(ClaudeStatus::Idle, None, None);
+            changed = true;
+        }
         if !claude_gone(&mut s.claude_missing, s.info.claude.is_some(), present) {
             continue;
         }
@@ -769,6 +793,8 @@ pub fn new_info(name: String, cwd: String, command: String, host: Option<String>
         taken_over: false,
         claude_session: None,
         fs_root: false,
+        name_custom: false,
+        claude_title: None,
     }
 }
 
@@ -834,6 +860,8 @@ pub fn restore(state: &Shared) {
             Ok(id) => {
                 if let Some(s) = state.lock().unwrap().sessions.get_mut(&id) {
                     s.info.name = item.name;
+                    s.info.name_custom = item.name_custom;
+                    s.info.claude_title = item.claude_title;
                     s.resume = item.claude.clone();
                 }
                 if let Some(cmd) = item.claude.as_ref().and_then(saved::resume_command) {
@@ -964,7 +992,7 @@ fn fire(state: &Shared, id: u32) {
     if hooked(s) {
         return;
     }
-    let title = s.info.name.clone();
+    let title = s.info.display_name().to_string();
     if s.info.status == Status::Running {
         s.info.status = Status::Waiting;
         st.push_sessions();
@@ -1046,8 +1074,17 @@ pub fn claude_event(state: &Shared, ev: ClientMsg) {
     } else if next == Some(ClaudeStatus::Thinking) && s.info.status == Status::Waiting {
         s.info.status = Status::Running;
     }
-    let title = format!("{} · Claude", s.info.name);
+    let title = format!("{} · Claude", s.info.display_name());
+    let source = title_source(s.resume.as_ref(), &ev, proto::claude_history::projects_dir().as_deref());
     st.push_sessions();
+    // 对话文件可能较大：在独立线程读（daemon 是单线程运行时，不阻塞管道 I/O），读完再加锁写回
+    if let Some(src) = source {
+        let state = state.clone();
+        thread::spawn(move || {
+            let title = src.path.as_deref().and_then(proto::claude_history::title);
+            update_title(&mut state.lock().unwrap(), id, &src.id, title, src.reset);
+        });
+    }
     let Some(body) = body else { return };
     let toast = attention(st, id, &body);
     log!("Claude 事件：会话 #{id} {event}，{}", if toast { "弹出系统通知" } else { "会话在前台，不弹通知" });
@@ -1055,6 +1092,53 @@ pub fn claude_event(state: &Shared, ev: ClientMsg) {
     if toast {
         notify::toast(state, id, &title, &body);
     }
+}
+
+/// 读 Claude 对话标题的来源
+#[derive(Debug, PartialEq)]
+struct TitleSource {
+    /// 对话 session_id：读完写回时据此确认会话仍是这个对话
+    id: String,
+    /// 对话文件；找不到时为 None
+    path: Option<std::path::PathBuf>,
+    /// 换了对话（SessionStart）：读不到标题时清空旧标题，显示原名
+    reset: bool,
+}
+
+/// 需要刷新对话标题的事件：Stop（一轮结束，ai-title / 首条消息此时已落盘）与 SessionStart（compact 除外：同一对话）。
+/// UserPromptSubmit 时对话文件是异步写入、往往还没有本轮内容，且紧接着必有 Stop，故不读。
+/// 对话文件优先用 hook 的 transcript_path；旧版 hook 不带时按 Claude 启动目录（resume.cwd，而非 hook 当时的 cwd：
+/// Claude 中途 cd 不改变项目目录）与 session_id 推导
+fn title_source(resume: Option<&saved::Resume>, ev: &ClientMsg, projects: Option<&std::path::Path>) -> Option<TitleSource> {
+    let ClientMsg::ClaudeEvent { event, transcript_path, source, .. } = ev else { return None };
+    let reset = match event.as_str() {
+        "Stop" => false,
+        "SessionStart" if source.as_deref() != Some("compact") => true,
+        _ => return None,
+    };
+    let r = resume?;
+    let path = match transcript_path {
+        Some(p) => Some(p.into()),
+        None => projects.and_then(|p| proto::claude_history::transcript(p, &r.cwd, &r.id)),
+    };
+    Some(TitleSource { id: r.id.clone(), path, reset })
+}
+
+/// 写回读到的对话标题：会话已换对话（或已退出 Claude 且清除了对话）时丢弃；Stop 读不到时保留上次的标题。
+/// 标题变化才推送并保存；手动改过名（name_custom）时照样记下标题，只是显示名不用它
+fn update_title(st: &mut State, id: u32, sid: &str, title: Option<String>, reset: bool) {
+    let Some(s) = st.sessions.get_mut(&id) else { return };
+    if s.resume.as_ref().is_none_or(|r| r.id != sid) {
+        return;
+    }
+    let next = if reset { title } else { title.or_else(|| s.info.claude_title.clone()) };
+    if next == s.info.claude_title {
+        return;
+    }
+    log!("Claude 对话标题：会话 #{id} {next:?}");
+    s.info.claude_title = next;
+    st.push_sessions();
+    st.save_sessions();
 }
 
 /// 由 hook 事件更新会话的 Claude 对话：session_id 变化（新对话 / /clear / /resume）时记录，连同当时目录（缺失时用会话目录）；
@@ -1111,13 +1195,16 @@ fn slash_command(prompt: &str) -> bool {
 /// Claude 状态机（不含推送 / 通知，便于测试）。返回 None 表示忽略该事件（状态不变、不推送）。
 /// 主代理 Stop 时仍有后台任务（子代理、后台 shell 等）在运行 → Background（不通知）；新版 Claude Code 在后台任务结束后
 /// 经 UserPromptSubmit 唤起 Claude 处理结果（转为 Thinking），等到下一次没有后台任务的 Stop 才算 Done 并通知
-/// teammates 中已空闲的个数
-fn idle_count(idle: &HashSet<String>, teammates: &[String]) -> u32 {
-    teammates.iter().filter(|t| idle.contains(*t)).count() as u32
+/// 后台代理数：background_tasks 中的子代理照计；teammate 只计忙碌的（已 SubagentStart、未 SubagentStop、不是子代理的登记），
+/// 至多为列表中的 teammate 数。n 为列表中未结束的代理总数
+fn agents_bg(a: &mut Agents, n: u32, teammates: &[String], subagents: &[String]) -> u32 {
+    a.subagents.extend(subagents.iter().cloned());
+    let busy = a.running.keys().filter(|id| !a.subagents.contains(*id)).count() as u32;
+    n.saturating_sub(teammates.len() as u32) + busy.min(teammates.len() as u32)
 }
 
 fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<Step> {
-    let ClientMsg::ClaudeEvent { event, message, notification_type, agent_id, agent_type, background, teammates, prompt, claude_session, source, .. } = ev
+    let ClientMsg::ClaudeEvent { event, message, notification_type, agent_id, agent_type, background, teammates, subagents, prompt, claude_session, source, .. } = ev
     else {
         return None;
     };
@@ -1155,7 +1242,6 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
         "SubagentStart" => {
             if let (true, Some(id)) = (subagent, agent_id) {
                 a.running.insert(id.clone(), Instant::now());
-                a.idle.remove(id);
             }
             None
         }
@@ -1165,12 +1251,11 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
             }
             if let Some(id) = agent_id {
                 a.running.remove(id);
-                a.idle.insert(id.clone());
             }
             // 新版带 background_tasks（父会话视角，已除去该子代理自身）：只刷新计数、不自行退出 Background——
             // 子代理留下的后台任务可能仍在运行；Claude 被唤起时有 UserPromptSubmit，最终由 Stop 判断是否完成
             if let Some(n) = background {
-                a.bg = n.saturating_sub(idle_count(&a.idle, teammates));
+                a.bg = agents_bg(a, *n, teammates, subagents);
                 return (prev == Some(ClaudeStatus::Background)).then(|| set(Some(ClaudeStatus::Background))).flatten();
             }
             // 旧版：每个 SubagentStop 减一，最后一个结束时 Claude 将被唤起处理结果（不经 UserPromptSubmit）
@@ -1193,7 +1278,7 @@ fn step(prev: Option<ClaudeStatus>, a: &mut Agents, ev: &ClientMsg) -> Option<St
                     if *n == 0 {
                         a.running.clear();
                     }
-                    n.saturating_sub(idle_count(&a.idle, teammates))
+                    agents_bg(a, *n, teammates, subagents)
                 }
                 None => {
                     a.running.retain(|_, t| t.elapsed() < AGENT_EXPIRE);
@@ -1250,9 +1335,11 @@ mod tests {
                 background,
                 tasks: None,
                 teammates: vec![],
+                subagents: vec![],
                 prompt: None,
                 claude_session: None,
                 cwd: None,
+                transcript_path: None,
                 reason: None,
                 permission_mode: None,
                 source: None,
@@ -1364,9 +1451,11 @@ mod tests {
             background: None,
             tasks: None,
             teammates: vec![],
+            subagents: vec![],
             prompt: None,
             claude_session: None,
             cwd: None,
+            transcript_path: None,
             reason: None,
             permission_mode: None,
             source: None,
@@ -1386,9 +1475,11 @@ mod tests {
             background: None,
             tasks: None,
             teammates: vec![],
+            subagents: vec![],
             prompt: None,
             claude_session: None,
             cwd: None,
+            transcript_path: None,
             reason: None,
             permission_mode: None,
             source: None,
@@ -1455,9 +1546,11 @@ mod tests {
             background: None,
             tasks: None,
             teammates: vec![],
+            subagents: vec![],
             prompt: None,
             claude_session: sid.map(Into::into),
             cwd: cwd.map(Into::into),
+            transcript_path: None,
             reason: reason.map(Into::into),
             permission_mode: mode.map(Into::into),
             source: None,
@@ -1479,6 +1572,30 @@ mod tests {
         assert_eq!(n, 0);
     }
 
+    /// Esc 中断不触发 Stop：思考中之后 Claude Code 的会话状态文件变为 idle（同一对话）即回到空闲；
+    /// 早于思考开始的 idle、别的对话的 idle、非思考中的状态均不动
+    #[test]
+    fn check_claude_interrupt_becomes_idle() {
+        let mut st = State::default();
+        let (id, _rx) = test_session(&mut st, 80, 24);
+        let s = st.sessions.get_mut(&id).unwrap();
+        s.agents.session = Some("a".into());
+        s.info.claude = Some(claude_state(Thinking, None, None));
+        let at = s.info.claude.as_ref().unwrap().at;
+        let state = |st: &State| st.sessions[&id].info.claude.as_ref().map(|c| c.state);
+        check_claude(&mut st, &[(id, true, Some(("a".into(), at - 1)))]);
+        assert_eq!(state(&st), Some(Thinking));
+        check_claude(&mut st, &[(id, true, Some(("b".into(), at + 1)))]);
+        assert_eq!(state(&st), Some(Thinking));
+        check_claude(&mut st, &[(id, true, None)]);
+        assert_eq!(state(&st), Some(Thinking));
+        check_claude(&mut st, &[(id, true, Some(("a".into(), at + 1)))]);
+        assert_eq!(state(&st), Some(Idle));
+        st.sessions.get_mut(&id).unwrap().info.claude = Some(claude_state(Background, None, Some(1)));
+        check_claude(&mut st, &[(id, true, Some(("a".into(), u64::MAX)))]);
+        assert_eq!(state(&st), Some(Background));
+    }
+
     #[test]
     fn check_claude_clears_state_and_resets_modes() {
         let mut st = State::default();
@@ -1488,9 +1605,9 @@ mod tests {
         s.agents.session = Some("a".into());
         s.resume = Some(saved::Resume { id: "a".into(), ..Default::default() });
         s.parser.process(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[?1h\x1b[?2004h");
-        check_claude(&mut st, &[(id, false)]);
+        check_claude(&mut st, &[(id, false, None)]);
         assert!(st.sessions[&id].info.claude.is_some());
-        check_claude(&mut st, &[(id, false)]);
+        check_claude(&mut st, &[(id, false, None)]);
         let s = &st.sessions[&id];
         assert!(s.info.claude.is_none());
         // 同 SessionEnd（reason other）：resume 与对话 id 保留
@@ -1608,6 +1725,8 @@ mod tests {
     fn stop_with_teammate_task_is_background() {
         let mut s = Sim::default();
         s.feed("UserPromptSubmit", None, None);
+        // teammate 只计忙碌的：已 SubagentStart（其 agent_id 与 background_tasks 的 id 不同）
+        s.feed("SubagentStart", Some(("aworker-0123", "worker")), None);
         let stop = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"teammate","status":"running"},{"id":"m1","type":"monitor","status":"running"},{"id":"x","type":"shell","status":"completed"}]}"#;
         assert_eq!(s.hook(stop), Some(Background));
         // 只有 teammate 计入；monitor、shell 不算
@@ -1637,6 +1756,39 @@ mod tests {
         s.feed("UserPromptSubmit", None, None);
         s.feed("SubagentStart", Some(("t1", "backend")), None);
         assert_eq!(s.hook(both), Some(Background));
+        assert_eq!(s.agents.bg, 1);
+    }
+
+    /// 现场（smartlic-nova-report 显示后台 ×27）：teammate 的 SubagentStart/Stop 的 agent_id（如 alc-v-k7-60b6…）
+    /// 与 background_tasks 中 teammate 的 id（如 ts53dh0tq）不同，按 id 扣除空闲 teammate 永远对不上；
+    /// 子代理的 id 两边一致。忙碌的 teammate 数应按“已 SubagentStart、未 SubagentStop、且不是子代理”的登记计
+    #[test]
+    fn idle_teammates_with_distinct_task_ids_not_counted() {
+        let mut s = Sim::default();
+        s.feed("UserPromptSubmit", None, None);
+        s.feed("SubagentStart", Some(("alc-v-k7-60b6a71de51a50ff", "lc-v-k7")), None);
+        s.feed("SubagentStart", Some(("alc-v-k8-41a161ca396fcabf", "lc-v-k8")), None);
+        s.start("ad9377af9741f60af");
+        let list = r#""background_tasks":[{"id":"ts53dh0tq","type":"teammate","status":"running"},{"id":"t5l4moowz","type":"teammate","status":"running"},{"id":"ad9377af9741f60af","type":"subagent","status":"running"}]"#;
+        let stop = format!(r#"{{"hook_event_name":"Stop",{list}}}"#);
+        assert_eq!(s.hook(&stop), Some(Background));
+        assert_eq!(s.agents.bg, 3);
+        // 两个 teammate 完成工作进入空闲（background_tasks 仍报 running）
+        for (id, name) in [("alc-v-k7-60b6a71de51a50ff", "lc-v-k7"), ("alc-v-k8-41a161ca396fcabf", "lc-v-k8")] {
+            s.hook(&format!(r#"{{"hook_event_name":"SubagentStop","agent_id":"{id}","agent_type":"{name}",{list}}}"#));
+        }
+        assert_eq!(s.agents.bg, 1);
+        s.feed("UserPromptSubmit", None, None);
+        assert_eq!(s.hook(&stop), Some(Background));
+        assert_eq!(s.agents.bg, 1);
+        // 子代理没发 SubagentStop 就从列表里消失：不能被当成忙碌的 teammate
+        let only_teammates = r#"{"hook_event_name":"Stop","background_tasks":[{"id":"ts53dh0tq","type":"teammate","status":"running"},{"id":"t5l4moowz","type":"teammate","status":"running"}]}"#;
+        s.feed("UserPromptSubmit", None, None);
+        assert_eq!(s.hook(only_teammates), Some(Done));
+        // 空闲的 teammate 被再次派活：重新计入
+        s.feed("UserPromptSubmit", None, None);
+        s.feed("SubagentStart", Some(("alc-v-k7-60b6a71de51a50ff", "lc-v-k7")), None);
+        assert_eq!(s.hook(only_teammates), Some(Background));
         assert_eq!(s.agents.bg, 1);
     }
 
@@ -1815,5 +1967,87 @@ mod tests {
         assert!(on_output(&shared, id, b"x"));
         assert_eq!(next()["type"], "output");
         assert!(rx.try_recv().is_err());
+    }
+
+    fn title_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tether-title-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    const AI_TITLE: &str = concat!(
+        r#"{"isSidechain":false,"type":"user","message":{"role":"user","content":"首条"}}"#,
+        "\n",
+        r#"{"type":"ai-title","aiTitle":"自动标题","sessionId":"a"}"#
+    );
+
+    /// 标题来源：优先 hook 的 transcript_path，否则按 Claude 启动目录 + session_id 推导；只在 Stop / SessionStart（非 compact）读
+    #[test]
+    fn title_source_transcript_path_or_cwd() {
+        let projects = title_dir("src");
+        std::fs::create_dir_all(projects.join("C--work-p")).unwrap();
+        std::fs::write(projects.join("C--work-p").join("a.jsonl"), AI_TITLE).unwrap();
+        let r = saved::Resume { id: "a".into(), cwd: r"C:\work\p".into(), ..Default::default() };
+        let hook = |json: &str| claude::event_msg(1, json, None).unwrap();
+        let src = |json: &str| title_source(Some(&r), &hook(json), Some(&projects));
+
+        let s = src(r#"{"hook_event_name":"Stop","session_id":"a","transcript_path":"D:\\t\\a.jsonl","cwd":"C:\\elsewhere"}"#).unwrap();
+        assert_eq!(s, TitleSource { id: "a".into(), path: Some(r"D:\t\a.jsonl".into()), reset: false });
+        // 不带 transcript_path：按 resume.cwd 推导（hook 当时的 cwd 已 cd 到别处也不影响）
+        let s = src(r#"{"hook_event_name":"Stop","session_id":"a","cwd":"C:\\elsewhere"}"#).unwrap();
+        assert_eq!(s.path.as_deref().and_then(proto::claude_history::title).as_deref(), Some("自动标题"));
+        assert!(src(r#"{"hook_event_name":"SessionStart","session_id":"a","source":"resume"}"#).unwrap().reset);
+        assert_eq!(src(r#"{"hook_event_name":"SessionStart","session_id":"a","source":"compact"}"#), None);
+        assert_eq!(src(r#"{"hook_event_name":"UserPromptSubmit","session_id":"a","prompt":"hi"}"#), None);
+        assert_eq!(title_source(None, &hook(r#"{"hook_event_name":"Stop"}"#), Some(&projects)), None);
+    }
+
+    /// Stop 后读到的标题推送给 GUI 并保存；手动改名后显示名不被标题覆盖；换对话 / 过期 / 读不到时的处理
+    #[test]
+    fn title_update_pushed_and_custom_name_wins() {
+        let dir = title_dir("push");
+        let path = dir.join("a.jsonl");
+        std::fs::write(&path, AI_TITLE).unwrap();
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = {
+            let mut st = shared.lock().unwrap();
+            let mut gui = Gui::new(1, tx);
+            // 会话在前台：Stop 不弹系统通知
+            gui.focused = true;
+            st.gui = Some(gui);
+            let id = test_session(&mut st, 80, 24).0;
+            st.gui.as_mut().unwrap().active = Some(id);
+            st.sessions.get_mut(&id).unwrap().resume = Some(saved::Resume { id: "a".into(), cwd: r"C:\p".into(), ..Default::default() });
+            id
+        };
+        let info = |sh: &Shared| sh.lock().unwrap().sessions[&id].info.clone();
+        let stop = format!(r#"{{"hook_event_name":"Stop","session_id":"a","transcript_path":{},"background_tasks":[]}}"#, serde_json::to_string(&path).unwrap());
+        claude_event(&shared, claude::event_msg(id, &stop, None).unwrap());
+        // 标题在独立线程读取
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while info(&shared).claude_title.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!((info(&shared).claude_title.as_deref(), info(&shared).display_name()), (Some("自动标题"), "自动标题"));
+        let pushed: Vec<serde_json::Value> = std::iter::from_fn(|| rx.try_recv().ok()).map(|m| serde_json::from_str(&m).unwrap()).collect();
+        let last = pushed.iter().rfind(|v| v["type"] == "sessions").unwrap();
+        assert_eq!(last["sessions"][0]["claudeTitle"], "自动标题");
+
+        // 手动改名：带上标记并推送，之后的标题只记下、不改显示名
+        assert!(dispatch(&shared, 1, ClientMsg::Rename { id, name: "我的".into() }));
+        let v: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!((&v["sessions"][0]["name"], &v["sessions"][0]["nameCustom"]), (&"我的".into(), &true.into()));
+        update_title(&mut shared.lock().unwrap(), id, "a", Some("新标题".into()), false);
+        assert_eq!((info(&shared).claude_title.as_deref(), info(&shared).display_name()), (Some("新标题"), "我的"));
+
+        let mut st = shared.lock().unwrap();
+        // Stop 读不到：保留上次；别的对话的结果：丢弃；换对话（SessionStart）读不到：清空，回到原名
+        update_title(&mut st, id, "a", None, false);
+        update_title(&mut st, id, "b", Some("别的".into()), true);
+        assert_eq!(st.sessions[&id].info.claude_title.as_deref(), Some("新标题"));
+        update_title(&mut st, id, "a", None, true);
+        assert_eq!(st.sessions[&id].info.claude_title, None);
     }
 }

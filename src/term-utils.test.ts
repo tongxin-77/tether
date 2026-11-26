@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error 未安装 @types/node（vitest 在 node 中运行）
 import { readFileSync } from "node:fs";
-import { oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, touchRecent, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
+import { claudeInputRange, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_DEFAULT, FONT_ADJ_OPTIONS, branchDir, branchLabel, clampFilesWidth, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, touchRecent, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
 
 describe("completionEnabled", () => {
   it("无 Claude、普通 buffer 时启用", () => {
@@ -355,5 +355,36 @@ describe("touchRecent", () => {
     expect(touchRecent([], 1, 3)).toEqual([1]);
     expect(touchRecent([1, 2, 3], 1, 3)).toEqual([2, 3, 1]);
     expect(touchRecent([1, 2, 3], 4, 3)).toEqual([2, 3, 4]);
+  });
+});
+
+describe("claudeInputRange", () => {
+  const rule = "─".repeat(40);
+  it("单行输入：去掉提示符与行尾空白", () => {
+    expect(claudeInputRange(["● 上一条回复", "", rule, "> hello world   ", rule])).toEqual({ startRow: 3, startCol: 2, endRow: 3, endCol: 13 });
+    expect(claudeInputRange([rule, "❯ hi", rule])).toEqual({ startRow: 1, startCol: 2, endRow: 1, endCol: 4 });
+  });
+  it("多行输入：范围到最后一行的最后一个非空白字符", () => {
+    expect(claudeInputRange([rule, "> first", "  second line  ", "  third", rule])).toEqual({ startRow: 1, startCol: 2, endRow: 3, endCol: 7 });
+  });
+  it("首行为空时从续行第一个非空白字符开始", () => {
+    expect(claudeInputRange([rule, ">  ", "  text", rule])).toEqual({ startRow: 2, startCol: 2, endRow: 2, endCol: 6 });
+  });
+  it("输入框为空返回 null", () => {
+    expect(claudeInputRange([rule, "> ", rule])).toBeNull();
+    expect(claudeInputRange([rule, ">", "   ", rule])).toBeNull();
+  });
+  it("屏幕上没有输入框返回 null", () => {
+    expect(claudeInputRange(["PS C:\> ls", "a.txt", ""])).toBeNull();
+    expect(claudeInputRange(["> only one rule", rule, "  ? for shortcuts"])).toBeNull();
+    // 两线之间首行不是提示符（如表格）
+    expect(claudeInputRange([rule, "│ a │ b │", rule])).toBeNull();
+  });
+  it("输入框下方有状态栏或提示行", () => {
+    const lines = ["● done", rule, "> fix the bug", rule, "  ? for shortcuts", "  ⏵⏵ accept edits on (shift+tab to cycle)", ""];
+    expect(claudeInputRange(lines)).toEqual({ startRow: 2, startCol: 2, endRow: 2, endCol: 13 });
+  });
+  it("横线可带少量其它字符且可缩进", () => {
+    expect(claudeInputRange([` ${"─".repeat(20)} plan ${"─".repeat(5)}`, "  ❯ go", ` ${rule} `])).toEqual({ startRow: 1, startCol: 4, endRow: 1, endCol: 6 });
   });
 });

@@ -1,13 +1,20 @@
 // 侧边文件树：显示当前激活会话的目录树（本地磁盘 / 远程 SFTP 由 daemon 按会话区分），右键菜单操作，拖入上传
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { showPreview } from "./preview";
+import type { OpenFile } from "./preview";
 import { editBlock, editorLang, previewKind } from "./preview-utils";
 import { icon } from "./icons";
 import { clampFilesWidth } from "./term-utils";
 import { claudeMentions } from "./claude-paths";
+import { resolveInput } from "./fs-path";
+import type { SessionInfo } from "./protocol";
+import { type Component, type Ctx, html } from "./ui/component";
+import { ask, type MenuItem, showMenu } from "./ui/dialogs";
+import { overlay } from "./ui/layout";
+import { activeSession } from "./ui/store";
 // 本文件中 t 多为目录树（Tree）变量，词条函数以 tr 引入
 import { type MessageKey, fmtDateTime, fmtNum, onLocaleChange, t as tr, tn } from "./i18n";
 
@@ -79,6 +86,25 @@ interface Deps {
   paste: (text: string) => void;
   /** 拖放落在文件树之外（CSS 像素坐标） */
   dropElsewhere: (x: number, y: number, paths: string[]) => void;
+  /** 在应用内预览 / 编辑 */
+  openPreview: (f: OpenFile, edit?: boolean) => void;
+}
+
+export interface FilesPanel extends Component {
+  /** 激活会话变化时调用（同一会话重复调用不重绘） */
+  show(): void;
+  /** 会话关闭后丢弃其浏览状态 */
+  forget(id: number): void;
+  /** 终端提示符变为 root：文件树未提权时显示“同步提权”提示，不自动切换 */
+  suggestRoot(id: number): void;
+  /** 终端输出中的文件路径链接（失败静默） */
+  openPath(s: SessionInfo, path: string): void;
+  /** 在应用内预览文本文件（s 须为当前会话） */
+  preview(s: SessionInfo, path: string): void;
+  /** daemon 的文件树消息 */
+  onMessage(m: FsServerMsg): void;
+  /** 文件栏当前浏览目录：仅本地会话，盘符列表除外 */
+  dir(): string | undefined;
 }
 
 /** 每个会话各自的浏览状态 */
@@ -105,9 +131,7 @@ interface Clip {
   seq: number;
 }
 
-type Reply = { entries?: FsEntry[]; file?: FsText; saved?: { conflict: boolean; mtime: number; size: number }; error?: string | null };
-/** [文字, 动作, 是否禁用] */
-export type MenuItem = [string, () => void, boolean?] | null;
+type Reply = { entries?: FsEntry[]; path?: string; file?: FsText; saved?: { conflict: boolean; mtime: number; size: number }; error?: string | null };
 type Conflict = "overwrite" | "skip" | "keep";
 
 const STORE_KEY = "tether.files.open";
@@ -118,23 +142,20 @@ const FILE_SVG = icon("file", "fs-icon");
 const MD_SVG = icon("file-text", "fs-icon");
 const ARROW_SVG = icon("chevron-right");
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const panel = $("files");
-const treeEl = $("fs-tree");
-const pathEl = $("fs-path");
-const upBtn = $<HTMLButtonElement>("fs-up");
-const toggleBtn = $<HTMLButtonElement>("fs-toggle");
-const transfersEl = $("fs-transfers");
-const menu = $("fs-menu");
-const dlg = $<HTMLDialogElement>("fs-dialog");
-const dlgMsg = $("fs-d-msg");
-const dlgInput = $<HTMLInputElement>("fs-d-input");
-const dlgOk = $<HTMLButtonElement>("fs-d-ok");
-const conflictDlg = $<HTMLDialogElement>("fs-conflict");
-const rootBtn = $<HTMLButtonElement>("fs-root");
-const rootTag = $("fs-root-tag");
-const rootBanner = $("fs-root-banner");
-const rootHint = $("fs-root-hint");
+let panel: HTMLElement;
+let conflictDlg: HTMLDialogElement;
+/** 在本组件的元素（文件栏、同名冲突对话框）中按 id 查找 */
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => (panel.querySelector<T>(`#${id}`) ?? conflictDlg.querySelector<T>(`#${id}`))!;
+let treeEl: HTMLElement;
+let pathEl: HTMLElement;
+let pathInput: HTMLInputElement;
+let upBtn: HTMLButtonElement;
+let toggleBtn: HTMLButtonElement;
+let transfersEl: HTMLElement;
+let rootBtn: HTMLButtonElement;
+let rootTag: HTMLElement;
+let rootBanner: HTMLElement;
+let rootHint: HTMLElement;
 
 const trees = new Map<number, Tree>();
 const waiting = new Map<number, (r: Reply) => void>();
@@ -154,8 +175,60 @@ let rootPending = false;
 let dropEl: HTMLElement | undefined;
 let clip: Clip | undefined;
 
-export function initFiles(d: Deps) {
-  deps = d;
+export function createFiles(ctx: Ctx): FilesPanel {
+  panel = html(`    <aside id="files">
+      <!-- 左缘拖动调整文件栏宽度 -->
+      <div id="fs-resize"></div>
+      <section class="tree-panel">
+        <div id="files-head">
+          <svg class="i fs-head-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/></svg>
+          <span id="fs-title" data-i18n="files.title"></span>
+          <span id="fs-root-tag" hidden>root</span>
+          <button id="fs-root" class="fs-btn" hidden></button>
+          <button id="fs-up" class="fs-btn" data-i18n-title="files.up"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+          <button id="fs-refresh" class="fs-btn" data-i18n-title="common.refresh"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+          <button id="fs-toggle" class="fs-btn"></button>
+        </div>
+        <div id="fs-path"></div>
+        <input id="fs-path-input" hidden spellcheck="false" autocomplete="off" />
+        <!-- SSH 会话“以 root 浏览”时的警示，与终端已是 root 时的提权提示（files.ts 控制显示） -->
+        <div id="fs-root-banner" hidden data-i18n="files.rootBanner"></div>
+        <div id="fs-root-hint" hidden><span data-i18n="files.rootHint"></span><button type="button" id="fs-root-hint-ok" class="pill-primary" data-i18n="files.rootHintOk"></button><button type="button" id="fs-root-hint-no" data-i18n="files.rootHintNo"></button></div>
+        <div id="fs-tree" tabindex="0"></div>
+        <div id="fs-transfers"></div>
+      </section>
+    </aside>`);
+  conflictDlg = html(`    <dialog id="fs-conflict">
+      <form method="dialog">
+        <p id="fs-c-msg"></p>
+        <p id="fs-c-hint" class="hint"></p>
+        <label class="check" id="fs-c-all-row"><input type="checkbox" id="fs-c-all" /><span id="fs-c-all-text"></span></label>
+        <div class="actions">
+          <button value="keep" autofocus data-i18n="files.conflict.keep"></button>
+          <button value="skip" data-i18n="files.conflict.skip"></button>
+          <button value="overwrite" data-i18n="common.overwrite"></button>
+        </div>
+      </form>
+    </dialog>`);
+  treeEl = $("fs-tree");
+  pathEl = $("fs-path");
+  pathInput = $("fs-path-input");
+  upBtn = $("fs-up");
+  toggleBtn = $("fs-toggle");
+  transfersEl = $("fs-transfers");
+  rootBtn = $("fs-root");
+  rootTag = $("fs-root-tag");
+  rootBanner = $("fs-root-banner");
+  rootHint = $("fs-root-hint");
+  const { actions } = ctx;
+  deps = {
+    send: ctx.send,
+    active: () => activeSession(ctx.store.get()),
+    newSession: (target) => actions.createAt(target),
+    paste: actions.paste,
+    dropElsewhere: actions.dropOnTerminal,
+    openPreview: (f, edit) => void actions.openPreview(f, edit),
+  };
   try {
     opened = localStorage.getItem(STORE_KEY) !== "0";
   } catch {}
@@ -176,6 +249,7 @@ export function initFiles(d: Deps) {
     const up = parentOf(s, tree(s).root);
     if (up !== null) enter(s, up);
   });
+  initPathEdit();
   $("fs-refresh").addEventListener("click", () => {
     const s = deps.active();
     if (s) refreshAll(s);
@@ -215,6 +289,16 @@ export function initFiles(d: Deps) {
   });
   // 复制 / 粘贴快捷键只在文件树获得焦点时生效，终端的 Ctrl+C / Ctrl+V 不受影响
   treeEl.addEventListener("keydown", (ev) => {
+    // Enter：进入选中的文件夹（同双击）
+    if (ev.key === "Enter" && !ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+      const s = deps.active();
+      const dir = s && selectedDir(tree(s));
+      if (s && dir !== undefined) {
+        ev.preventDefault();
+        enter(s, dir);
+      }
+      return;
+    }
     if (!ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey || (ev.code !== "KeyC" && ev.code !== "KeyV")) return;
     ev.preventDefault();
     const s = deps.active();
@@ -246,11 +330,6 @@ export function initFiles(d: Deps) {
     const pasteCount = (await pasteSource())?.paths.length ?? 0;
     showMenu(ev.clientX, ev.clientY, menuItems(s, t, row, pasteCount));
   });
-  document.addEventListener("click", () => (menu.hidden = true));
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") menu.hidden = true;
-  });
-  window.addEventListener("blur", () => (menu.hidden = true));
 
   // 从资源管理器拖入：坐标为相对 webview 的物理像素，需按 devicePixelRatio 换算为 CSS 像素；落在文件树上为上传，其余交给 dropElsewhere
   getCurrentWebview().onDragDropEvent(({ payload: p }) => {
@@ -263,24 +342,36 @@ export function initFiles(d: Deps) {
     if (target) upload(target.s, target.dir, p.paths);
     else deps.dropElsewhere(x, y, p.paths);
   });
+  return {
+    el: panel,
+    mount: () => overlay().append(conflictDlg),
+    unmount: () => conflictDlg.remove(),
+    show: showFiles,
+    forget: forgetFiles,
+    suggestRoot,
+    openPath: openPathQuiet,
+    preview: (s, path) => void preview(s, path),
+    onMessage: onFsMessage,
+    dir: filesDir,
+  };
 }
 
 /** daemon 的文件树消息 */
-export function onFsMessage(m: FsServerMsg) {
+function onFsMessage(m: FsServerMsg) {
   if (m.type === "transfer") return showTransfer(m);
   const done = waiting.get(m.reqId);
   if (!done) return;
   waiting.delete(m.reqId);
   transfers.get(m.reqId)?.remove();
   transfers.delete(m.reqId);
-  if (m.type === "fsEntries") done({ entries: m.entries });
+  if (m.type === "fsEntries") done({ entries: m.entries, path: m.path });
   else if (m.type === "fsContent") done({ file: m });
   else if (m.type === "fsSaved") done({ saved: m });
   else done({ error: m.error });
 }
 
 /** 激活会话变化时调用（同一会话重复调用不重绘） */
-export function showFiles() {
+function showFiles() {
   const s = deps.active();
   if (s?.id === shownId && !!s?.fsRoot === shownRoot) return;
   shownId = s?.id;
@@ -289,20 +380,20 @@ export function showFiles() {
 }
 
 /** 终端提示符变为 root（main.ts 检测）：文件树未提权时显示“同步提权”提示，不自动切换 */
-export function suggestRoot(id: number) {
+function suggestRoot(id: number) {
   rootHints.add(id);
   if (deps.active()?.id === id) render();
 }
 
 /** 文件栏当前浏览目录：仅本地会话，盘符列表除外 */
-export function filesDir(): string | undefined {
+function filesDir(): string | undefined {
   const s = deps.active();
   if (!s || isRemote(s)) return undefined;
   return tree(s).root || undefined;
 }
 
 /** 会话关闭后丢弃其浏览状态 */
-export function forgetFiles(id: number) {
+function forgetFiles(id: number) {
   trees.delete(id);
   rootHints.delete(id);
 }
@@ -456,6 +547,70 @@ function select(t: Tree, path: string) {
   t.anchor = path;
 }
 
+/** 只选中了一个（显示中的）文件夹时返回其路径 */
+function selectedDir(t: Tree) {
+  return t.selected.size === 1 && rowFor(t.anchor)?.dataset.dir ? t.anchor : undefined;
+}
+
+/** 地址栏：单击进入编辑（预填当前显示的路径），Enter 跳转，Esc / 失焦取消 */
+function initPathEdit() {
+  const close = () => {
+    pathInput.hidden = true;
+    pathEl.hidden = false;
+  };
+  pathEl.addEventListener("click", () => {
+    const s = deps.active();
+    if (!s) return;
+    pathInput.value = selectedDir(tree(s)) ?? tree(s).root;
+    pathEl.hidden = true;
+    pathInput.hidden = false;
+    pathInput.focus();
+    pathInput.select();
+  });
+  pathInput.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== "Escape") return;
+    ev.preventDefault();
+    const value = pathInput.value;
+    close();
+    treeEl.focus();
+    const s = deps.active();
+    if (ev.key === "Enter" && s) goTo(s, value);
+  });
+  pathInput.addEventListener("blur", close);
+}
+
+/** 主目录：本地取系统用户目录；远程列出 `.`（SFTP 相对路径即 home，daemon 回复解析后的绝对路径）。失败返回 null */
+async function homeOf(s: FsSession): Promise<string | null> {
+  if (!isRemote(s)) return homeDir().catch(() => null);
+  const r = await call({ type: "fsList", reqId: nextId(), sessionId: s.id, path: "." });
+  return r.path?.startsWith("/") ? r.path : null;
+}
+
+/** 地址栏跳转：目录 → 进入；文件 → 进入其所在目录并选中；不存在 / 无法解析 → 提示并留在原目录 */
+async function goTo(s: FsSession, input: string) {
+  if (!input.trim()) return;
+  const t = tree(s);
+  const home = input.trim().startsWith("~") ? await homeOf(s) : null;
+  const dir = resolveInput(input, t.root, home, isRemote(s));
+  if (dir === null) return void alert(tr("files.failed", { action: tr("files.goTo"), error: tr("files.badPath") }));
+  const r = await call({ type: "fsList", reqId: nextId(), sessionId: s.id, path: dir });
+  if (r.entries) {
+    t.cache.set(dir, r.entries);
+    return enter(s, dir);
+  }
+  // 列目录失败：看是否为文件（本地不区分大小写）
+  const up = parentOf(s, dir);
+  const l = up === null || up === "" ? undefined : await call({ type: "fsList", reqId: nextId(), sessionId: s.id, path: up });
+  const fold = (n: string) => (isRemote(s) ? n : n.toLowerCase());
+  const file = l?.entries?.find((e) => !e.isDir && fold(e.name) === fold(baseName(dir)));
+  if (!file || !l?.entries) return void failed(r, "files.goTo");
+  t.cache.set(up!, l.entries);
+  enter(s, up!);
+  select(t, join(s, up!, file.name));
+  render();
+  rowFor(t.anchor)?.scrollIntoView({ block: "nearest" });
+}
+
 /** Shift 单击：选中同一目录列表中 from 与 to 之间的项；不在同一目录时只选中 to */
 function selectRange(s: FsSession, t: Tree, from: string, to: string) {
   const dir = parentOf(s, to);
@@ -489,12 +644,15 @@ function render() {
     t.notDir.clear();
   }
   t.asRoot = asRoot;
-  pathEl.textContent = t.root || tr("files.thisPc");
-  pathEl.title = t.root || tr("files.thisPc");
   upBtn.disabled = parentOf(s, t.root) === null;
   const scroll = treeEl.scrollTop;
   treeEl.replaceChildren(...rows(s, t, t.root, 0));
   treeEl.scrollTop = scroll;
+  // 地址栏：选中单个文件夹时显示该文件夹，否则显示当前浏览目录
+  const shown = selectedDir(t) ?? t.root;
+  pathEl.textContent = shown || tr("files.thisPc");
+  pathEl.title = `${shown || tr("files.thisPc")}
+${tr("files.editPath")}`;
 }
 
 /** “以 root 浏览”按钮、root 标签 / 描边 / 警示条与“同步提权”提示：仅 SSH 会话显示 */
@@ -602,7 +760,7 @@ function menuItems(s: FsSession, t: Tree, row: HTMLElement | undefined, pasteCou
   // 盘符列表：只能进入 / 在盘符根新建会话
   if (t.root === "") {
     if (!row) return [[refresh, () => refreshAll(s)]];
-    return [here(row.dataset.path!), copy(row.dataset.path!)];
+    return [[tr("files.enterFolder"), () => enter(s, row.dataset.path!)], here(row.dataset.path!), copy(row.dataset.path!)];
   }
   if (!row) {
     return [
@@ -644,6 +802,8 @@ function menuItems(s: FsSession, t: Tree, row: HTMLElement | undefined, pasteCou
     return [...open, ...common];
   }
   return [
+    [tr("files.enterFolder"), () => enter(s, path)],
+    null,
     [newFolder, () => create(s, t, path, false)],
     [newFile, () => create(s, t, path, true)],
     null,
@@ -653,49 +813,7 @@ function menuItems(s: FsSession, t: Tree, row: HTMLElement | undefined, pasteCou
   ];
 }
 
-export function showMenu(x: number, y: number, items: MenuItem[]) {
-  menu.replaceChildren(
-    ...items.map((it) => {
-      if (!it) return document.createElement("hr");
-      const b = document.createElement("button");
-      b.textContent = it[0];
-      b.disabled = !!it[2];
-      if (it[0] === tr("common.delete")) b.className = "danger";
-      b.addEventListener("click", () => {
-        menu.hidden = true;
-        it[1]();
-      });
-      return b;
-    }),
-  );
-  menu.hidden = false;
-  // 贴边时向内收
-  const r = menu.getBoundingClientRect();
-  menu.style.left = `${Math.min(x, innerWidth - r.width - 4)}px`;
-  menu.style.top = `${Math.min(y, innerHeight - r.height - 4)}px`;
-}
-
 // ---------------- 对话框（输入名称 / 确认删除） ----------------
-
-/** input 为 undefined 时是确认框；确定返回输入值（确认框为 ""），取消返回 null */
-export function ask(message: string, ok: string, input?: string): Promise<string | null> {
-  dlgMsg.textContent = message;
-  dlgOk.textContent = ok;
-  dlgOk.classList.toggle("danger", ok === tr("common.delete"));
-  dlgInput.hidden = input === undefined;
-  dlgInput.value = input ?? "";
-  dlg.returnValue = "";
-  dlg.showModal();
-  if (input !== undefined) {
-    dlgInput.focus();
-    // 默认选中不含扩展名的部分
-    const dot = input.lastIndexOf(".");
-    dlgInput.setSelectionRange(0, dot > 0 ? dot : input.length);
-  }
-  return new Promise((resolve) =>
-    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? dlgInput.value.trim() : null), { once: true }),
-  );
-}
 
 /** 读名称：空或含路径分隔符时返回 null */
 async function askName(message: string, initial: string) {
@@ -753,7 +871,7 @@ async function openFile(s: FsSession, path: string, mode: OpenMode = "default") 
 }
 
 /** 终端输出中的文件路径链接：同 openFile，但失败（如文件不存在）静默忽略 */
-export function openPathQuiet(s: FsSession, path: string) {
+function openPathQuiet(s: FsSession, path: string) {
   const reqId = nextId();
   if (isRemote(s)) startTransfer(reqId, tr("files.transfer.open", { name: baseName(path) }));
   call({ type: "fsOpen", reqId, sessionId: s.id, path, mode: "default" });
@@ -765,7 +883,7 @@ async function preview(s: FsSession, path: string, kind = previewKind(path) ?? "
   const r = await call({ type: "fsRead", reqId: nextId(), sessionId: s.id, path });
   if (failed(r, "files.open") || !r.file || deps.active()?.id !== s.id) return;
   let meta = r.file;
-  showPreview(
+  deps.openPreview(
     {
       path,
       text: meta.text,

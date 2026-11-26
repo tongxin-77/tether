@@ -30,8 +30,8 @@ pub fn start(state: Shared) {
             };
             let Ok(sampled) = tokio::task::spawn_blocking(move || sample(&roots)).await else { continue };
             let mut st = state.lock().unwrap();
-            session::check_claude(&mut st, &sampled.iter().map(|(m, claude)| (m.id, *claude)).collect::<Vec<_>>());
-            let items: Vec<_> = sampled.into_iter().map(|(m, _)| m).collect();
+            session::check_claude(&mut st, &sampled.iter().map(|(m, claude, idle)| (m.id, *claude, idle.clone())).collect::<Vec<_>>());
+            let items: Vec<_> = sampled.into_iter().map(|(m, ..)| m).collect();
             let Some(conn) = st.gui.as_ref().map(|g| g.conn) else { continue };
             if last.as_ref().is_some_and(|(c, v)| *c == conn && *v == items) {
                 continue;
@@ -43,8 +43,9 @@ pub fn start(state: Shared) {
 }
 
 /// 采样各会话（会话 id, shell pid）的进程树内存，及树中是否有 Claude 进程；shell 已不存在（或无权访问）的会话不出现在结果中。
-/// Claude 进程：claude.exe（原生安装），或 Claude Code 写有 `<配置目录>\sessions\<pid>.json` 的进程（npm 安装时为 node）
-fn sample(roots: &[(u32, u32)]) -> Vec<(SessionMemory, bool)> {
+/// Claude 进程：claude.exe（原生安装），或 Claude Code 写有 `<配置目录>\sessions\<pid>.json` 的进程（npm 安装时为 node）。
+/// 第三项为树中首个 Claude 进程的 sessions/<pid>.json 处于 idle 时的 (sessionId, statusUpdatedAt)，供识别 Esc 中断
+fn sample(roots: &[(u32, u32)]) -> Vec<(SessionMemory, bool, Option<session::ClaudeIdle>)> {
     if roots.is_empty() {
         return Vec::new();
     }
@@ -54,14 +55,25 @@ fn sample(roots: &[(u32, u32)]) -> Vec<(SessionMemory, bool)> {
     roots
         .iter()
         .filter_map(|&(id, pid)| {
-            let mut found = false;
+            let mut found = None;
             let bytes = tree_sum(&procs, pid, |p| {
-                found |= is_claude(p);
+                if found.is_none() && is_claude(p) {
+                    found = Some(p);
+                }
                 query(p)
             })?;
-            Some((SessionMemory { id, bytes }, found))
+            let idle = found.zip(dir.as_ref()).and_then(|(p, d)| std::fs::read_to_string(d.join(format!("{p}.json"))).ok());
+            Some((SessionMemory { id, bytes }, found.is_some(), idle.as_deref().and_then(idle_status)))
         })
         .collect()
+}
+
+/// Claude Code 会话状态文件（sessions/<pid>.json，非公开格式）的 status 为 idle 时返回 (sessionId, statusUpdatedAt)；
+/// 字段缺失（旧版）或其它状态（busy / waiting）为 None
+fn idle_status(json: &str) -> Option<session::ClaudeIdle> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    (v.get("status")?.as_str()? == "idle").then_some(())?;
+    Some((v.get("sessionId")?.as_str()?.to_string(), v.get("statusUpdatedAt")?.as_u64()?))
 }
 
 /// 进程树求和：从 root 起沿 (pid, ppid) 向下遍历，info 给出进程的 (创建时间, 字节)，取不到的进程连同其子树跳过。
@@ -200,6 +212,19 @@ mod tests {
         let items = sample(&[(1, pid)]);
         eprintln!("当前进程树内存：{items:?}");
         assert!(items[0].0.bytes > 0);
+    }
+
+    /// Claude Code 的 sessions/<pid>.json（Esc 中断后的现场样本）：status 为 idle 时取 (sessionId, statusUpdatedAt)
+    #[test]
+    fn idle_status_parse() {
+        let idle = r#"{"pid":26144,"sessionId":"8e6ab0ad-7003","status":"idle","updatedAt":1795601699151,"statusUpdatedAt":1795601699151}"#;
+        assert_eq!(idle_status(idle), Some(("8e6ab0ad-7003".into(), 1795601699151)));
+        let busy = r#"{"sessionId":"x","status":"busy","statusUpdatedAt":1}"#;
+        assert_eq!(idle_status(busy), None);
+        let waiting = r#"{"sessionId":"x","status":"waiting","waitingFor":"input needed","statusUpdatedAt":1}"#;
+        assert_eq!(idle_status(waiting), None);
+        assert_eq!(idle_status(r#"{"pid":1,"sessionId":"x"}"#), None);
+        assert_eq!(idle_status("not json"), None);
     }
 
     #[test]

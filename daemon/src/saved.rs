@@ -18,6 +18,12 @@ pub struct Saved {
     /// 会话中运行的 Claude Code 对话
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude: Option<Resume>,
+    /// 用户手动改过名（不被 Claude 对话标题覆盖）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_custom: bool,
+    /// 最后一次读到的 Claude 对话标题
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_title: Option<String>,
 }
 
 /// Claude Code 的 session_id 与其启动目录（`--resume` 按项目目录查找对话），以及恢复时要带上的权限模式
@@ -99,8 +105,18 @@ mod tests {
                     permission_mode: Some("plan".into()),
                     bypass: true,
                 }),
+                name_custom: true,
+                claude_title: Some("修复登录".into()),
             },
-            Saved { name: "~".into(), cwd: "/home/u".into(), command: "ssh u@h:22".into(), host_id: Some("h1".into()), claude: None },
+            Saved {
+                name: "~".into(),
+                cwd: "/home/u".into(),
+                command: "ssh u@h:22".into(),
+                host_id: Some("h1".into()),
+                claude: None,
+                name_custom: false,
+                claude_title: None,
+            },
         ];
         let json = serde_json::to_string_pretty(&items).unwrap();
         assert!(json.contains("\"hostId\": \"h1\""));
@@ -108,6 +124,7 @@ mod tests {
         // 可选字段缺失时为 None
         let min: Vec<Saved> = serde_json::from_str(r#"[{"name":"a","cwd":"C:\\","command":"cmd.exe"}]"#).unwrap();
         assert_eq!((min[0].host_id.clone(), min[0].claude.clone()), (None, None));
+        assert_eq!((min[0].name_custom, min[0].claude_title.clone()), (false, None));
         // 旧文件的 claude 不带权限字段
         let old: Resume = serde_json::from_str(r#"{"id":"a","cwd":"C:\\"}"#).unwrap();
         assert_eq!((old.permission_mode, old.bypass), (None, false));

@@ -1,36 +1,37 @@
-// 卡片头分支的菜单（切换分支 / 查看历史）与提交历史面板；git 命令由后端执行，输出解析见 git-utils.ts
+// 提交历史面板（卡片头分支菜单“查看历史”打开）；git 命令由后端执行，输出解析见 git-utils.ts
 import { invoke } from "@tauri-apps/api/core";
 import { icon } from "./icons";
-import { requestClosePreview } from "./preview";
 import { fmtDateTime, onLocaleChange, t, tn } from "./i18n";
-import { type Commit, type Refs, classifyDiff, filterRefs, graphRuns, parseDecor, parseLog, parseNumstat, parseRefs, relTime, switchTarget } from "./git-utils";
+import { type Commit, classifyDiff, graphRuns, parseDecor, parseLog, parseNumstat, parseRefs, relTime } from "./git-utils";
+import { type Component, type Ctx, html } from "./ui/component";
+
+export interface HistoryPanel extends Component {
+  open(dir: string): Promise<void>;
+  /** 分支切换后：面板正显示 dir 时重新读取 */
+  reload(dir: string): void;
+  close(): void;
+}
 
 interface Deps {
-  /** 激活会话查分支的目录（仅本地会话），没有时为 null */
-  dir: () => string | null;
-  /** 切换分支成功后（刷新卡片头分支） */
-  onSwitched: () => void;
   /** 复制文本并提示 */
   copy: (text: string) => void;
   /** 面板关闭后（重新 fit 并聚焦当前终端） */
   onClose: () => void;
+  /** 关闭预览（有未保存修改时先确认），返回是否已关闭 */
+  requestClosePreview: () => Promise<boolean>;
 }
 
 /** 历史列表的提交数与 diff 显示的行数上限 */
 const LOG_LIMIT = 200;
 const DIFF_LINES = 3000;
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const branchEl = $("ch-branch");
-const menu = $("git-menu");
-const panel = $("git-panel");
-const listEl = $("gp-list");
-const detailEl = $("gp-detail");
+let panel: HTMLElement;
+let listEl: HTMLElement;
+let detailEl: HTMLElement;
+/** 打开期间登记 Esc 关闭 */
+let esc: (open: boolean) => void;
 
 let deps: Deps;
-/** 菜单打开时的目录与分支列表 */
-let menuDir = "";
-let refs: Refs = { current: null, locals: [], remotes: [] };
 /** 面板对应的目录；异步结果按序号丢弃过期的 */
 let panelDir = "";
 let loadSeq = 0;
@@ -44,140 +45,54 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") 
 };
 const errText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
-export function initGitPanel(d: Deps) {
-  deps = d;
-  const syncTitle = () => (branchEl.title = t("git.branchTitle"));
-  syncTitle();
-  // 切换语言：分支菜单收起，已打开的历史面板重新读取渲染
+export function createHistoryPanel(ctx: Ctx): HistoryPanel {
+  panel = html(`      <!-- 提交历史：覆盖在终端卡片上方（git-panel.ts 渲染）；上为 log --graph 列表，选中提交后下方显示改动 -->
+      <div id="git-panel" hidden>
+        <div id="gp-head">
+          <span id="gp-ico"></span>
+          <span id="gp-title" data-i18n="git.historyTitle"></span>
+          <span id="gp-branch"></span>
+          <button id="gp-close" class="fs-btn" data-i18n-title="common.closeEsc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div id="gp-body">
+          <div id="gp-list" tabindex="-1"></div>
+          <div id="gp-detail" hidden></div>
+        </div>
+      </div>`);
+  const $ = (id: string) => panel.querySelector<HTMLElement>(`#${id}`)!;
+  listEl = $("gp-list");
+  detailEl = $("gp-detail");
+  deps = { copy: ctx.actions.copy, onClose: () => ctx.actions.focusTerminal(true), requestClosePreview: ctx.actions.requestClosePreview };
+  esc = ctx.keymap.esc(closeGitPanel);
+  // 切换语言：已打开的历史面板重新读取渲染
   onLocaleChange(() => {
-    syncTitle();
-    menu.hidden = true;
     if (!panel.hidden) loadHistory();
   });
-  branchEl.addEventListener("click", () => (menu.hidden ? openMenu() : (menu.hidden = true)));
   $("gp-ico").innerHTML = icon("history");
   $("gp-close").addEventListener("click", closeGitPanel);
-  document.addEventListener("mousedown", (ev) => {
-    const t = ev.target as Node;
-    if (!menu.hidden && !menu.contains(t) && !branchEl.contains(t)) menu.hidden = true;
-  });
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key !== "Escape" || document.querySelector("dialog[open]")) return;
-    if (!menu.hidden) menu.hidden = true;
-    else if (!panel.hidden) closeGitPanel();
-  });
-}
-
-// ---------------- 分支菜单 ----------------
-
-async function openMenu() {
-  const dir = deps.dir();
-  if (!dir) return;
-  menuDir = dir;
-  const filter = el("input", "gm-filter");
-  filter.placeholder = t("git.filter");
-  const history = el("button", "gm-item");
-  history.innerHTML = icon("history");
-  history.append(t("git.viewHistory"));
-  history.addEventListener("click", () => {
-    menu.hidden = true;
-    void openHistory(dir);
-  });
-  const list = el("div", "gm-list", t("git.loadingBranches"));
-  const status = el("pre", "gm-status");
-  status.hidden = true;
-  menu.replaceChildren(filter, history, list, status);
-  menu.classList.remove("busy");
-  menu.hidden = false;
-  const r = branchEl.getBoundingClientRect();
-  menu.style.left = `${Math.max(4, Math.min(r.left - 8, innerWidth - menu.offsetWidth - 8))}px`;
-  menu.style.top = `${r.bottom + 6}px`;
-  filter.focus();
-  try {
-    refs = parseRefs(await invoke<string>("git_refs", { dir }));
-  } catch (e) {
-    list.textContent = "";
-    showStatus(status, errText(e), true);
-    return;
-  }
-  if (menu.hidden || menuDir !== dir) return;
-  const render = () => renderBranches(list, status, filter.value);
-  filter.addEventListener("input", render);
-  // 回车切到过滤结果的第一项
-  filter.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") list.querySelector<HTMLButtonElement>("button")?.click();
-  });
-  render();
-}
-
-function renderBranches(list: HTMLElement, status: HTMLElement, query: string) {
-  const items: HTMLElement[] = [];
-  const locals = filterRefs(refs.locals, query);
-  if (locals.length) items.push(el("div", "gm-sec", t("git.localBranches")));
-  for (const name of locals) {
-    const cur = name === refs.current;
-    items.push(branchItem(name, cur, () => !cur && doSwitch(status, name, false)));
-  }
-  for (const g of refs.remotes) {
-    const names = filterRefs(g.branches, query);
-    if (names.length) items.push(el("div", "gm-sec", t("git.remote", { remote: g.remote })));
-    for (const name of names) {
-      items.push(branchItem(name, false, () => {
-        const t = switchTarget(name, refs);
-        doSwitch(status, t.name, t.track);
-      }));
-    }
-  }
-  if (!items.length) items.push(el("div", "gm-empty", t("git.noMatch")));
-  list.replaceChildren(...items);
-}
-
-function branchItem(name: string, current: boolean, onClick: () => void) {
-  const b = el("button", current ? "gm-item gm-branch current" : "gm-item gm-branch");
-  b.innerHTML = icon(current ? "check" : "git-branch");
-  b.append(el("span", "gm-name", name));
-  b.title = current ? t("git.current") : t("git.switchTo", { name });
-  b.addEventListener("click", onClick);
-  return b;
-}
-
-/** git switch：期间禁用菜单；失败在菜单底部显示 git 的错误输出 */
-async function doSwitch(status: HTMLElement, name: string, track: boolean) {
-  if (menu.classList.contains("busy")) return;
-  menu.classList.add("busy");
-  showStatus(status, t("git.switching", { name }), false);
-  try {
-    await invoke("git_switch", { dir: menuDir, name, track });
-    menu.hidden = true;
-    deps.onSwitched();
-    if (!panel.hidden && panelDir === menuDir) loadHistory();
-  } catch (e) {
-    showStatus(status, errText(e), true);
-  } finally {
-    menu.classList.remove("busy");
-  }
-}
-
-function showStatus(status: HTMLElement, text: string, error: boolean) {
-  status.hidden = false;
-  status.classList.toggle("err", error);
-  status.textContent = text;
+  return { el: panel, open: openHistory, reload: reloadHistory, close: closeGitPanel };
 }
 
 // ---------------- 提交历史 ----------------
 
 async function openHistory(dir: string) {
-  if (!(await requestClosePreview())) return;
+  if (!(await deps.requestClosePreview())) return;
   panelDir = dir;
   panel.hidden = false;
+  esc(true);
   loadHistory();
   listEl.focus();
 }
 
-export function closeGitPanel() {
-  menu.hidden = true;
+/** 分支切换后：面板正显示 dir 时重新读取 */
+function reloadHistory(dir: string) {
+  if (!panel.hidden && panelDir === dir) loadHistory();
+}
+
+function closeGitPanel() {
   if (panel.hidden) return;
   panel.hidden = true;
+  esc(false);
   loadSeq++;
   showSeq++;
   listEl.replaceChildren();
@@ -196,7 +111,7 @@ async function loadHistory() {
     const [log, r] = await Promise.all([invoke<string>("git_log", { dir: panelDir, limit: LOG_LIMIT }), invoke<string>("git_refs", { dir: panelDir })]);
     out = log;
     const cur = parseRefs(r).current;
-    $("gp-branch").textContent = cur ? `⎇ ${cur}` : t("git.detached");
+    panel.querySelector("#gp-branch")!.textContent = cur ? `⎇ ${cur}` : t("git.detached");
   } catch (e) {
     if (seq === loadSeq) listEl.replaceChildren(el("pre", "gp-note err", errText(e)));
     return;

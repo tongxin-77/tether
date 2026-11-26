@@ -176,11 +176,23 @@ async fn git_branch(dir: String) -> Option<String> {
     find_branch(std::path::Path::new(&dir))
 }
 
-/// 从 dir 向上查找 `.git`（目录或 worktree / submodule 的 gitdir 文件），读其 HEAD 解析分支
+/// 目录所在仓库的根目录与当前分支 `{root, branch}`（侧栏按仓库分组用）；不在仓库里或读取失败为 None。不调用 git 进程
+#[tauri::command]
+async fn git_head(dir: String) -> Option<serde_json::Value> {
+    let (root, branch) = find_head(std::path::Path::new(&dir))?;
+    Some(serde_json::json!({ "root": root.to_string_lossy(), "branch": branch }))
+}
+
 fn find_branch(dir: &std::path::Path) -> Option<String> {
-    let dot = dir.ancestors().map(|d| d.join(".git")).find(|p| p.exists())?;
-    let git_dir = if dot.is_dir() { dot } else { parse_gitdir(&std::fs::read_to_string(&dot).ok()?, dot.parent()?)? };
-    parse_head(&std::fs::read_to_string(git_dir.join("HEAD")).ok()?)
+    find_head(dir).map(|(_, branch)| branch)
+}
+
+/// 从 dir 向上查找 `.git`（目录或 worktree / submodule 的 gitdir 文件），读其 HEAD 解析分支；返回 (`.git` 所在目录即仓库根, 分支)
+fn find_head(dir: &std::path::Path) -> Option<(std::path::PathBuf, String)> {
+    let root = dir.ancestors().find(|d| d.join(".git").exists())?;
+    let dot = root.join(".git");
+    let git_dir = if dot.is_dir() { dot } else { parse_gitdir(&std::fs::read_to_string(&dot).ok()?, root)? };
+    Some((root.to_path_buf(), parse_head(&std::fs::read_to_string(git_dir.join("HEAD")).ok()?)?))
 }
 
 /// HEAD 内容：`ref: refs/heads/<name>` 为分支名；十六进制提交哈希为分离 HEAD，取前 7 位；其它为 None
@@ -207,15 +219,16 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DIFF_LIMIT: usize = 512 * 1024;
 
 /// 在 dir 下运行 git：参数逐个作为 argv 传入，不经 shell。成功返回 (stdout, 是否截断)，失败返回 git 的错误输出。
-/// limit 为 Some 时 stdout 最多读这么多字节（截到最后一个换行），超出即结束 git
-fn run_git(dir: &str, args: &[&str], limit: Option<usize>) -> Result<(String, bool), String> {
+/// limit 为 Some 时 stdout 最多读这么多字节（截到最后一个换行），超出即结束 git；ok 为额外视作成功的退出码（如 diff --no-index 有差异时的 1）。
+/// 一律带 --no-optional-locks：后台查询不抢 index.lock，不与终端里的 git 冲突
+fn run_git(dir: &str, args: &[&str], limit: Option<usize>, ok: &[i32]) -> Result<(String, bool), String> {
     use std::{io::Read, process::Stdio};
     if !std::path::Path::new(dir).is_dir() {
         return Err(tr!("git.dir_not_found", dir = dir));
     }
     let mut child = Command::new("git")
         // 路径中的非 ASCII 字符不转义
-        .args(["-c", "core.quotepath=false"])
+        .args(["--no-optional-locks", "-c", "core.quotepath=false"])
         .args(args)
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -242,7 +255,9 @@ fn run_git(dir: &str, args: &[&str], limit: Option<usize>) -> Result<(String, bo
     }
     let status = child.wait().map_err(|e| e.to_string())?;
     let err = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).trim().to_string();
-    if !truncated && !status.success() {
+    // 允许的退出码也可能是出错（如 diff --no-index 找不到文件同样退出 1）：没有输出且有错误输出时按失败处理
+    let allowed = status.code().is_some_and(|c| ok.contains(&c)) && !(out.is_empty() && !err.is_empty());
+    if !truncated && !status.success() && !allowed {
         return Err(if err.is_empty() { tr!("git.exit_failed", status = status) } else { err });
     }
     Ok((String::from_utf8_lossy(&out).into_owned(), truncated))
@@ -260,7 +275,7 @@ fn valid_hash(s: &str) -> bool {
 
 /// 本地与远程分支，每行 `<*| > refs/...`（* 为当前分支）
 fn list_refs(dir: &str) -> Result<String, String> {
-    run_git(dir, &["for-each-ref", "--format=%(HEAD) %(refname)", "refs/heads", "refs/remotes"], None).map(|r| r.0)
+    run_git(dir, &["for-each-ref", "--format=%(HEAD) %(refname)", "refs/heads", "refs/remotes"], None, &[]).map(|r| r.0)
 }
 
 /// `git switch <name>`；track 时 name 为远程分支（如 origin/x），`git switch --track` 创建同名本地分支并跟踪
@@ -269,14 +284,14 @@ fn switch_branch(dir: &str, name: &str, track: bool) -> Result<(), String> {
         return Err(tr!("git.bad_branch", name = name));
     }
     let args: &[&str] = if track { &["switch", "--track", "--", name] } else { &["switch", "--", name] };
-    run_git(dir, args, None).map(|_| ())
+    run_git(dir, args, None, &[]).map(|_| ())
 }
 
 /// 当前分支最近 limit 个提交的 `git log --graph`；字段以 \x1f 分隔：图形列、完整哈希、短哈希、refs 装饰、作者、作者时间（秒）、标题
 fn log_graph(dir: &str, limit: u32) -> Result<String, String> {
     let n = format!("-n{limit}");
     let args = ["log", "--graph", "--no-color", "--no-show-signature", &n, "--format=%x1f%H%x1f%h%x1f%D%x1f%an%x1f%at%x1f%s", "--"];
-    run_git(dir, &args, None).map(|r| r.0)
+    run_git(dir, &args, None, &[]).map(|r| r.0)
 }
 
 /// 提交改动：(numstat, diff, diff 是否截断)。合并提交按第一父提交比较；不调用外部 diff / textconv 程序
@@ -285,9 +300,36 @@ fn show_commit(dir: &str, hash: &str) -> Result<(String, String, bool), String> 
         return Err(tr!("git.bad_hash", hash = hash));
     }
     let base = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv", "--diff-merges=first-parent"];
-    let numstat = run_git(dir, &[&base[..], &["--numstat", hash, "--"]].concat(), None)?.0;
-    let (diff, truncated) = run_git(dir, &[&base[..], &["--patch", hash, "--"]].concat(), Some(DIFF_LIMIT))?;
+    let numstat = run_git(dir, &[&base[..], &["--numstat", hash, "--"]].concat(), None, &[])?.0;
+    let (diff, truncated) = run_git(dir, &[&base[..], &["--patch", hash, "--"]].concat(), Some(DIFF_LIMIT), &[])?;
     Ok((numstat, diff, truncated))
+}
+
+/// 最近提交的格式（与 daemon 远程脚本一致）：完整哈希、短哈希、refs 装饰、作者、作者时间（秒）、标题，以 \x1f 分隔
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%D%x1f%an%x1f%at%x1f%s";
+
+/// 未提交改动（status + numstat）与最近 log_n 个提交的原始输出，由 GUI 解析。
+/// 空仓库（还没有提交）numstat 改比暂存区、log 为空
+fn changes(dir: &str, log_n: u32) -> Result<proto::GitChanges, String> {
+    let status = run_git(dir, &["status", "--porcelain=v2", "-z", "--branch", "-unormal"], None, &[])?.0;
+    let initial = status.starts_with("# branch.oid (initial)\0");
+    let base = if initial { "--cached" } else { "HEAD" };
+    let numstat = run_git(dir, &["diff", "--numstat", "-z", base, "--"], None, &[])?.0;
+    let n = format!("-n{log_n}");
+    let log = if initial { String::new() } else { run_git(dir, &["log", "--no-show-signature", &n, LOG_FORMAT, "--"], None, &[])?.0 };
+    let root = find_head(std::path::Path::new(dir)).map_or_else(|| dir.to_string(), |(r, _)| r.to_string_lossy().into_owned());
+    Ok(proto::GitChanges { root, status, numstat, log })
+}
+
+/// 单个文件的 diff：(内容, 是否截断)。已跟踪文件比 HEAD（空仓库比暂存区）；untracked 与 /dev/null 比较（有差异时 git 退出码为 1）
+fn file_diff(dir: &str, path: &str, untracked: bool) -> Result<(String, bool), String> {
+    let base = ["diff", "--no-color", "--no-ext-diff"];
+    if untracked {
+        return run_git(dir, &[&base[..], &["--no-index", "--", "/dev/null", path]].concat(), Some(DIFF_LIMIT), &[1]);
+    }
+    // rev-parse --verify 找不到 HEAD 时退出码为 1、输出为空
+    let head = !run_git(dir, &["rev-parse", "-q", "--verify", "HEAD"], None, &[1])?.0.trim().is_empty();
+    run_git(dir, &[&base[..], &[if head { "HEAD" } else { "--cached" }, "--", path]].concat(), Some(DIFF_LIMIT), &[])
 }
 
 /// 在后台线程执行阻塞的 git 调用，不占用异步运行时
@@ -308,6 +350,16 @@ async fn git_switch(dir: String, name: String, track: bool) -> Result<(), String
 #[tauri::command]
 async fn git_log(dir: String, limit: u32) -> Result<String, String> {
     blocking(move || log_graph(&dir, limit.clamp(1, 1000))).await
+}
+
+#[tauri::command]
+async fn git_changes(dir: String, log_n: u32) -> Result<proto::GitChanges, String> {
+    blocking(move || changes(&dir, log_n.clamp(1, 100))).await
+}
+
+#[tauri::command]
+async fn git_file_diff(dir: String, path: String, untracked: bool) -> Result<(String, bool), String> {
+    blocking(move || file_diff(&dir, &path, untracked)).await
 }
 
 #[tauri::command]
@@ -488,7 +540,7 @@ pub fn run() {
                 win.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, clipboard_image_file, windows_build, git_branch, git_refs, git_switch, git_log, git_show, claude_history])
+        .invoke_handler(tauri::generate_handler![connect, send, kill_daemon, is_debug, clipboard_seq, clipboard_files, clipboard_image_file, windows_build, git_branch, git_head, git_refs, git_switch, git_log, git_show, git_changes, git_file_diff, claude_history])
         .run(context)
         .expect("error while running tauri application");
 }
@@ -579,6 +631,28 @@ mod tests {
         // 绝对路径
         std::fs::write(d.join("wt/.git"), format!("gitdir: {}\n", d.join("real/worktrees/wt").display())).unwrap();
         assert_eq!(super::find_branch(&d.join("wt")).as_deref(), Some("feature/x"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn finds_head_root() {
+        let d = temp("head");
+        std::fs::create_dir_all(d.join("repo/.git")).unwrap();
+        std::fs::write(d.join("repo/.git/HEAD"), "ref: refs/heads/main
+").unwrap();
+        std::fs::create_dir_all(d.join("repo/src/ui")).unwrap();
+        let repo = d.join("repo");
+        assert_eq!(super::find_head(&repo), Some((repo.clone(), "main".into())));
+        assert_eq!(super::find_head(&repo.join("src/ui")), Some((repo.clone(), "main".into())));
+        // worktree / submodule：根为 .git 文件所在目录，不是 gitdir 指向的目录
+        std::fs::create_dir_all(d.join("real/worktrees/wt")).unwrap();
+        std::fs::write(d.join("real/worktrees/wt/HEAD"), "ref: refs/heads/wt
+").unwrap();
+        std::fs::create_dir_all(d.join("wt/a")).unwrap();
+        std::fs::write(d.join("wt/.git"), "gitdir: ../real/worktrees/wt
+").unwrap();
+        assert_eq!(super::find_head(&d.join("wt/a")), Some((d.join("wt"), "wt".into())));
+        assert_eq!(super::find_head(&d), None);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -733,5 +807,87 @@ mod tests {
         assert!(truncated);
         assert!(diff.len() <= super::DIFF_LIMIT && diff.ends_with('\n'), "{}", diff.len());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// -z 输出按 NUL 切成条目（去掉末尾空项）
+    fn z(s: &str) -> Vec<&str> {
+        s.split('\0').filter(|e| !e.is_empty()).collect()
+    }
+
+    #[test]
+    fn git_changes_kinds() {
+        if !has_git() {
+            return;
+        }
+        let d = temp("changes");
+        git(&d, &["init", "-q"]);
+        std::fs::write(d.join("keep.txt"), "1\n2\n").unwrap();
+        std::fs::write(d.join("gone.txt"), "x\n").unwrap();
+        std::fs::write(d.join("old.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(d.join("bin.dat"), [0u8, 1, 2]).unwrap();
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-q", "-m", "first"]);
+        // 修改、删除、重命名（git mv）、二进制修改、未跟踪
+        std::fs::write(d.join("keep.txt"), "1\n3\n4\n").unwrap();
+        std::fs::remove_file(d.join("gone.txt")).unwrap();
+        git(&d, &["mv", "old.txt", "new name.txt"]);
+        std::fs::write(d.join("bin.dat"), [0u8, 9, 9, 9]).unwrap();
+        std::fs::write(d.join("新.txt"), "u\n").unwrap();
+        let c = super::changes(d.to_str().unwrap(), 5).unwrap();
+        assert_eq!(c.root, d.to_str().unwrap());
+        let st = z(&c.status);
+        assert!(st.contains(&"# branch.head main"), "{st:?}");
+        assert!(st.iter().any(|e| e.starts_with("1 .M ") && e.ends_with(" keep.txt")), "{st:?}");
+        assert!(st.iter().any(|e| e.starts_with("1 .D ") && e.ends_with(" gone.txt")), "{st:?}");
+        // 重命名：`2 R. … R100 <新路径>` 后紧跟原路径一项
+        let i = st.iter().position(|e| e.starts_with("2 R") && e.ends_with(" new name.txt")).unwrap();
+        assert_eq!(st[i + 1], "old.txt");
+        assert!(st.contains(&"? 新.txt"), "{st:?}");
+        // numstat：修改 2 增 1 删；删除；重命名为 `增 删 NUL 原 NUL 新`；二进制为 -；未跟踪文件不在其中
+        let ns = z(&c.numstat);
+        assert!(ns.contains(&"2\t1\tkeep.txt"), "{ns:?}");
+        assert!(ns.contains(&"0\t1\tgone.txt"), "{ns:?}");
+        assert!(ns.contains(&"-\t-\tbin.dat"), "{ns:?}");
+        let r = ns.iter().position(|e| *e == "0\t0\t").unwrap();
+        assert_eq!((ns[r + 1], ns[r + 2]), ("old.txt", "new name.txt"));
+        assert!(!c.numstat.contains("新.txt"));
+        let log: Vec<_> = c.log.lines().collect();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].split('\x1f').nth(5), Some("first"));
+
+        // 单文件 diff：已跟踪比 HEAD；未跟踪与 /dev/null 比较（退出码 1 也算成功）
+        let ds = d.to_str().unwrap();
+        let (diff, truncated) = super::file_diff(ds, "keep.txt", false).unwrap();
+        assert!(diff.contains("-2") && diff.contains("+4") && !truncated, "{diff}");
+        let (diff, _) = super::file_diff(ds, "新.txt", true).unwrap();
+        assert!(diff.contains("new file") && diff.contains("+u"), "{diff}");
+        assert!(super::file_diff(ds, "missing.txt", true).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn git_changes_empty_repo() {
+        if !has_git() {
+            return;
+        }
+        let d = temp("empty");
+        git(&d, &["init", "-q"]);
+        let ds = d.to_str().unwrap();
+        let c = super::changes(ds, 5).unwrap();
+        assert!(c.status.starts_with("# branch.oid (initial)\0"), "{:?}", c.status);
+        assert_eq!((c.numstat.as_str(), c.log.as_str()), ("", ""));
+        // 暂存的新文件：numstat 比暂存区
+        std::fs::write(d.join("a.txt"), "1\n2\n").unwrap();
+        git(&d, &["add", "."]);
+        let c = super::changes(ds, 5).unwrap();
+        assert_eq!(z(&c.numstat), ["2\t0\ta.txt"]);
+        assert!(z(&c.status).iter().any(|e| e.starts_with("1 A. ") && e.ends_with(" a.txt")));
+        let (diff, _) = super::file_diff(ds, "a.txt", false).unwrap();
+        assert!(diff.contains("+2"), "{diff}");
+        // 不在仓库里：返回 git 的错误
+        let out = temp("not-repo");
+        assert!(super::changes(out.to_str().unwrap(), 5).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(&out).unwrap();
     }
 }

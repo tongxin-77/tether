@@ -8,729 +8,110 @@ import "@fontsource/jetbrains-mono/latin-400.css";
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-700.css";
 import "./styles.css";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
+// 入口：连接 daemon、把消息路由给各组件，并装配 store / 编排 / 组件 / 布局
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { open } from "@tauri-apps/plugin-dialog";
-// WebView2 中 navigator.clipboard.readText 会弹权限询问，统一走剪贴板插件
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { type FsClientMsg, type FsServerMsg, ask, forgetFiles, initFiles, onFsMessage, openPathQuiet, showFiles, showMenu, suggestRoot } from "./files";
-import { attachFileLinks } from "./file-links";
-import { dropText } from "./claude-paths";
-import { type ClaudeResume, initClaudeHistory, openClaudeHistory } from "./claude-history";
-import { attachTableSelect, cellSelectionText, clearCellSelection } from "./table-select";
-import { closePreview, initPreview, previewDirty, requestClosePreview } from "./preview";
-import { closeGitPanel, initGitPanel } from "./git-panel";
-import { afterConnect, beforeConnect, daemonBannerShown, initUpdater, onHello } from "./updater";
-import { type HostStatsClientMsg, type HostStatsServerMsg, initHostInfo, onHostStats, showHostInfo } from "./host-info";
-import { attachClaudeComplete, setCustomCompletions, type ShellKind } from "./claude-complete";
-import { type HubClientMsg, type HubConfig, type HubServerMsg, closeHub, draftHub, fillHub, initHub, onHubMessage } from "./hub";
-import { icon } from "./icons";
-import { TERMINAL_OPTIONS, oscLinkTarget, terminalFontSize, clampTermFont, parseTermFont, parseFontAdj, parseGpu, fontAdjLabel, wheelSteps, FONT_ADJ_OPTIONS, TERM_FONT_MIN, TERM_FONT_MAX, branchDir, branchLabel, completionEnabled, debounce, formatMemory, memoryHigh, modeResetSeq, needsRefresh, nextRootSeen, pastedPath, touchRecent, promptKind, shouldFit, takeoverStale, wasReleased, windowsPtyFor } from "./term-utils";
-import { currentTheme, getStyles, registerTerminal, setStyle, setTransparent, toggleDark, unregisterTerminal, xtermTheme } from "./themes";
-import { type LocalePref, LOCALES, LOCALE_NAMES, type MessageKey, applyDom, fmtAgo, fmtDate, fmtDaysAgo, locale, localePref, onLocaleChange, setLocalePref, t } from "./i18n";
+import { createApp, readPrefs } from "./app";
+import { createChangesRefresher } from "./changes-refresher";
+import { setCustomCompletions } from "./claude-complete";
+import { initClaudeHistory } from "./claude-history";
+import { createFiles } from "./files";
+import { createHistoryPanel } from "./git-panel";
+import { createGitSource } from "./git-source";
+import { createHostInfo } from "./host-info";
+import { onHubMessage } from "./hub";
+import { applyDom, locale, onLocaleChange, t } from "./i18n";
+import { createPreview } from "./preview";
+import { initPrompt, pushPrompt, resetPrompts } from "./prompt";
+import type { ClientMsg, ServerMsg } from "./protocol";
+import { displayName, relativeTime } from "./session-utils";
+import { afterConnect, beforeConnect, initUpdater, onHello } from "./updater";
+import { createBrand } from "./components/brand";
+import { createChangesPanel } from "./components/changes";
+import { createCardHead } from "./components/card-head";
+import { createSessionList } from "./components/sessions";
+import { createSettings } from "./components/settings";
+import { createSidebarFoot } from "./components/sidebar-foot";
+import { createTerminalArea } from "./components/terminal";
+import { createTitleBar } from "./components/titlebar";
+import type { Ctx } from "./ui/component";
+import { keymap } from "./ui/keymap";
+import { applyLayout, type LayoutName, pageSlots, PRESETS } from "./ui/layout";
+import { type AppState, createStore } from "./ui/store";
 
-// 与 proto crate 的协议类型保持一致；会话数据全部由 daemon 维护，前端只做展示
-type Status = "running" | "waiting" | "exited";
-
-/** 会话中 Claude Code 的状态（Claude hooks 上报） */
-interface ClaudeState {
-  state: "idle" | "thinking" | "waiting" | "background" | "done";
-  message?: string;
-  /** background 时仍在运行的后台任务数 */
-  count?: number;
-  at: number;
-}
-
-interface SessionInfo {
-  id: number;
-  name: string;
-  cwd: string;
-  command: string;
-  status: Status;
-  startedAt: number;
-  lastActivityAt: number;
-  /** 远程会话的主机显示名，本地为 null */
-  host: string | null;
-  /** 远程会话所用主机 id */
-  hostId?: string;
-  claude?: ClaudeState;
-  /** 正被 hub 远程接管（未接管时不带该字段） */
-  takenOver?: boolean;
-  /** 会话中 Claude Code 对话的 session_id */
-  claudeSession?: string;
-  /** SSH 会话的文件树正以 root 浏览（未提权时不带该字段） */
-  fsRoot?: boolean;
-}
-
-interface Host {
-  id: string;
-  name: string;
-  host: string;
-  port: number;
-  user: string;
-  auth: "key" | "password";
-  keyPath?: string;
-  /** 来自 ~/.ssh/config 的主机（含其在 Config.hosts 中的覆盖项）为 "sshConfig"，Tether 管理的不带该字段 */
-  source?: "sshConfig";
-}
-
-type PromptMsg = {
-  type: "prompt";
-  reqId: number;
-  /** sudo：文件树以 root 浏览时的 sudo 密码（不提供保存） */
-  kind: "password" | "passphrase" | "hostKey" | "sudo";
-  host: string;
-  message: string;
-  fingerprint?: string;
-};
-
-type Target = { kind: "local"; cwd: string } | { kind: "remote"; hostId: string; cwd?: string };
-
-/** 最近关闭的会话目录，daemon 维护，最新在前 */
-interface RecentItem {
-  target: Target;
-  /** 远程主机显示名（记录时），本地为 null */
-  host: string | null;
-  closedAt: number;
-}
-
-type ServerMsg =
-  | { type: "sessions"; sessions: SessionInfo[] }
-  | { type: "snapshot" | "output"; id: number; data: string }
-  | { type: "notify"; id: number; message: string }
-  | { type: "activate"; id: number }
-  | { type: "error"; message: string }
-  | { type: "config"; config: Config; shells: ShellOption[]; hosts: Host[]; sshHosts: Host[]; passwordSaved: string[]; hubTokenSaved?: boolean }
-  | { type: "recent"; items: RecentItem[] }
-  | { type: "hello"; version: string; proto: number }
-  | { type: "claudeHooks"; path: string; enabled: boolean; outdated: boolean; error: string | null }
-  | PromptMsg
-  | FsServerMsg
-  | HostStatsServerMsg
-  | HubServerMsg
-  | { type: "testHost"; reqId: number; elapsedMs: number | null; error: string | null }
-  /** 本地会话进程树内存（字节）全量，旧 daemon 不发 */
-  | { type: "memory"; items: { id: number; bytes: number }[] }
-  | { type: "resetModes"; id: number };
-
-interface ShellOption {
-  name: string;
-  command: string;
-}
-
-interface Config {
-  shell: string;
-  /** Tether 管理的主机 + ~/.ssh/config 主机的覆盖项 */
-  hosts: Host[];
-  appearance: Appearance;
-  /** 弹系统通知时播放提示音 */
-  sound: boolean;
-  /** 用户自定义联想命令 */
-  completions: CompletionItem[];
-  /** 管理服务器设置（旧 daemon 无此字段） */
-  hub?: HubConfig;
-}
-
-interface CompletionItem {
-  text: string;
-  desc: string;
-}
-
-/** 外观：窗口透明度 */
-interface Appearance {
-  /** 窗口背景不透明度（%），30–100 */
-  opacity: number;
-}
-
-type ClientMsg =
-  | { type: "list" }
-  | { type: "create"; target: Target; cols: number; rows: number; command?: string; resume?: ClaudeResume }
-  | { type: "attach"; id: number; history?: boolean }
-  | { type: "close"; id: number }
-  | { type: "input"; id: number; data: string }
-  | { type: "resize"; id: number; cols: number; rows: number }
-  | { type: "rename"; id: number; name: string }
-  | { type: "focus"; activeId: number | null; windowFocused: boolean }
-  | { type: "getConfig" }
-  | { type: "setConfig"; config: Config }
-  | { type: "setHostPassword"; hostId: string; password: string | null }
-  | { type: "promptReply"; reqId: number; value: string | null; save: boolean }
-  | { type: "removeRecent"; target: Target }
-  | { type: "openUrl"; url: string }
-  | { type: "getClaudeHooks" }
-  | { type: "setClaudeHooks"; enabled: boolean }
-  | { type: "playSound" }
-  /** 界面语言（解析后的代码），daemon 据此生成通知与提示文字；旧 daemon 忽略 */
-  | { type: "setLocale"; locale: string }
-  | FsClientMsg
-  | HostStatsClientMsg
-  | HubClientMsg
-  | { type: "testHost"; reqId: number; host: Host; password: string | null; useSaved: boolean };
-
-/** 每个会话一个 xterm，切换时只隐藏不销毁 */
-interface View {
-  info: SessionInfo;
-  term: Terminal;
-  fit: FitAddon;
-  box: HTMLDivElement;
-  item: HTMLLIElement;
-  nameEl: HTMLSpanElement;
-  hostEl: HTMLSpanElement;
-  cwdEl: HTMLSpanElement;
-  claudeEl: HTMLSpanElement;
-  takenEl: HTMLSpanElement;
-  /** 内存占用（仅本地会话，收到 memory 推送后显示） */
-  memEl: HTMLSpanElement;
-  /** 经历过 hub 接管、尚未刷新（接管期间按网页尺寸写入的内容错乱） */
-  stale: boolean;
-  /** 用户回车后等待新提示符出现，据此判断终端是否变为 root（远程会话） */
-  promptCheck: boolean;
-  promptTimer?: number;
-  /** 终端提示符当前为 root */
-  rootSeen: boolean;
-  /** 当前加载的 WebGL 渲染（仅显示中的会话加载：WebGL 上下文数量有限） */
-  webgl?: WebglAddon;
-  /** WebGL 加载失败或上下文丢失：本会话不再尝试，保持 DOM 渲染 */
-  gpuFailed?: boolean;
-}
-
-const views = new Map<number, View>();
-/** 已请求刷新、等待快照的会话：快照到达时先清空终端 */
-const refreshing = new Set<number>();
-/** 本机 Windows build 号（读取失败为 null），本地会话的 xterm 据此设置 windowsPty */
-const windowsBuild = invoke<number | null>("windows_build");
-let activeId: number | undefined;
 /** 独立窗口模式（URL ?detached=<id>）：只显示这一个会话，不连接 daemon（共用主窗口建立的连接），不处理配置 / 提示等 */
 const detachedId = (() => {
   const v = new URLSearchParams(location.search).get("detached");
   return v === null ? undefined : Number(v);
 })();
-/** 主窗口：已拖出为独立窗口的会话，不在列表中显示；独立窗口关闭后移出 */
-const detached = new Set<number>();
 /** 独立窗口：当前窗口标题（会话名），改名时同步 */
 let shownTitle = "";
-// 收到 activate / --session 时会话可能还未出现在列表中，先记下
-let pendingActivate: number | undefined;
-/** daemon 返回的合并主机列表（~/.ssh/config 主机已应用覆盖项），用于新建菜单 */
-let hosts: Host[] = [];
-/** 是否已收到过 config：之前 hosts 为空，不据此把远程记录判为“主机已删除” */
-let hostsLoaded = false;
-let recent: RecentItem[] = [];
-/** 收到首个会话列表前不显示空状态，避免有会话时启动闪一下 */
-let sessionsLoaded = false;
-/** ~/.ssh/config 原始解析结果，设置面板中无覆盖项时显示 */
-let sshHosts: Host[] = [];
-/** 设置面板中编辑中的 Config.hosts（Tether 管理主机 + ssh config 覆盖项），点保存时随配置提交 */
-let draftHosts: Host[] = [];
-/** 正在编辑的主机，undefined 为新增 */
-let editingHost: Host | undefined;
-/** 凭据管理器中有已保存密码的主机 id（daemon 下发，不含密码） */
-let savedPasswords = new Set<string>();
-/** 设置面板中待提交的密码改动：主机 id → 新密码 / null（清除）；点设置“保存”时在 setConfig 之后逐条发送，取消则丢弃 */
-const pendingPasswords = new Map<string, string | null>();
-/** 主机对话框中点了“清除已保存密码” */
-let clearPassword = false;
-/** 主机对话框中进行中的连接测试：left 为剩余等待时间（毫秒），等待用户确认指纹 / 输入口令期间不扣减 */
-let hostTest: { reqId: number; left: number; timer: number } | undefined;
-/** 与文件树一样错开 reqId 起点 */
-let hostTestSeq = Math.floor(Math.random() * 2 ** 40);
-/** 等待测试结果的最长时间（daemon 测试限时 10 秒）；超时视为不认识该消息的旧版 daemon */
-const HOST_TEST_TIMEOUT = 15000;
-/** 已保存的外观（daemon 下发）；设置面板中的改动先实时预览，取消时回到它 */
-let savedAppearance: Appearance = { opacity: 100 };
-/** 设置面板中编辑中的外观 */
-let draftAppearance: Appearance = { ...savedAppearance };
-/** 设置面板中编辑中的自定义联想命令 */
-let draftCompletions: CompletionItem[] = [];
-/** 配置中的默认 shell（Config.shell），会话命令无法识别 shell 类型时据此判断 */
-let defaultShell = "auto";
-const promptQueue: PromptMsg[] = [];
-let currentPrompt: PromptMsg | undefined;
-/** 当前生效（含预览中）的背景不透明度，0.3–1 */
-let shownAlpha = 1;
-/** daemon 探测到 PowerShell 7（shells 中有该项）；收到 config 前视为已安装，不显示提示 */
-let pwshDetected = true;
-const PWSH_NOTICE_KEY = "tether.pwshNotice.dismissed";
-const PWSH_INSTALL_CMD = "winget install --id Microsoft.PowerShell -e --source winget";
-/** 卡片标题行中本地 shell 的显示名（按程序文件名，不含 .exe） */
-const SHELL_NAMES: Record<string, string> = {
-  pwsh: "PowerShell 7",
-  powershell: "Windows PowerShell",
-  bash: "Git Bash",
-  wsl: "WSL",
-};
-/** 双击选词的分隔符：空白、引号、括号、逗号及常见 shell 符号；不含 \ / : . 等，Windows 路径与 URL 可整体选中 */
-const WORD_SEPARATOR = " ()[]{}<>'\"`,;|，。；（）【】「」《》";
-let copiedTimer: number | undefined;
-/** Claude Code 的 settings.json 路径（daemon 解析），用于确认提示 */
-let claudeSettingsPath = "";
-const claudeLabel = (state: ClaudeState["state"]) => (state === "idle" ? "Claude" : t(`claude.${state}`));
-/** 最近一次收到的 Claude Code 集成状态，切换语言时据此重绘 */
-let claudeHooks: { enabled: boolean; outdated: boolean } | undefined;
-
-const list = document.getElementById("session-list") as HTMLUListElement;
-const terminals = document.getElementById("terminals") as HTMLElement;
-const settings = document.getElementById("settings") as HTMLDialogElement;
-const shellSelect = document.getElementById("shell-select") as HTMLSelectElement;
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const newMenu = $<HTMLDivElement>("new-menu");
-const hostList = $<HTMLUListElement>("host-list");
-const hostDialog = $<HTMLDialogElement>("host-dialog");
-const promptDialog = $<HTMLDialogElement>("prompt-dialog");
-const emptyPanel = $<HTMLDivElement>("empty");
-const recentList = $<HTMLUListElement>("recent-list");
-const opacityRange = $<HTMLInputElement>("opacity-range");
-const soundCheck = $<HTMLInputElement>("sound-check");
-const completionList = $<HTMLUListElement>("completion-list");
 
 const send = (msg: ClientMsg) => invoke("send", { msg });
-const decode = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
-// 新建菜单：本地 + 每台主机一项
-document.getElementById("new-btn")!.addEventListener("click", (ev) => {
-  ev.stopPropagation();
-  if (!newMenu.hidden) {
-    newMenu.hidden = true;
-    return;
-  }
-  const item = (ico: "folder-open" | "server" | "history", text: string, sub: string, action: () => void) => {
-    const b = document.createElement("button");
-    b.innerHTML = `<span class="mi-ico">${icon(ico)}</span><span class="mi-text"></span>`;
-    const t = b.querySelector(".mi-text")!;
-    t.append(text);
-    if (sub) t.appendChild(document.createElement("small")).textContent = sub;
-    b.addEventListener("click", () => {
-      newMenu.hidden = true;
-      action();
-    });
-    return b;
-  };
-  newMenu.replaceChildren(
-    item("folder-open", t("newMenu.local"), t("newMenu.localSub"), createSession),
-    ...hosts.map((h) => item("server", h.name, `${h.user}@${h.host}`, () => createRemote(h))),
-    // 当前为本地会话时列出其启动目录的对话，否则先选目录
-    item("history", t("newMenu.resume"), t("newMenu.resumeSub"), () => {
-      const s = activeView()?.info;
-      openClaudeHistory(s && !s.host ? s.cwd : undefined);
-    }),
-  );
-  newMenu.hidden = false;
-});
-document.addEventListener("click", () => (newMenu.hidden = true));
-
-// 主题：设置面板选“风格”，侧栏按钮在同一风格内切换亮色 / 暗色；切换立即生效并记在本机（不随设置“取消”回退）
-const themeSelect = $<HTMLSelectElement>("theme-select");
-const fillThemes = () => themeSelect.replaceChildren(...getStyles().map((s) => new Option(t(`theme.${s.id}` as MessageKey), s.id)));
-fillThemes();
-const syncThemeUi = () => {
-  const th = currentTheme();
-  themeSelect.value = th.style;
-  // 图标表示当前模式，提示表示点击后的模式
-  $("theme-btn").innerHTML = icon(th.dark ? "moon" : "sun");
-  $("theme-btn").title = th.dark ? t("theme.toLight") : t("theme.toDark");
-};
-themeSelect.addEventListener("change", () => {
-  setStyle(themeSelect.value);
-  syncThemeUi();
-});
-$("theme-btn").addEventListener("click", () => {
-  toggleDark();
-  syncThemeUi();
-});
-syncThemeUi();
-
-// 界面语言：立即生效并记在本机（不随设置“取消”回退），其它窗口经 storage 事件同步（见 i18n.ts）
-const localeSelect = $<HTMLSelectElement>("locale-select");
-function fillLocales() {
-  localeSelect.replaceChildren(new Option(t("settings.language.auto"), "auto"), ...LOCALES.map((l) => new Option(LOCALE_NAMES[l], l)));
-  localeSelect.value = localePref();
-}
-localeSelect.addEventListener("change", () => setLocalePref(localeSelect.value as LocalePref));
-fillLocales();
-applyDom();
-renderClaudeHooks();
-renderHostTestBtn();
-// 动态生成的文字：重新渲染；主窗口同时告知 daemon（通知等文字随之切换）
+// 静态文字随语言刷新（先于各组件的重绘）；主窗口同时告知 daemon（通知等文字随之切换）
 onLocaleChange(() => {
   applyDom();
-  fillLocales();
-  fillThemes();
-  syncThemeUi();
-  fillFontOptions();
-  renderClaudeHooks();
-  renderHostTestBtn();
-  renderPromptText();
-  renderHosts();
-  renderCompletions();
-  renderPasswordRow();
-  for (const v of views.values()) renderClaude(v.claudeEl, v.info.claude);
-  renderEmpty();
-  renderCardHead();
   sendLocale();
 });
+
+// ---------------- 装配：store、编排、组件、布局 ----------------
+const store = createStore<AppState>({
+  sessions: [],
+  sessionsLoaded: false,
+  activeId: undefined,
+  unread: new Set(),
+  memory: new Map(),
+  roots: new Map(),
+  changes: new Map(),
+  hosts: [],
+  hostsLoaded: false,
+  recent: [],
+  defaultShell: "auto",
+  pwshDetected: true,
+  disconnected: false,
+  changesOpen: false,
+  changesWs: null,
+  ...readPrefs(),
+});
+const app = createApp(store, send);
+const gitSource = createGitSource(send);
+createChangesRefresher(store, gitSource);
+const ctx: Ctx = { store, send, actions: app.actions, keymap };
+const terminal = createTerminalArea(ctx);
+const cardHead = createCardHead(ctx);
+const preview = createPreview(ctx);
+const history = createHistoryPanel(ctx);
+const hostInfo = createHostInfo(ctx);
+const files = createFiles(ctx);
+const settings = createSettings(ctx);
+const changes = createChangesPanel(ctx, gitSource);
+Object.assign(app.parts, { terminal, cardHead, preview, history, hostInfo, files, settings });
+const layout: LayoutName = detachedId === undefined ? "main" : "detached";
+document.body.dataset.layout = layout;
+applyLayout(
+  PRESETS[layout],
+  { titleBar: createTitleBar(), brand: createBrand(ctx), sessions: createSessionList(ctx), sidebarFoot: createSidebarFoot(ctx), cardHead, terminal, preview, history, hostInfo, files, settings, changes },
+  pageSlots(),
+);
+// overlay 中的静态对话框（恢复 Claude 对话、更新、交互提示）
+applyDom();
+
+initClaudeHistory({
+  openedIn: (cid) => store.get().sessions.find((s) => s.claudeSession === cid && s.status !== "exited")?.id,
+  activate: app.actions.activate,
+  resume: (cwd, r) => app.actions.createAt({ kind: "local", cwd }, undefined, r),
+  relativeTime,
+  filesDir: files.dir,
+});
+initPrompt(send, () => app.actions.focusTerminal());
+
+init();
 
 /** 主窗口把当前语言告知 daemon（连接后收到 Hello 时与语言变化时）；独立窗口共用主窗口的连接，不发 */
 function sendLocale() {
   if (detachedId === undefined) send({ type: "setLocale", locale: locale() });
-}
-
-/** 设置面板中 Claude Code 集成的状态文字与启用按钮 */
-function renderClaudeHooks() {
-  const m = claudeHooks;
-  const status = $("cc-status");
-  // 旧版只写了部分事件：提示更新，“启用”按钮改为“更新”（重新启用即补齐）
-  status.textContent = m?.outdated ? t("settings.cc.outdated") : m?.enabled ? t("settings.cc.enabled") : t("settings.cc.disabled");
-  status.classList.toggle("on", !!m && m.enabled && !m.outdated);
-  status.classList.toggle("outdated", !!m?.outdated);
-  $("cc-enable").textContent = m?.outdated ? t("settings.cc.update") : t("settings.cc.enable");
-}
-
-// 字号：界面整体偏移（styles.css 的 --font-adj）与终端字号（固定值，或无存储值时按分辨率“自动”），立即生效并记在本机；
-// 其它窗口（拖出的独立窗口）修改时经 storage 事件同步
-const FONT_ADJ_KEY = "tether.ui.fontAdj";
-const TERM_FONT_KEY = "tether.term.fontSize";
-const autoTermFont = terminalFontSize(screen.width, devicePixelRatio);
-const fontAdjSelect = $<HTMLSelectElement>("font-adj-select");
-const termFontSelect = $<HTMLSelectElement>("term-font-select");
-/** 字号下拉的选项文字随语言变化，重填后恢复选中值 */
-function fillFontOptions() {
-  const [adj, term] = [fontAdjSelect.value, termFontSelect.value];
-  fontAdjSelect.replaceChildren(...FONT_ADJ_OPTIONS.map((n) => new Option(fontAdjLabel(n), String(n))));
-  termFontSelect.replaceChildren(
-    new Option(t("settings.termFont.auto", { n: autoTermFont }), ""),
-    ...Array.from({ length: TERM_FONT_MAX - TERM_FONT_MIN + 1 }, (_, i) => new Option(String(TERM_FONT_MIN + i), String(TERM_FONT_MIN + i))),
-  );
-  [fontAdjSelect.value, termFontSelect.value] = [adj, term];
-}
-fillFontOptions();
-/** 用户指定的终端字号；null 为自动 */
-let termFont: number | null = null;
-const readStore = (key: string) => {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-};
-const writeStore = (key: string, value: string | null) => {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {}
-};
-const currentTermFont = () => termFont ?? autoTermFont;
-function loadFontAdj() {
-  const adj = parseFontAdj(readStore(FONT_ADJ_KEY));
-  document.documentElement.style.setProperty("--font-adj", `${adj}px`);
-  fontAdjSelect.value = String(adj);
-}
-/** 读存储的终端字号并应用到全部终端；当前会话立即 fit（行列变化由 term.onResize 同步给 daemon），其余会话在 activate 时 fit */
-function loadTermFont() {
-  termFont = parseTermFont(readStore(TERM_FONT_KEY));
-  termFontSelect.value = termFont === null ? "" : String(termFont);
-  for (const v of views.values()) v.term.options.fontSize = currentTermFont();
-  if (shouldFit(terminals.clientWidth, terminals.clientHeight)) activeView()?.fit.fit();
-}
-fontAdjSelect.addEventListener("change", () => {
-  writeStore(FONT_ADJ_KEY, fontAdjSelect.value);
-  loadFontAdj();
-});
-termFontSelect.addEventListener("change", () => {
-  writeStore(TERM_FONT_KEY, termFontSelect.value || null);
-  loadTermFont();
-});
-window.addEventListener("storage", (ev) => {
-  if (ev.key === FONT_ADJ_KEY) loadFontAdj();
-  if (ev.key === TERM_FONT_KEY) loadTermFont();
-});
-loadFontAdj();
-loadTermFont();
-
-// GPU 加速渲染：WebGL 上下文数量有限（约 16 个），只给最近显示过的 GPU_KEEP 个终端加载（新建上下文与字形纹理较慢，
-// 切走时不释放，来回切换不卡），更早的释放；立即生效并记在本机，其它窗口经 storage 事件同步
-const GPU_KEY = "tether.term.gpu";
-const gpuCheck = $<HTMLInputElement>("gpu-check");
-let gpuOn = true;
-const GPU_KEEP = 8;
-/** 最近显示过的会话 id，新的在后 */
-let gpuRecent: number[] = [];
-function loadGpu() {
-  gpuOn = parseGpu(readStore(GPU_KEY));
-  gpuCheck.checked = gpuOn;
-  syncGpu();
-}
-/** 按开关与当前会话加载 / 释放各终端的 WebGL；渲染器切换后单元格尺寸可能变化，当前会话重新 fit */
-function syncGpu() {
-  let changed = false;
-  if (activeId !== undefined) gpuRecent = touchRecent(gpuRecent, activeId, GPU_KEEP);
-  for (const v of views.values()) {
-    const want = gpuOn && gpuRecent.includes(v.info.id) && !v.gpuFailed;
-    if (want && !v.webgl) {
-      const addon = new WebglAddon();
-      try {
-        v.term.loadAddon(addon);
-      } catch (e) {
-        console.warn("WebGL renderer unavailable, falling back to DOM", e);
-        addon.dispose();
-        v.gpuFailed = true;
-        continue;
-      }
-      // 上下文丢失（显卡驱动重置等）：退回 DOM 渲染，本会话不再尝试
-      addon.onContextLoss(() => {
-        console.warn("WebGL context lost, falling back to DOM");
-        v.gpuFailed = true;
-        syncGpu();
-      });
-      v.webgl = addon;
-      changed = true;
-    } else if (!want && v.webgl) {
-      v.webgl.dispose();
-      v.webgl = undefined;
-      changed = true;
-    }
-  }
-  if (changed && shouldFit(terminals.clientWidth, terminals.clientHeight)) activeView()?.fit.fit();
-}
-gpuCheck.addEventListener("change", () => {
-  writeStore(GPU_KEY, gpuCheck.checked ? "1" : "0");
-  loadGpu();
-});
-window.addEventListener("storage", (ev) => {
-  if (ev.key === GPU_KEY) loadGpu();
-});
-loadGpu();
-
-// 鼠标在终端上时 Ctrl+滚轮调终端字号（作用于全部终端并记住）。捕获阶段处理并阻止默认行为：
-// 不让 WebView2 缩放整个页面，也不让 xterm 当作滚动 / 发给程序。触控板捏合同样产生 ctrlKey 的 wheel，按累计量节流
-let wheelAcc = 0;
-terminals.addEventListener(
-  "wheel",
-  (ev) => {
-    if (!ev.ctrlKey || !(ev.target as Element).closest(".term")) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    const r = wheelSteps(wheelAcc, ev.deltaY, ev.deltaMode);
-    wheelAcc = r.acc;
-    if (!r.steps) return;
-    const size = clampTermFont(currentTermFont() + r.steps);
-    if (size !== currentTermFont()) {
-      writeStore(TERM_FONT_KEY, String(size));
-      loadTermFont();
-    }
-    showHint(t("hint.fontSize", { n: size }));
-  },
-  { passive: false, capture: true },
-);
-
-// 设置对话框：打开时向 daemon 取最新配置，收到 config 消息时回填
-document.getElementById("settings-btn")!.addEventListener("click", () => {
-  send({ type: "getConfig" });
-  send({ type: "getClaudeHooks" });
-  // Esc 关闭不会改 returnValue，清掉上次的值以免误保存
-  settings.returnValue = "";
-  settings.showModal();
-});
-settings.addEventListener("close", () => {
-  const shell = shellSelect.value;
-  const save = settings.returnValue === "save" && !!shell;
-  if (save) {
-    send({ type: "setConfig", config: { shell, hosts: draftHosts, appearance: draftAppearance, sound: soundCheck.checked, completions: draftCompletions.filter((c) => c.text.trim()), hub: draftHub() } });
-    // daemon 按顺序处理：先保存配置（账户变化时迁移已保存密码），再按主机 id 写入 / 清除密码
-    for (const [hostId, password] of pendingPasswords) send({ type: "setHostPassword", hostId, password });
-  } else applyAppearance(savedAppearance);
-  // hub token 改动同样在 setConfig 之后提交
-  closeHub(save);
-  pendingPasswords.clear();
-  activeView()?.term.focus();
-});
-
-// 外观：拖动滑块只改草稿并实时预览，点保存才持久化
-opacityRange.addEventListener("input", () => {
-  draftAppearance.opacity = Number(opacityRange.value);
-  previewAppearance();
-});
-
-// 试听：不受提示音开关影响
-$("sound-test").addEventListener("click", () => send({ type: "playSound" }));
-
-// PowerShell 7 安装提示：安装 = 新建本地会话运行 winget（用户可见进度、可响应 UAC / 协议确认）
-$("pwsh-install").addEventListener("click", () => createAt({ kind: "local", cwd: "" }, PWSH_INSTALL_CMD));
-$("pwsh-dismiss").addEventListener("click", () => {
-  try {
-    localStorage.setItem(PWSH_NOTICE_KEY, "1");
-  } catch {}
-  renderPwshNotice();
-});
-
-// hub 接管提示条：收回当前会话的接管（daemon 通知 hub 后推送 sessions，提示条随之隐藏）
-$("hub-reclaim").addEventListener("click", () => {
-  if (activeId !== undefined) send({ type: "hubReclaim", id: activeId });
-});
-
-// Claude Code 集成：由 daemon 修改 settings.json（写前备份），写入前确认
-for (const enabled of [true, false]) {
-  $(enabled ? "cc-enable" : "cc-remove").addEventListener("click", async () => {
-    const msg = t(enabled ? "settings.cc.confirmEnable" : "settings.cc.confirmRemove", { path: claudeSettingsPath });
-    if ((await ask(msg, t(enabled ? "settings.cc.enable" : "settings.cc.remove"))) === null) return;
-    send({ type: "setClaudeHooks", enabled });
-  });
-}
-
-$("host-add").addEventListener("click", () => editHost(undefined));
-$("completion-add").addEventListener("click", () => {
-  draftCompletions.push({ text: "", desc: "" });
-  renderCompletions();
-  completionList.querySelector<HTMLInputElement>("li:last-child input")?.focus();
-});
-$("h-auth").addEventListener("change", renderPasswordRow);
-$("h-pw-clear").addEventListener("click", () => {
-  clearPassword = true;
-  $<HTMLInputElement>("h-password").value = "";
-  renderPasswordRow();
-});
-$("h-password").addEventListener("input", renderPasswordRow);
-$("h-test").addEventListener("click", testHost);
-hostDialog.addEventListener("close", () => {
-  endHostTest();
-  const pwInput = $<HTMLInputElement>("h-password");
-  const password = $<HTMLSelectElement>("h-auth").value === "password" ? pwInput.value : "";
-  // 密码不留在 DOM 中
-  pwInput.value = "";
-  if (hostDialog.returnValue !== "save") return;
-  const h = hostFromDialog();
-  const i = draftHosts.findIndex((d) => d.id === h.id);
-  if (i >= 0) draftHosts[i] = h;
-  else draftHosts.push(h);
-  // 留空不修改已保存的密码；点过清除且未输入新密码则清除
-  if (password) pendingPasswords.set(h.id, password);
-  else if (clearPassword) pendingPasswords.set(h.id, null);
-  renderHosts();
-});
-
-promptDialog.addEventListener("close", () => {
-  const p = currentPrompt!;
-  const ok = promptDialog.returnValue === "ok";
-  const input = $<HTMLInputElement>("p-input");
-  const value = p.kind === "hostKey" ? "yes" : input.value;
-  const save = ok && p.kind === "password" && $<HTMLInputElement>("p-save").checked;
-  send({ type: "promptReply", reqId: p.reqId, value: ok ? value : null, save });
-  input.value = "";
-  currentPrompt = undefined;
-  if (promptQueue.length) showPrompt();
-  else activeView()?.term.focus();
-});
-
-initFiles({
-  send,
-  active: () => activeView()?.info,
-  newSession: createAt,
-  paste: (text) => {
-    const t = activeView()?.term;
-    t?.paste(text);
-    t?.focus();
-  },
-  dropElsewhere: dropOnTerminal,
-});
-initClaudeHistory({
-  openedIn: (cid) => [...views.values()].find((v) => v.info.claudeSession === cid && v.info.status !== "exited")?.info.id,
-  activate,
-  resume: (cwd, r) => createAt({ kind: "local", cwd }, undefined, r),
-  relativeTime,
-});
-initHostInfo({ send, active: () => activeView()?.info });
-initHub({ send });
-initPreview({
-  openUrl: (url) => send({ type: "openUrl", url }),
-  ask,
-  onClose: () => {
-    const v = activeView();
-    v?.fit.fit();
-    v?.term.focus();
-  },
-});
-
-initGitPanel({
-  dir: () => {
-    const s = activeView()?.info;
-    return s ? branchDir(s.host, s.cwd) : null;
-  },
-  onSwitched: refreshBranch,
-  copy: (text) => writeText(text).then(showCopied),
-  onClose: () => {
-    const v = activeView();
-    v?.fit.fit();
-    v?.term.focus();
-  },
-});
-
-$("empty-new").addEventListener("click", createSession);
-// 空状态显示期间每分钟刷新一次相对时间
-setInterval(() => !emptyPanel.hidden && renderEmpty(), 60_000);
-// 定时刷新当前会话的 git 分支，反映终端里的 git checkout（窗口隐藏时跳过）
-setInterval(() => !document.hidden && refreshBranch(), 4000);
-
-// 容器尺寸变化时重新 fit 当前会话（含文件树展开 / 收起导致的宽度变化）；fit 改变行列后由 term.onResize 同步给 daemon
-// 主机信息状态条显示 / 隐藏时终端卡片高度变化，同样需要 fit
-// 尾沿防抖：拖动窗口边缘 / 文件栏宽度期间不逐帧改 pty 尺寸，停下后只 fit 一次；容器过小（最小化等）时跳过，免得 pty 被缩成 2 列 1 行
-const fitObserver = new ResizeObserver(
-  debounce(() => {
-    if (shouldFit(terminals.clientWidth, terminals.clientHeight)) activeView()?.fit.fit();
-  }, 120),
-);
-fitObserver.observe(terminals);
-fitObserver.observe($("host-info"));
-
-// 激活会话 + 窗口焦点上报给 daemon，用于判定是否弹系统通知。daemon 只记一份焦点状态，多个窗口时：
-// 获得焦点立即上报并广播 gui-focus；失焦延迟上报，期间另一个本应用窗口获得焦点则取消，避免覆盖它的上报
-let blurTimer: number | undefined;
-window.addEventListener("focus", () => {
-  clearTimeout(blurTimer);
-  reportFocus();
-  emit("gui-focus");
-  refreshBranch();
-});
-window.addEventListener("blur", () => {
-  clearTimeout(blurTimer);
-  blurTimer = setTimeout(() => reportFocus(true), 100);
-});
-listen("gui-focus", () => {
-  if (!document.hasFocus()) clearTimeout(blurTimer);
-});
-if (detachedId !== undefined) document.body.classList.add("detached");
-initTitlebar();
-
-init();
-
-/** 自定义标题栏的窗口按钮；拖动与双击最大化由 data-tauri-drag-region 处理。最大化状态变化（含双击、Win+↑）时切换图标 */
-function initTitlebar() {
-  const win = getCurrentWindow();
-  const maxBtn = $("win-max");
-  $("win-min").innerHTML = icon("minus");
-  $("win-close").innerHTML = icon("x");
-  $("win-min").addEventListener("click", () => win.minimize());
-  maxBtn.addEventListener("click", () => win.toggleMaximize());
-  $("win-close").addEventListener("click", () => win.close());
-  const sync = async () => {
-    const max = await win.isMaximized();
-    maxBtn.innerHTML = icon(max ? "copy" : "square");
-    maxBtn.title = max ? t("titlebar.restore") : t("titlebar.maximize");
-  };
-  sync();
-  win.onResized(sync);
-  onLocaleChange(sync);
-}
-
-// 用 daemon 探测到的 shell 填充下拉框；当前配置不在列表中（手改过 config.json）时额外列出并选中，保证不丢失
-function fillShells(current: string, shells: ShellOption[]) {
-  const options = shells.map((s) => new Option(s.name, s.command));
-  if (current && !shells.some((s) => s.command === current)) options.push(new Option(current, current));
-  shellSelect.replaceChildren(...options);
-  shellSelect.value = current;
 }
 
 async function init() {
@@ -741,72 +122,48 @@ async function init() {
     if (detachedId !== undefined) return onDetachedMsg(m);
     switch (m.type) {
       case "sessions":
-        return syncSessions(m.sessions);
+        return app.syncSessions(m.sessions);
       case "snapshot":
       case "output":
-        return writeData(m);
+        return terminal.write(m);
       case "notify":
-        if (m.id !== activeId) views.get(m.id)?.item.classList.add("unread");
-        return;
+        return app.notify(m.id);
       case "activate":
-        return focusSession(m.id);
+        return app.focusSession(m.id);
       case "error":
         return alert(m.message);
       case "config":
-        fillShells(m.config.shell, m.shells);
-        pwshDetected = m.shells.some((s) => s.name === "PowerShell 7");
-        renderPwshNotice();
-        savedAppearance = m.config.appearance;
-        draftAppearance = { ...savedAppearance };
-        previewAppearance();
-        soundCheck.checked = m.config.sound;
-        defaultShell = m.config.shell;
+        settings.onConfig(m);
         setCustomCompletions(m.config.completions);
-        draftCompletions = m.config.completions.map((c) => ({ ...c }));
-        renderCompletions();
-        hosts = m.hosts;
-        sshHosts = m.sshHosts;
-        draftHosts = m.config.hosts.map((h) => ({ ...h }));
-        savedPasswords = new Set(m.passwordSaved);
-        fillHub(m.config.hub, m.hubTokenSaved);
-        hostsLoaded = true;
-        renderEmpty();
-        return renderHosts();
+        return store.set({ hosts: m.hosts, hostsLoaded: true, defaultShell: m.config.shell, pwshDetected: m.shells.some((s) => s.name === "PowerShell 7") });
       case "recent":
-        recent = m.items;
-        return renderEmpty();
+        return store.set({ recent: m.items });
       case "hello":
         sendLocale();
         return onHello(m.version, m.proto);
       case "claudeHooks":
-        claudeSettingsPath = m.path;
-        // 旧版只写了部分事件：提示更新，“启用”按钮改为“更新”（重新启用即补齐）
-        claudeHooks = { enabled: m.enabled, outdated: m.outdated };
-        renderClaudeHooks();
-        $("cc-path").textContent = m.path;
-        if (m.error) alert(m.error);
-        return;
+        return settings.onClaudeHooks(m);
       case "prompt":
-        promptQueue.push(m);
-        if (!currentPrompt) showPrompt();
-        return;
+        return pushPrompt(m);
       case "fsEntries":
       case "fsContent":
       case "fsSaved":
       case "fsResult":
       case "transfer":
-        return onFsMessage(m);
+        return files.onMessage(m);
       case "hostStats":
-        return onHostStats(m);
+        return hostInfo.onStats(m);
+      case "git":
+        return gitSource.onMessage(m);
       case "testHost":
-        return onTestHost(m.reqId, m.elapsedMs, m.error);
+        return settings.onTestHost(m.reqId, m.elapsedMs, m.error);
       case "hubStatus":
       case "testHub":
         return onHubMessage(m);
       case "memory":
-        return renderMemory(m.items);
+        return store.set({ memory: new Map(m.items.map((i) => [i.id, i.bytes])) });
       case "resetModes":
-        return resetModes(m.id);
+        return terminal.resetModes(m.id);
     }
   });
   // 独立窗口：daemon 断开后会话已不存在，直接关闭；连接由主窗口建立，这里只取状态
@@ -817,56 +174,14 @@ async function init() {
   await listen("daemon-closed", onDaemonClosed);
   try {
     beforeConnect();
-    pendingActivate = (await invoke<number | null>("connect")) ?? undefined;
+    app.setPendingActivate((await invoke<number | null>("connect")) ?? undefined);
   } catch (err) {
     alert(t("error.connectDaemon", { err: String(err) }));
     return;
   }
   afterConnect();
   requestState();
-  initUpdater(() => views.size + detached.size, syncBannerSpace);
-}
-
-/** 写入会话输出 / 快照；刷新中的会话收到快照时先清空终端，丢弃清空前已写入的内容 */
-function writeData(m: { type: "snapshot" | "output"; id: number; data: string }) {
-  const v = views.get(m.id);
-  const term = v?.term;
-  if (m.type === "snapshot" && refreshing.delete(m.id)) term?.reset();
-  term?.write(decode(m.data));
-  // 回车后输出停顿时检查光标行是否为新提示符
-  if (v?.promptCheck) {
-    clearTimeout(v.promptTimer);
-    v.promptTimer = setTimeout(() => checkPrompt(v), PROMPT_SETTLE);
-  }
-}
-
-/** 会话中的 Claude Code 异常退出：复位该终端的鼠标跟踪 / 备用缓冲等模式（只写给本地 xterm，不发给 pty） */
-function resetModes(id: number) {
-  const term = views.get(id)?.term;
-  term?.write(modeResetSeq(term.buffer.active.type));
-}
-
-/** 回车后输出停顿这么久（毫秒）才检查提示符 */
-const PROMPT_SETTLE = 300;
-
-/** 远程会话：光标行为 root 提示符（变为 root 时仅一次）且文件树未提权时，在文件栏提示同步提权；无法判断时等下一段输出 */
-function checkPrompt(v: View) {
-  if (views.get(v.info.id) !== v || v.info.host === null) return;
-  const b = v.term.buffer.active;
-  if (b.type !== "normal") return;
-  const kind = promptKind(b.getLine(b.baseY + b.cursorY)?.translateToString(false, 0, b.cursorX) ?? "");
-  if (kind === null) return;
-  v.promptCheck = false;
-  const r = nextRootSeen(v.rootSeen, kind);
-  v.rootSeen = r.seen;
-  if (r.hint && !v.info.fsRoot) suggestRoot(v.info.id);
-}
-
-/** hub 接管结束后刷新终端：重取带历史的快照（调用前已按本地尺寸 resize） */
-function refreshView(v: View) {
-  v.stale = false;
-  refreshing.add(v.info.id);
-  send({ type: "attach", id: v.info.id, history: true });
+  initUpdater(app.sessionCount, terminal.syncBannerSpace);
 }
 
 /** 独立窗口只处理自己会话的消息；交互提示、错误提示、设置面板等由主窗口处理 */
@@ -879,28 +194,29 @@ function onDetachedMsg(m: ServerMsg) {
         getCurrentWindow().close();
         return;
       }
-      if (s.name !== shownTitle) getCurrentWindow().setTitle((shownTitle = s.name));
-      return syncSessions([s]);
+      if (displayName(s) !== shownTitle) getCurrentWindow().setTitle((shownTitle = displayName(s)));
+      return app.syncSessions([s]);
     }
     case "snapshot":
     case "output":
-      return writeData(m);
+      return terminal.write(m);
     case "activate":
-      if (m.id === detachedId) focusSession(m.id);
+      if (m.id === detachedId) app.focusSession(m.id);
       return;
     case "resetModes":
-      return resetModes(m.id);
+      return terminal.resetModes(m.id);
     case "config":
-      defaultShell = m.config.shell;
+      store.set({ defaultShell: m.config.shell });
       setCustomCompletions(m.config.completions);
-      savedAppearance = m.config.appearance;
-      return applyAppearance(savedAppearance);
+      return settings.applySaved(m.config.appearance);
     case "fsEntries":
     case "fsContent":
     case "fsSaved":
     case "fsResult":
     case "transfer":
-      return onFsMessage(m);
+      return files.onMessage(m);
+    case "git":
+      return gitSource.onMessage(m);
   }
 }
 
@@ -908,7 +224,7 @@ function onDetachedMsg(m: ServerMsg) {
 function requestState() {
   send({ type: "list" });
   send({ type: "getConfig" });
-  reportFocus();
+  app.reportFocus();
 }
 
 /** 断开后的重连间隔（毫秒），用完后一直按最后一项重试；connect 本身会在管道不存在时拉起 tetherd 并等待约 5 秒 */
@@ -916,20 +232,12 @@ const RECONNECT_DELAYS = [1000, 2000, 5000];
 /** 每次断开加一；新连接刚建立又断开时，由新一轮处理负责提示条与重连 */
 let disconnects = 0;
 
-/** 与 daemon 的连接断开（崩溃 / 被结束）：清空全部会话视图（daemon 重启后会话已不存在，且 id 从头分配，旧视图不能复用），
+/** 与 daemon 的连接断开（崩溃 / 被结束）：清空全部会话（daemon 重启后会话已不存在，且 id 从头分配，旧视图不能复用），
  *  显示断开提示并按退避重连；重连后像启动时一样重新取列表与配置，界面以新 daemon 的状态为准 */
 async function onDaemonClosed() {
   const epoch = ++disconnects;
-  for (const id of [...views.keys()]) removeView(id);
-  sessionsLoaded = false;
-  pendingActivate = undefined;
-  promptQueue.length = 0;
-  if (promptDialog.open) promptDialog.close();
-  renderEmpty();
-  renderCardHead();
-  showFiles();
-  showHostInfo();
-  $("daemon-banner").hidden = false;
+  app.reset();
+  resetPrompts();
   for (let i = 0; ; i++) {
     await new Promise((r) => setTimeout(r, RECONNECT_DELAYS[Math.min(i, RECONNECT_DELAYS.length - 1)]));
     try {
@@ -941,772 +249,7 @@ async function onDaemonClosed() {
     }
   }
   if (epoch !== disconnects) return;
-  $("daemon-banner").hidden = true;
+  store.set({ disconnected: false });
   afterConnect();
   requestState();
-}
-
-/** 应用外观：设置背景不透明度 CSS 变量（对话框 / 菜单至少 88%），同步所有已存在终端的背景 */
-function applyAppearance(a: Appearance) {
-  const root = document.documentElement;
-  shownAlpha = Math.min(100, Math.max(30, a.opacity)) / 100;
-  root.style.setProperty("--alpha", String(shownAlpha));
-  root.style.setProperty("--alpha-strong", String(Math.max(shownAlpha, 0.88)));
-  setTransparent(shownAlpha < 1);
-}
-
-/** PowerShell 7 安装提示条与设置面板中的提示：未检测到且未点过“不再提示”时显示 */
-function renderPwshNotice() {
-  let dismissed = false;
-  try {
-    dismissed = localStorage.getItem(PWSH_NOTICE_KEY) === "1";
-  } catch {}
-  const banner = $("pwsh-banner");
-  const show = !pwshDetected && !dismissed;
-  $("pwsh-hint").hidden = pwshDetected;
-  if (banner.hidden === !show) return;
-  banner.hidden = !show;
-  syncBannerSpace();
-}
-
-/** 终端区顶部提示条（PowerShell 7 安装 / 后台旧版本 / hub 接管中）任一显示时内容下移 */
-function syncBannerSpace() {
-  terminals.classList.toggle("banner", !$("pwsh-banner").hidden || daemonBannerShown() || !$("hub-banner").hidden);
-  // .term 下移不改变 #terminals 尺寸，ResizeObserver 不会触发，手动 fit
-  activeView()?.fit.fit();
-}
-
-/** 应用草稿外观并回填设置面板控件 */
-function previewAppearance() {
-  const a = draftAppearance;
-  applyAppearance(a);
-  opacityRange.value = String(a.opacity);
-  $("opacity-val").textContent = `${a.opacity}%`;
-}
-
-/** 本地会话：先选目录再创建，取消则不创建 */
-async function createSession() {
-  const dir = await open({ directory: true });
-  if (typeof dir === "string") createAt({ kind: "local", cwd: dir });
-}
-
-/** 选主机后直接连接，进入远程 home 目录 */
-function createRemote(h: Host) {
-  createAt({ kind: "remote", hostId: h.id });
-}
-
-/** command 仅本地会话有效：代替配置的 shell 运行；resume 仅本地会话有效：shell 就绪后恢复该 Claude 对话 */
-function createAt(target: Target, command?: string, resume?: ClaudeResume) {
-  // 初始尺寸取当前终端，attach 时会按实际 fit 结果再 resize
-  const t = activeView()?.term;
-  send({ type: "create", target, cols: t?.cols ?? 80, rows: t?.rows ?? 24, command, resume });
-}
-
-/** 设置面板主机列表：Tether 管理的可编辑 / 删除；~/.ssh/config 的可编辑（存为覆盖项），有覆盖项时可恢复默认 */
-function renderHosts() {
-  const row = (h: Host) => {
-    const li = document.createElement("li");
-    const span = (cls: string, text: string) => {
-      const el = li.appendChild(document.createElement("span"));
-      el.className = cls;
-      el.textContent = text;
-    };
-    span("host-name", h.name);
-    span("host-addr", `${h.user}@${h.host}:${h.port}`);
-    const btn = (text: string, action: () => void, cls = "") => {
-      const b = li.appendChild(document.createElement("button"));
-      b.type = "button";
-      b.className = cls;
-      b.textContent = text;
-      b.addEventListener("click", action);
-    };
-    const remove = () => {
-      draftHosts = draftHosts.filter((d) => d.id !== h.id);
-      // 删除主机时 daemon 随配置删除其已保存密码；恢复默认时账户变了则迁移，未提交的密码改动一并丢弃
-      pendingPasswords.delete(h.id);
-      renderHosts();
-    };
-    if (h.source === "sshConfig") span("tag", "ssh config");
-    btn(t("common.edit"), () => editHost(h));
-    if (h.source !== "sshConfig") btn(t("common.delete"), remove, "danger");
-    else if (draftHosts.some((d) => d.id === h.id)) btn(t("settings.hostReset"), remove);
-    return li;
-  };
-  const own = draftHosts.filter((h) => h.source !== "sshConfig");
-  const ssh = sshHosts.map((s) => draftHosts.find((d) => d.id === s.id) ?? s);
-  hostList.replaceChildren(...own.map(row), ...ssh.map(row));
-}
-
-/** 设置面板：自定义联想命令行（命令 + 说明 + 删除），编辑直接写入草稿 */
-function renderCompletions() {
-  completionList.replaceChildren(
-    ...draftCompletions.map((c) => {
-      const li = document.createElement("li");
-      const field = (key: keyof CompletionItem, placeholder: string) => {
-        const el = li.appendChild(document.createElement("input"));
-        el.placeholder = placeholder;
-        el.value = c[key];
-        el.addEventListener("input", () => (c[key] = el.value));
-      };
-      field("text", t("settings.completionCommand"));
-      field("desc", t("settings.completionDesc"));
-      const b = li.appendChild(document.createElement("button"));
-      b.type = "button";
-      b.className = "danger";
-      b.textContent = t("common.delete");
-      b.addEventListener("click", () => {
-        draftCompletions = draftCompletions.filter((d) => d !== c);
-        renderCompletions();
-      });
-      return li;
-    }),
-  );
-}
-
-function editHost(h: Host | undefined) {
-  editingHost = h;
-  const set = (id: string, v: string) => ($<HTMLInputElement>(id).value = v);
-  set("h-name", h?.name ?? "");
-  set("h-host", h?.host ?? "");
-  set("h-port", String(h?.port ?? 22));
-  set("h-user", h?.user ?? "root");
-  set("h-auth", h?.auth ?? "key");
-  set("h-key", h?.keyPath ?? "");
-  set("h-password", "");
-  clearPassword = false;
-  renderPasswordRow();
-  $("h-test-result").hidden = true;
-  hostDialog.returnValue = "";
-  hostDialog.showModal();
-}
-
-/** 主机对话框当前填写的主机配置；ssh config 主机保存为同 id 的覆盖项（source 仍为 sshConfig），不写回 ~/.ssh/config */
-function hostFromDialog(): Host {
-  const val = (id: string) => $<HTMLInputElement>(id).value.trim();
-  const old = editingHost;
-  return {
-    id: old?.id ?? `h${Date.now().toString(36)}`,
-    name: val("h-name"),
-    host: val("h-host"),
-    port: Number(val("h-port")) || 22,
-    user: val("h-user"),
-    auth: $<HTMLSelectElement>("h-auth").value as Host["auth"],
-    keyPath: val("h-key") || undefined,
-    source: old?.source,
-  };
-}
-
-/** 测试连接：用对话框当前填写的值（不必先保存）。密码与保存时的规则一致：本次填写的 > 点过清除则没有 >
- *  设置面板中未提交的改动 > 凭据管理器中已保存的（由 daemon 按保存时的迁移规则查找） */
-function testHost() {
-  if (!["h-host", "h-port", "h-user"].every((id) => $<HTMLInputElement>(id).reportValidity())) return;
-  const typed = $<HTMLSelectElement>("h-auth").value === "password" ? $<HTMLInputElement>("h-password").value : "";
-  const pending = editingHost ? pendingPasswords.get(editingHost.id) : undefined;
-  const password = typed || (clearPassword ? null : (pending ?? null));
-  const useSaved = !typed && !clearPassword && pending === undefined;
-  endHostTest();
-  const reqId = ++hostTestSeq;
-  const timer = window.setInterval(() => {
-    if (!hostTest) return;
-    if (!promptDialog.open && !promptQueue.length) hostTest.left -= 500;
-    if (hostTest.left <= 0) {
-      endHostTest();
-      showTestResult(false, t("error.daemonNoReply"));
-    }
-  }, 500);
-  hostTest = { reqId, left: HOST_TEST_TIMEOUT, timer };
-  $<HTMLButtonElement>("h-test").disabled = true;
-  renderHostTestBtn();
-  $("h-test-result").hidden = true;
-  send({ type: "testHost", reqId, host: hostFromDialog(), password, useSaved });
-}
-
-function onTestHost(reqId: number, elapsedMs: number | null, error: string | null) {
-  if (reqId !== hostTest?.reqId) return;
-  endHostTest();
-  if (error) showTestResult(false, error);
-  else showTestResult(true, t("host.testOk", { ms: elapsedMs ?? 0 }));
-}
-
-/** 结束等待中的测试（收到结果 / 超时 / 关闭对话框），按钮恢复 */
-function endHostTest() {
-  if (hostTest) clearInterval(hostTest.timer);
-  hostTest = undefined;
-  $<HTMLButtonElement>("h-test").disabled = false;
-  renderHostTestBtn();
-}
-
-function renderHostTestBtn() {
-  $("h-test").textContent = hostTest ? t("common.testing") : t("common.testConnection");
-}
-
-function showTestResult(ok: boolean, text: string) {
-  const el = $("h-test-result");
-  el.textContent = text;
-  el.className = ok ? "ok" : "fail";
-  el.hidden = false;
-}
-
-/** 主机对话框的密码区：认证方式为密码时可输入；有已保存密码（含待提交的改动）时显示状态与清除按钮 */
-function renderPasswordRow() {
-  const id = editingHost?.id;
-  const pending = id === undefined ? undefined : pendingPasswords.get(id);
-  const typed = $<HTMLInputElement>("h-password").value !== "";
-  // 本次对话框内的操作优先，其次是设置面板中未提交的改动，最后是 daemon 下发的状态
-  const saved = typed || (!clearPassword && (pending !== undefined ? pending !== null : !!id && savedPasswords.has(id)));
-  const isPassword = $<HTMLSelectElement>("h-auth").value === "password";
-  const changed = typed || clearPassword || pending !== undefined;
-  $("h-pw-row").hidden = !isPassword && !saved && !changed;
-  $("h-pw-label").hidden = !isPassword;
-  const status = $("h-pw-status");
-  status.textContent = (saved ? t("host.passwordSaved") : t("host.passwordNotSaved")) + (changed ? t("settings.pendingSave") : "");
-  status.classList.toggle("on", saved);
-  $("h-pw-clear").hidden = !saved;
-}
-
-/** 显示队首的交互提示：密码（可保存）/ 私钥口令 / 主机指纹确认 / sudo 密码 */
-function showPrompt() {
-  const p = (currentPrompt = promptQueue.shift()!);
-  renderPromptText();
-  $("p-host").textContent = p.host;
-  $("p-message").textContent = p.message;
-  $("p-fingerprint").textContent = p.fingerprint ?? "";
-  $("p-fingerprint").hidden = p.kind !== "hostKey";
-  $("p-input").hidden = p.kind === "hostKey";
-  $("p-save-row").hidden = p.kind !== "password";
-  $<HTMLInputElement>("p-save").checked = false;
-  promptDialog.returnValue = "";
-  promptDialog.showModal();
-  if (p.kind !== "hostKey") $("p-input").focus();
-}
-
-/** 交互提示的标题与确定按钮（message 由 daemon 按其语言生成） */
-function renderPromptText() {
-  const p = currentPrompt;
-  if (!p) return;
-  $("p-title").textContent = t(`prompt.${p.kind}`);
-  $("p-ok").textContent = p.kind === "hostKey" ? t("prompt.trust") : t("common.ok");
-}
-
-/** 以 daemon 推送的列表为准：增删视图、更新名称与状态 */
-function syncSessions(sessions: SessionInfo[]) {
-  sessions = sessions.filter((i) => !detached.has(i.id));
-  const ids = new Set(sessions.map((i) => i.id));
-  for (const id of [...views.keys()]) if (!ids.has(id)) removeView(id);
-  for (const info of sessions) {
-    const v = views.get(info.id) ?? addView(info);
-    // winget 安装会话结束后重新探测 shell，装好了提示条随之消失（设置面板打开时不刷，以免覆盖草稿）
-    if (info.command === PWSH_INSTALL_CMD && info.status === "exited" && v.info.status !== "exited" && !settings.open) {
-      send({ type: "getConfig" });
-    }
-    // hub 接管结束（网页 detach / 本地收回 / 连接断开）时 pty 还停在网页尺寸，补发一次本地尺寸
-    if (wasReleased(v.info.takenOver, info.takenOver)) send({ type: "resize", id: info.id, cols: v.term.cols, rows: v.term.rows });
-    // 接管期间终端按网页宽度写入：正显示的会话接管结束即刷新，其余切换过去时再刷新
-    v.stale = takeoverStale(v.stale, info.takenOver);
-    if (info.id === activeId && needsRefresh(v.stale, info.takenOver)) refreshView(v);
-    v.info = info;
-    if (!v.nameEl.querySelector("input")) v.nameEl.textContent = info.name;
-    v.hostEl.textContent = info.host ?? "";
-    v.hostEl.hidden = !info.host;
-    v.cwdEl.textContent = info.cwd;
-    v.cwdEl.title = info.cwd;
-    renderClaude(v.claudeEl, info.claude);
-    v.takenEl.hidden = !info.takenOver;
-    // 状态写到 li 的 class 上，由 CSS 决定状态点颜色
-    v.item.classList.remove("running", "waiting", "exited");
-    v.item.classList.add(info.status);
-  }
-  if (pendingActivate !== undefined && views.has(pendingActivate)) {
-    activate(pendingActivate);
-    pendingActivate = undefined;
-  } else if (activeId === undefined && views.size) {
-    activate([...views.keys()].pop()!);
-  }
-  sessionsLoaded = true;
-  renderEmpty();
-  renderCardHead();
-  showFiles();
-  showHostInfo();
-}
-
-/** 会话列表上的内存占用：daemon 每次推送全量，不在其中的会话（远程 / 已退出）隐藏 */
-function renderMemory(items: { id: number; bytes: number }[]) {
-  const bytes = new Map(items.map((i) => [i.id, i.bytes]));
-  for (const [id, v] of views) {
-    const b = bytes.get(id);
-    v.memEl.hidden = b === undefined;
-    if (b === undefined) continue;
-    v.memEl.textContent = formatMemory(b);
-    v.memEl.classList.toggle("high", memoryHigh(b));
-  }
-}
-
-/** 卡片标题行：当前会话名 · shell（远程为 ssh user@host） */
-function renderCardHead() {
-  const s = activeView()?.info;
-  $("ch-name").textContent = s?.name ?? "Tether";
-  $("ch-meta").textContent = s ? shellLabel(s) : "";
-  $("ch-ico").innerHTML = icon(s?.host ? "server" : "terminal");
-  const cwd = $("ch-cwd");
-  cwd.innerHTML = s ? icon(s.host ? "globe" : "folder") : "";
-  if (s) cwd.append(s.host ? `${s.host}:${s.cwd}` : s.cwd);
-  cwd.title = s?.cwd ?? "";
-  $("ch-branch").textContent = s && branch?.id === s.id ? branch.text : "";
-  renderClaude($("ch-claude"), s?.claude);
-  // 当前会话被 hub 接管时显示提示条与「收回」
-  const taken = !!s?.takenOver;
-  const banner = $("hub-banner");
-  if (banner.hidden === taken) {
-    banner.hidden = !taken;
-    syncBannerSpace();
-  }
-}
-
-/** 当前会话启动目录的 git 分支文字（只缓存激活会话的一份） */
-let branch: { id: number; text: string } | undefined;
-
-/** 查询激活会话的 git 分支并更新卡片头；仅本地会话，不在仓库里时为空 */
-async function refreshBranch() {
-  const s = activeView()?.info;
-  if (!s) return;
-  const dir = branchDir(s.host, s.cwd);
-  const b = dir ? await invoke<string | null>("git_branch", { dir }).catch(() => null) : null;
-  // 查询期间切换了会话则丢弃
-  if (activeId !== s.id) return;
-  branch = { id: s.id, text: branchLabel(b) };
-  $("ch-branch").textContent = branch.text;
-}
-
-/** Claude 状态胶囊：圆点 + 状态文字（思考中圆点呼吸），等待确认时悬停显示消息；无状态时隐藏 */
-function renderClaude(el: HTMLElement, c: ClaudeState | undefined) {
-  el.hidden = !c;
-  if (!c) return;
-  el.className = `cc ${c.state}`;
-  el.innerHTML = "<i></i>";
-  el.append(`${claudeLabel(c.state)}${c.state === "background" && c.count ? ` ×${c.count}` : ""}`);
-  el.title = c.message ?? "Claude Code";
-}
-
-/** 补全用的 shell 类型：远程为 posix；本地按命令的程序名，识别不了时按默认 shell（auto 为 PowerShell） */
-function shellKind(s: SessionInfo): ShellKind {
-  if (s.host) return "posix";
-  const kind = (command: string): ShellKind | undefined => {
-    const m = command.match(/^"([^"]*)"|^(\S*)/);
-    const base = ((m?.[1] ?? m?.[2] ?? "").split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").toLowerCase();
-    if (base === "pwsh" || base === "powershell") return "powershell";
-    if (base === "cmd") return "cmd";
-    if (["bash", "zsh", "sh", "fish", "wsl", "ssh"].includes(base)) return "posix";
-  };
-  return kind(s.command) ?? kind(defaultShell) ?? "powershell";
-}
-
-function shellLabel(s: SessionInfo) {
-  // 远程会话的 command 即 "ssh user@host"
-  if (s.host) return s.command;
-  const m = s.command.match(/^"([^"]*)"|^(\S*)/);
-  const prog = m?.[1] ?? m?.[2] ?? "";
-  const base = (prog.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").toLowerCase();
-  if (base === "cmd") return t("shell.cmd");
-  return SHELL_NAMES[base] ?? base;
-}
-
-/** 从资源管理器拖到终端：插入路径（Claude 运行中为 @ 引用），走 term.paste、不回车。
- *  远程会话不插入：本机路径在远程主机上无意义，提示改拖到文件树上传 */
-function dropOnTerminal(x: number, y: number, paths: string[]) {
-  const v = activeView();
-  const hit = document.elementFromPoint(x, y);
-  if (!v || !hit || !v.box.contains(hit)) return;
-  if (v.info.host !== null) return alert(t("error.dropRemote"));
-  v.term.paste(dropText(paths, v.info.cwd, !!v.info.claude));
-  v.term.focus();
-}
-
-/** 复制选区（优先表格单元格选区）到系统剪贴板并短暂提示“已复制”；无选区返回 false */
-function copySelection(term: Terminal) {
-  const text = cellSelectionText(term) || term.getSelection();
-  if (!text) return false;
-  writeText(text).then(showCopied, (err) => console.error("Copy failed", err));
-  return true;
-}
-
-/** 粘贴剪贴板文本：走 term.paste，开启 bracketed paste 的程序（PSReadLine / Claude Code 等）不会把多行逐行执行。
- *  noText：剪贴板没有文本（为空或是图片）时调用，Ctrl+V 据此把图片粘贴键发给会话（Claude Code 收到后自行读取剪贴板图片） */
-async function pasteInto(term: Terminal, noText?: () => void) {
-  let text = "";
-  try {
-    text = await readText();
-  } catch {
-    // 剪贴板为空或不是文本
-  }
-  if (text) term.paste(text);
-  else noText?.();
-  term.focus();
-}
-
-/** Ctrl+V 剪贴板无文本时粘贴图片：本地会话中 Claude Code 运行时由 Tether 把剪贴板图片存为文件、粘贴其路径
- *  （Claude Code 识别为 [Image #N]），比它自己经 PowerShell 读剪贴板快数秒；无图片、出错及其它情况发图片粘贴键由程序自己读。
- *  结果写回发起时的终端（term 与 s.id），期间切换会话不影响 */
-async function pasteImage(term: Terminal, s: SessionInfo) {
-  if (s.host === null && s.claude) {
-    try {
-      const path = await invoke<string | null>("clipboard_image_file");
-      if (path) return term.paste(pastedPath(path));
-    } catch (e) {
-      console.warn("Failed to paste clipboard image, letting Claude Code read it", e);
-    }
-  }
-  // Windows 版 Claude Code 的图片粘贴键是 Alt+V（ESC v），^V 未绑定；远程会话（Linux / macOS）仍为 ^V
-  send({ type: "input", id: s.id, data: s.host !== null ? "\x16" : "\x1bv" });
-}
-
-function showCopied() {
-  showHint(t("common.copied"));
-}
-
-/** 终端区右上角的短暂提示（复制成功、Ctrl+滚轮调字号时的当前字号），1 秒后消失 */
-function showHint(text: string) {
-  const el = $("copied");
-  el.textContent = text;
-  el.hidden = false;
-  clearTimeout(copiedTimer);
-  copiedTimer = setTimeout(() => (el.hidden = true), 1000);
-}
-
-/** 复制粘贴快捷键（类 Windows Terminal）：有选区时 Ctrl+C 复制而不发送 ^C；Ctrl+Shift+C 复制；Ctrl+V / Ctrl+Shift+V 粘贴。
- *  返回 false 表示 xterm 不再处理该键；粘贴键在 keydown 上 preventDefault，阻止浏览器原生 paste 事件，避免 xterm 再粘贴一次 */
-function clipboardKey(term: Terminal, ev: KeyboardEvent, sendImagePaste: () => void) {
-  if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
-  if (ev.code === "KeyC") {
-    if (!ev.shiftKey && !term.hasSelection() && !cellSelectionText(term)) return true;
-    ev.preventDefault();
-    if (ev.type === "keydown" && copySelection(term)) {
-      term.clearSelection();
-      clearCellSelection(term);
-    }
-    return false;
-  }
-  if (ev.code === "KeyV") {
-    ev.preventDefault();
-    // 仅 Ctrl+V（不含 Ctrl+Shift+V）在剪贴板无文本时发送图片粘贴键，触发 Claude Code 的图片粘贴
-    if (ev.type === "keydown") pasteInto(term, ev.shiftKey ? undefined : sendImagePaste);
-    return false;
-  }
-  return true;
-}
-
-/** 无会话时在终端区显示“最近关闭”：点击行新建该目录的会话，× 删除该条；远程主机已不存在的置灰不可点 */
-function renderEmpty() {
-  $("session-count").textContent = views.size ? String(views.size) : "";
-  emptyPanel.hidden = !sessionsLoaded || views.size > 0;
-  if (emptyPanel.hidden) return;
-  $("recent-head").hidden = !recent.length;
-  $("recent-none").hidden = recent.length > 0;
-  recentList.replaceChildren(
-    ...recent.map((r) => {
-      const li = document.createElement("li");
-      const span = (cls: string, text: string) => {
-        const el = li.appendChild(document.createElement("span"));
-        el.className = cls;
-        el.textContent = text;
-        return el;
-      };
-      const tg = r.target;
-      const remote = tg.kind === "remote";
-      const path = tg.cwd ?? "";
-      span("recent-icon", remote ? "🌐" : "📁");
-      span("recent-path", middleEllipsis(path, 56)).title = path;
-      if (remote) span("tag", r.host ?? "");
-      const gone = tg.kind === "remote" && hostsLoaded && !hosts.some((h) => h.id === tg.hostId);
-      span("recent-time", gone ? t("empty.hostGone") : relativeTime(r.closedAt));
-      const del = span("close", "×");
-      del.title = t("empty.removeRecent");
-      del.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        send({ type: "removeRecent", target: r.target });
-      });
-      if (gone) li.classList.add("gone");
-      else li.addEventListener("click", () => createAt(r.target));
-      return li;
-    }),
-  );
-}
-
-/** 过长时保留首尾、中间用 … 省略 */
-function middleEllipsis(s: string, max: number) {
-  if (s.length <= max) return s;
-  const head = Math.ceil((max - 1) / 2);
-  return `${s.slice(0, head)}…${s.slice(s.length - (max - 1 - head))}`;
-}
-
-function relativeTime(ms: number) {
-  const min = Math.floor((Date.now() - ms) / 60_000);
-  if (min < 24 * 60) return fmtAgo((Date.now() - ms) / 1000);
-  const day = new Date(ms);
-  day.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const days = Math.round((today.getTime() - day.getTime()) / 86_400_000);
-  if (days < 30) return fmtDaysAgo(Math.max(1, days));
-  return fmtDate(ms);
-}
-
-function addView(info: SessionInfo): View {
-  const term = new Terminal({
-    ...TERMINAL_OPTIONS,
-    fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace',
-    fontSize: currentTermFont(),
-    cursorBlink: true,
-    // 窗口半透明时终端背景透明，由终端卡片提供半透明底色
-    allowTransparency: true,
-    wordSeparator: WORD_SEPARATOR,
-    // 配色来自 themes.ts 的当前主题（cursorAccent 显式给出，背景透明时块光标下的字符仍可见）
-    theme: xtermTheme(),
-  });
-  // 本地会话走 ConPTY：告知 xterm 以匹配其增行 / reflow 行为（build 号 >= 21376 时保留 reflow）；SSH 会话不设
-  if (info.host === null) {
-    void windowsBuild.then((build) => {
-      const pty = windowsPtyFor(info.host, build);
-      if (pty) term.options.windowsPty = pty;
-    });
-  }
-  registerTerminal(term);
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  const box = document.createElement("div");
-  box.className = "term";
-  terminals.appendChild(box);
-  term.open(box);
-  // 备用缓冲区（全屏程序，如 Claude Code 全屏界面）没有回滚历史，滚动条无用，隐藏
-  term.buffer.onBufferChange((b) => box.classList.toggle("alt-buf", b.type === "alternate"));
-  // 可见时 fit 出实际行列，先同步尺寸再 attach，使快照与当前窗口一致
-  fit.fit();
-  box.classList.add("hidden");
-  const id = info.id;
-  send({ type: "resize", id, cols: term.cols, rows: term.rows });
-  send({ type: "attach", id });
-
-  term.onData((data) => {
-    send({ type: "input", id, data });
-    const v = views.get(id);
-    if (v && data.includes("\r")) v.promptCheck = true;
-  });
-  term.onResize(({ cols, rows }) => send({ type: "resize", id, cols, rows }));
-  // claude 补全弹出层可见时消费 ↑ / ↓ / Tab / Esc，其余交给复制粘贴处理
-  const completeKey = attachClaudeComplete(
-    term,
-    terminals,
-    (data) => send({ type: "input", id, data }),
-    () => shellKind(views.get(id)?.info ?? info),
-    // Claude Code 运行中（退出 / SessionEnd 后 daemon 清空 claude）或全屏程序（alternate buffer）时不弹，按键交给程序自己
-    () => completionEnabled((views.get(id)?.info ?? info).claude, term.buffer.active.type),
-  );
-  term.attachCustomKeyEventHandler(
-    (ev) =>
-      completeKey(ev) &&
-      clipboardKey(term, ev, () => void pasteImage(term, views.get(id)?.info ?? info)),
-  );
-  attachTableSelect(term, box);
-  // OSC 8 超链接（Claude Code 输出的链接）：xterm 默认用 confirm + window.open，在 webview 中被拦截；
-  // 改为左键单击时 http(s) 交给默认浏览器、file:// 在本地会话中按路径打开。拖选结束在链接上时不打开，保证链接文字可选中复制
-  term.options.linkHandler = {
-    activate: (ev, uri) => {
-      if (ev.button !== 0 || term.hasSelection()) return;
-      const target = oscLinkTarget(uri);
-      if (target && "url" in target) send({ type: "openUrl", url: target.url });
-      else if (target && (views.get(id)?.info ?? info).host === null) openPathQuiet(views.get(id)?.info ?? info, target.path);
-    },
-  };
-  // 输出中的文件路径可单击打开；相对路径按会话目录（daemon 只记录启动目录，不跟踪 cd）解析
-  attachFileLinks(
-    term,
-    () => {
-      const s = views.get(id)?.info ?? info;
-      return { dir: s.cwd, remote: s.host !== null };
-    },
-    (path) => openPathQuiet(views.get(id)?.info ?? info, path),
-  );
-  // 右键粘贴，不弹菜单
-  box.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    pasteInto(term);
-  });
-
-  const item = document.createElement("li");
-  item.innerHTML = `<span class="ico">${icon(info.host ? "server" : "terminal")}<span class="dot"></span></span><div class="row"><span class="name"></span><span class="close" data-i18n-title="common.close">${icon("x")}</span></div><div class="sub"><span class="host" hidden></span><span class="cc" hidden></span><span class="tag taken" data-i18n="banner.hub.title" hidden></span><span class="tag mem" data-i18n-title="sidebar.memTitle" hidden></span><span class="cwd"></span></div>`;
-  applyDom(item);
-  const nameEl = item.querySelector(".name") as HTMLSpanElement;
-  const hostEl = item.querySelector(".host") as HTMLSpanElement;
-  const cwdEl = item.querySelector(".cwd") as HTMLSpanElement;
-  const claudeEl = item.querySelector(".cc") as HTMLSpanElement;
-  const takenEl = item.querySelector(".taken") as HTMLSpanElement;
-  const memEl = item.querySelector(".mem") as HTMLSpanElement;
-  item.addEventListener("click", () => activate(id));
-  nameEl.addEventListener("dblclick", () => rename(id));
-  // 右键：从该会话的启动目录新建（daemon 不跟踪 cd）；远程会话用同一主机
-  item.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    const s = views.get(id)?.info ?? info;
-    const target: Target | undefined = !s.host ? { kind: "local", cwd: s.cwd } : s.hostId ? { kind: "remote", hostId: s.hostId, cwd: s.cwd } : undefined;
-    showMenu(ev.clientX, ev.clientY, [[t("sidebar.newHere"), () => target && createAt(target), !target]]);
-  });
-  // 拖出窗口外松开：拖成独立窗口。Tauri 接管了系统拖放（文件拖入），HTML5 拖放不可用，改用指针捕获
-  item.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || (ev.target as HTMLElement).closest(".close, input")) return;
-    item.setPointerCapture(ev.pointerId);
-    let dragging = false;
-    const move = (e: PointerEvent) => {
-      if (dragging || Math.hypot(e.clientX - ev.clientX, e.clientY - ev.clientY) < 8) return;
-      dragging = true;
-      item.classList.add("dragging");
-    };
-    const up = (e: PointerEvent) => {
-      item.removeEventListener("pointermove", move);
-      item.removeEventListener("pointerup", up);
-      item.removeEventListener("pointercancel", up);
-      item.classList.remove("dragging");
-      const outside = e.clientX < 0 || e.clientY < 0 || e.clientX >= innerWidth || e.clientY >= innerHeight;
-      if (dragging && outside && e.type === "pointerup") detach(id, e.screenX, e.screenY);
-    };
-    item.addEventListener("pointermove", move);
-    item.addEventListener("pointerup", up);
-    item.addEventListener("pointercancel", up);
-  });
-  item.querySelector(".close")!.addEventListener("click", async (ev) => {
-    ev.stopPropagation();
-    // 已退出的会话没有可丢失的东西，直接关闭；其余先确认
-    const v = views.get(id);
-    if (v && v.info.status !== "exited") {
-      const ok = await ask(t("sidebar.closeConfirm", { name: v.info.name }), t("common.close"));
-      if (ok === null) return;
-    }
-    send({ type: "close", id });
-  });
-  list.appendChild(item);
-
-  const v: View = { info, term, fit, box, item, nameEl, hostEl, cwdEl, claudeEl, takenEl, memEl, stale: false, promptCheck: false, rootSeen: false };
-  views.set(id, v);
-  return v;
-}
-
-function removeView(id: number) {
-  const v = views.get(id)!;
-  unregisterTerminal(v.term);
-  v.term.dispose();
-  v.box.remove();
-  v.item.remove();
-  views.delete(id);
-  gpuRecent = gpuRecent.filter((x) => x !== id);
-  forgetFiles(id);
-  if (activeId !== id) return;
-  activeId = undefined;
-  closePreview();
-  reportFocus();
-}
-
-function rename(id: number) {
-  const v = views.get(id)!;
-  const input = document.createElement("input");
-  input.value = v.info.name;
-  v.nameEl.replaceChildren(input);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = (save: boolean) => {
-    if (done) return;
-    done = true;
-    const name = input.value.trim();
-    v.nameEl.textContent = save && name ? name : v.info.name;
-    if (save && name && name !== v.info.name) send({ type: "rename", id, name });
-    v.term.focus();
-  };
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") finish(true);
-    if (ev.key === "Escape") finish(false);
-  });
-  input.addEventListener("blur", () => finish(true));
-  input.addEventListener("click", (ev) => ev.stopPropagation());
-}
-
-function activeView() {
-  return activeId === undefined ? undefined : views.get(activeId);
-}
-
-function activate(id: number) {
-  // 预览属于切换前的会话；编辑器有未保存的修改时先确认，放弃后再切换
-  if (id !== activeId && previewDirty()) {
-    void requestClosePreview().then((ok) => ok && activate(id));
-    return;
-  }
-  if (id !== activeId) {
-    closePreview();
-    closeGitPanel();
-  }
-  activeId = id;
-  for (const v of views.values()) {
-    const on = v.info.id === id;
-    v.box.classList.toggle("hidden", !on);
-    v.item.classList.toggle("active", on);
-  }
-  const v = views.get(id)!;
-  v.item.classList.remove("unread");
-  renderCardHead();
-  refreshBranch();
-  // 显示后再加载 WebGL（display:none 时尺寸为 0），超出最近 GPU_KEEP 个的释放；fit 在其后，按最终渲染器的单元格尺寸计算
-  syncGpu();
-  // 隐藏期间容器尺寸为 0，显示后再 fit；行列未变时 onResize 不触发，无条件补发一次，覆盖 hub 网页留下的尺寸
-  v.fit.fit();
-  send({ type: "resize", id, cols: v.term.cols, rows: v.term.rows });
-  if (needsRefresh(v.stale, v.info.takenOver)) refreshView(v);
-  v.term.focus();
-  reportFocus();
-  showFiles();
-  showHostInfo();
-}
-
-/** 主窗口：把会话拖成独立窗口（屏幕坐标 x / y 处）。会话从列表移除；独立窗口关闭后重新取列表，会话回到主窗口 */
-function detach(id: number, x: number, y: number) {
-  const v = views.get(id);
-  // 已退出的会话在独立窗口中会立即关闭，不拖出
-  if (!v || v.info.status === "exited") return;
-  const win = new WebviewWindow(`session-${id}`, {
-    url: `index.html?detached=${id}`,
-    title: v.info.name,
-    x: Math.max(0, x - 80),
-    y: Math.max(0, y - 16),
-    width: Math.max(480, terminals.clientWidth),
-    height: Math.max(320, terminals.clientHeight),
-    transparent: true,
-    decorations: false,
-  });
-  const back = () => {
-    detached.delete(id);
-    send({ type: "list" });
-    // 独立窗口可能带着“有焦点”的上报关闭，按主窗口当前状态覆盖
-    reportFocus(true);
-  };
-  win.once("tauri://error", (e) => {
-    console.error("Failed to create detached window", e.payload);
-    back();
-  });
-  win.once("tauri://destroyed", back);
-  detached.add(id);
-  removeView(id);
-  // 重新取列表：由 syncSessions 切到其余会话 / 显示空状态
-  send({ type: "list" });
-}
-
-/** daemon 要求聚焦（点击通知 / 新建完成）：窗口前置并切到该会话；已拖出的会话由其独立窗口处理 */
-function focusSession(id: number) {
-  if (detached.has(id)) return;
-  const win = getCurrentWindow();
-  win.unminimize();
-  win.setFocus();
-  if (views.has(id)) activate(id);
-  else pendingActivate = id;
-}
-
-/** 只由有焦点的窗口上报（见 focus / blur 监听）；force 时无论是否有焦点都按本窗口状态上报 */
-function reportFocus(force = false) {
-  if (!force && !document.hasFocus()) return;
-  send({ type: "focus", activeId: activeId ?? null, windowFocused: document.hasFocus() });
 }

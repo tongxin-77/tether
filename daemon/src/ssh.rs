@@ -187,6 +187,37 @@ async fn resolve_cwd(conn: &Conn, cwd: Option<&str>) -> String {
     }
 }
 
+/// 在已有连接上开 exec channel 运行命令，收集 stdout 直到 channel 关闭（stderr 丢弃）；超时也会关闭 channel。
+/// limit 为 Some 时最多收这么多字节（截到最后一个换行）并提前关闭 channel，返回 (输出, 是否截断)。stats 与 git 共用
+pub async fn exec(conn: &Conn, cmd: &str, limit: Option<usize>, timeout: Duration) -> Result<(String, bool), String> {
+    let mut ch = conn.handle.channel_open_session().await.map_err(|e| tr!("common.open_channel_failed", error = e))?;
+    ch.exec(true, cmd).await.map_err(|e| tr!("ssh.exec_failed", error = e))?;
+    let max = limit.unwrap_or(usize::MAX);
+    let read = async {
+        let mut out = Vec::new();
+        while let Some(msg) = ch.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => {
+                    out.extend_from_slice(&data);
+                    if out.len() > max {
+                        return (out, true);
+                    }
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        (out, false)
+    };
+    let result = tokio::time::timeout(timeout, read).await;
+    let _ = ch.close().await;
+    let (mut out, truncated) = result.map_err(|_| tr!("ssh.exec_timeout", secs = timeout.as_secs()))?;
+    if truncated {
+        out.truncate(out.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1).min(max));
+    }
+    Ok((String::from_utf8_lossy(&out).into_owned(), truncated))
+}
+
 /// POSIX shell 单引号转义
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))

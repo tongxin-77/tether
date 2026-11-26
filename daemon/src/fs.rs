@@ -203,6 +203,8 @@ async fn local(p: &mut Progress, op: Op) -> Res<Reply> {
 async fn remote(p: &mut Progress, sftp: &SftpSession, label: &str, op: Op) -> Res<Reply> {
     match op {
         Op::List(path) => {
+            // 相对路径（如 `.` 即 home，文件栏地址栏解析 `~` 用）先解析为绝对路径，回复中带回
+            let path = if path.starts_with('/') { path } else { sftp.canonicalize(path.as_str()).await.map_err(at(&path))? };
             let mut entries: Vec<FsEntry> = sftp
                 .read_dir(path.as_str())
                 .await

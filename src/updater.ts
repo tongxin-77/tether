@@ -1,20 +1,18 @@
-// 应用更新（仅主窗口）：启动后静默检查 GitHub Releases 的 latest.json，有新版本时侧栏显示标签；
+// 应用更新（仅主窗口）：每次启动后检查 GitHub Releases 的 latest.json，有新版本时直接弹出更新对话框并在侧栏显示标签（失败 / 离线时静默）；
 // 设置面板“关于与更新”手动检查。安装只替换 GUI：安装程序把运行中的 tetherd.exe 改名让位（见 hooks.nsh），
 // 旧 daemon 继续持有会话；GUI 连接时互发 Hello，daemon 版本与 GUI 不一致时显示提示条，由用户决定何时“重启后台”。
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { ask } from "./files";
+import { ask } from "./ui/dialogs";
 import { renderMarkdown } from "./markdown";
 import { notesForLocale, notesSince } from "./update-notes";
 import { locale, onLocaleChange, t } from "./i18n";
 
 const AUTO_KEY = "tether.update.auto"; // "0" 为关闭启动时自动检查
 const SKIP_KEY = "tether.update.skip"; // 用户跳过的版本号
-const LAST_KEY = "tether.update.last"; // 上次自动检查的时间（毫秒）
-const AUTO_DELAY = 10_000;
-const AUTO_INTERVAL = 24 * 3600 * 1000;
+const AUTO_DELAY = 3_000;
 /** 连接后等待 daemon 回 Hello 的时间；超时视为不支持 Hello 的旧版 daemon（0.1.0） */
 const HELLO_TIMEOUT = 1000;
 
@@ -70,16 +68,15 @@ export async function initUpdater(count: () => number, banner: () => void) {
   }
   $("update-check").addEventListener("click", () => checkNow(true));
   setTimeout(() => {
-    if (auto.checked && Date.now() - Number(load(LAST_KEY) ?? 0) > AUTO_INTERVAL) checkNow(false);
+    if (auto.checked) checkNow(false);
   }, AUTO_DELAY);
 }
 
-/** manual：设置面板手动检查，显示结果与错误，且不受“跳过此版本”影响；自动检查失败只写控制台（网络不通时不打扰） */
+/** manual：设置面板手动检查，显示结果与错误，且不受“跳过此版本”影响；自动检查发现未跳过的新版本时直接弹出对话框，失败只写控制台（网络不通时不打扰） */
 async function checkNow(manual: boolean) {
   if (manual) setStatus(() => t("update.checking"));
   try {
     const update = await check();
-    store(LAST_KEY, String(Date.now()));
     found = update ?? undefined;
     $("update-badge").hidden = true;
     if (!update) {
@@ -91,6 +88,7 @@ async function checkNow(manual: boolean) {
     if (load(SKIP_KEY) === update.version) return;
     $("update-badge").textContent = t("update.badgeVersion", { version: update.version });
     $("update-badge").hidden = false;
+    showDialog(update);
   } catch (err) {
     if (manual) setStatus(() => t("update.checkFailed", { error: String(err) }));
     else console.warn("Update check failed", err);
@@ -189,10 +187,6 @@ function renderDaemon() {
   $("daemon-version").textContent = v;
   const n = sessionCount();
   $("daemon-old-text").textContent = t("update.daemonBanner", { version: v }) + (n ? t("update.daemonBannerSessions", { n }) : "");
-}
-
-export function daemonBannerShown() {
-  return !$("daemon-old-banner").hidden;
 }
 
 /** 新版 daemon 收到 Shutdown 后保存会话并退出；旧版不支持，按进程 id 结束（会话列表已持续写入 sessions.json）。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyDiff, filterRefs, graphRuns, parseDecor, parseLog, parseNumstat, parseRefs, relTime, switchTarget } from "./git-utils";
+import { buildChangeSet, classifyDiff, filterRefs, graphRuns, parseDecor, parseLog, parseNumstat, parseNumstatZ, parseRefs, parseStatusV2, relTime, switchTarget } from "./git-utils";
 
 const US = "\x1f";
 
@@ -122,9 +122,30 @@ describe("classifyDiff", () => {
     "--- a/y",
   ].join("\n");
 
-  it("文件头为 meta，hunk 内按首字符分类（--- / +++ 开头的改动行不误判为文件头）", () => {
+  it("文件头为 meta，hunk 内按首字符分类（--- / +++ 开头的改动行不误判为文件头；「\\ No newline」为 meta）", () => {
     expect(classifyDiff(diff, 100).lines.map((l) => l.kind)).toEqual([
-      "meta", "meta", "meta", "meta", "hunk", "ctx", "del", "del", "add", "add", "ctx", "meta", "meta",
+      "meta", "meta", "meta", "meta", "hunk", "ctx", "del", "del", "add", "add", "meta", "meta", "meta",
+    ]);
+  });
+
+  it("按 @@ 推算新旧行号：删行只有旧行号，增行只有新行号，上下文两者都有", () => {
+    const nums = classifyDiff(diff, 100).lines.map((l) => [l.old, l.new]);
+    expect(nums.slice(4, 11)).toEqual([
+      [undefined, undefined],
+      [1, 1],
+      [2, undefined],
+      [3, undefined],
+      [undefined, 2],
+      [undefined, 3],
+      [undefined, undefined],
+    ]);
+    expect(nums[0]).toEqual([undefined, undefined]);
+  });
+
+  it("多个 hunk 各自从 @@ 的起始行号算起；省略行数（@@ -5 +7 @@）与新文件（-0,0）", () => {
+    const text = ["@@ -10,2 +12,3 @@ ctx", " a", "+b", " c", "@@ -40 +43 @@", "-d", "+e", "@@ -0,0 +1,2 @@", "+x", "+y"].join("\n");
+    expect(classifyDiff(text, 100).lines.map((l) => [l.old ?? "", l.new ?? ""].join(":"))).toEqual([
+      ":", "10:12", ":13", "11:14", ":", "40:", ":43", ":", ":1", ":2",
     ]);
   });
 
@@ -139,7 +160,7 @@ describe("classifyDiff", () => {
     expect(classifyDiff("", 10).lines).toEqual([]);
     expect(classifyDiff("@@ -1 +1 @@\r\n+a\r\n", 10).lines).toEqual([
       { text: "@@ -1 +1 @@", kind: "hunk" },
-      { text: "+a", kind: "add" },
+      { text: "+a", kind: "add", new: 1 },
     ]);
   });
 });
@@ -156,5 +177,85 @@ describe("relTime", () => {
     expect(relTime(ago(65 * 86400), now)).toBe(rtf.format(-2, "month"));
     expect(relTime(ago(800 * 86400), now)).toBe(rtf.format(-2, "year"));
     expect(relTime(ago(5 * 60), now)).toMatch(/^5\s?分钟前$/);
+  });
+});
+
+// 与 src-tauri 的 git_changes_kinds 用例同一个仓库状态：修改、删除、git mv 重命名、二进制修改、未跟踪
+const Z = "\0";
+const STATUS = [
+  "# branch.oid 1234567890abcdef1234567890abcdef12345678",
+  "# branch.head main",
+  "# branch.upstream origin/main",
+  "# branch.ab +2 -1",
+  "1 .M N... 100644 100644 100644 aaa aaa bin.dat",
+  "1 .D N... 100644 100644 000000 bbb bbb gone.txt",
+  "1 .M N... 100644 100644 100644 ccc ccc keep.txt",
+  "2 R. N... 100644 100644 100644 ddd ddd R100 new name.txt",
+  "old.txt",
+  "u UU N... 100644 100644 100644 100644 e1 e2 e3 merge me.txt",
+  "? 新 文件.txt",
+  "! ignored.log",
+  "",
+].join(Z);
+const NUMSTAT = ["-\t-\tbin.dat", "0\t1\tgone.txt", "2\t1\tkeep.txt", "0\t0\t", "old.txt", "new name.txt", "3\t3\tmerge me.txt", ""].join(Z);
+
+describe("parseStatusV2", () => {
+  it("分支头与各类条目（路径可含空格、重命名带原路径、忽略 ! 条目）", () => {
+    const st = parseStatusV2(STATUS);
+    expect(st).toMatchObject({ branch: "main", oid: "1234567890abcdef1234567890abcdef12345678", upstream: "origin/main", ahead: 2, behind: 1 });
+    expect(st.entries).toEqual([
+      { path: "bin.dat", xy: ".M", kind: "modified" },
+      { path: "gone.txt", xy: ".D", kind: "deleted" },
+      { path: "keep.txt", xy: ".M", kind: "modified" },
+      { path: "new name.txt", orig: "old.txt", xy: "R.", kind: "renamed" },
+      { path: "merge me.txt", xy: "UU", kind: "conflict" },
+      { path: "新 文件.txt", xy: "??", kind: "untracked" },
+    ]);
+  });
+
+  it("空仓库与分离 HEAD；暂存的新文件为 added", () => {
+    const st = parseStatusV2(["# branch.oid (initial)", "# branch.head main", "1 A. N... 000000 100644 100644 000 aaa a.txt", ""].join(Z));
+    expect([st.oid, st.branch, st.upstream, st.ahead]).toEqual([null, "main", null, 0]);
+    expect(st.entries[0].kind).toBe("added");
+    expect(parseStatusV2(["# branch.oid abcdef0123", "# branch.head (detached)", ""].join(Z)).branch).toBeNull();
+    expect(parseStatusV2("").entries).toEqual([]);
+  });
+});
+
+describe("parseNumstatZ", () => {
+  it("普通、二进制与重命名（原路径、新路径各占一项）", () => {
+    expect(parseNumstatZ(NUMSTAT)).toEqual([
+      { path: "bin.dat", add: null, del: null },
+      { path: "gone.txt", add: 0, del: 1 },
+      { path: "keep.txt", add: 2, del: 1 },
+      { path: "new name.txt", orig: "old.txt", add: 0, del: 0 },
+      { path: "merge me.txt", add: 3, del: 3 },
+    ]);
+    expect(parseNumstatZ("")).toEqual([]);
+  });
+});
+
+describe("buildChangeSet", () => {
+  it("文件以 status 为准，行数取 numstat；未跟踪只标新、不计行数；带最近提交", () => {
+    const log = [["h1", "abc1234", "HEAD -> main", "me", "100", "second"].join(US), ["h0", "abc0000", "", "me", "50", "first"].join(US), ""].join("\n");
+    const cs = buildChangeSet({ root: "/r", status: STATUS, numstat: NUMSTAT, log });
+    expect(cs.files.map((f) => [f.path, f.kind, f.add, f.del])).toEqual([
+      ["bin.dat", "modified", null, null],
+      ["gone.txt", "deleted", 0, 1],
+      ["keep.txt", "modified", 2, 1],
+      ["new name.txt", "renamed", 0, 0],
+      ["merge me.txt", "conflict", 3, 3],
+      ["新 文件.txt", "untracked", null, null],
+    ]);
+    expect([cs.added, cs.deleted, cs.branch, cs.ahead, cs.behind]).toEqual([5, 5, "main", 2, 1]);
+    expect(cs.commits.map((c) => [c.short, c.subject, c.refs])).toEqual([
+      ["abc1234", "second", ["HEAD -> main"]],
+      ["abc0000", "first", []],
+    ]);
+  });
+
+  it("干净的仓库没有文件；分离 HEAD 时分支为提交前 7 位", () => {
+    const cs = buildChangeSet({ root: "/r", status: ["# branch.oid 1234567890ab", "# branch.head (detached)", ""].join(Z), numstat: "", log: "" });
+    expect([cs.files, cs.added, cs.branch, cs.commits]).toEqual([[], 0, "1234567", []]);
   });
 });

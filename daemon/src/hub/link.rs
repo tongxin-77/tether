@@ -829,6 +829,8 @@ mod tests {
             taken_over: false,
             claude_session: None,
             fs_root: false,
+            name_custom: false,
+            claude_title: None,
         };
         let v = serde_json::to_value(Up::Sessions { sessions: vec![info] }).unwrap();
         assert_eq!(v["type"], "sessions");

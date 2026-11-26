@@ -80,6 +80,14 @@ pub(crate) fn event_msg(session: u32, stdin: &str, arg: Option<String>) -> Optio
             .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
             .collect()
     });
+    let subagents = input.get("background_tasks").and_then(Value::as_array).map_or_else(Vec::new, |tasks| {
+        let subagent = |t: &Value| t.get("type").and_then(Value::as_str) == Some("subagent");
+        tasks
+            .iter()
+            .filter(|t| subagent(t) && !own(t) && !finished(t))
+            .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect()
+    });
     Some(ClientMsg::ClaudeEvent {
         session,
         event,
@@ -90,9 +98,11 @@ pub(crate) fn event_msg(session: u32, stdin: &str, arg: Option<String>) -> Optio
         background,
         tasks,
         teammates,
+        subagents,
         prompt: text("prompt").map(|p| p.chars().take(20).collect()),
         claude_session: text("session_id"),
         cwd: text("cwd"),
+        transcript_path: text("transcript_path"),
         reason: text("reason"),
         permission_mode: text("permission_mode"),
         source: text("source"),
@@ -423,9 +433,10 @@ mod tests {
 
     #[test]
     fn hook_session_id_parsing() {
-        let start = r#"{"hook_event_name":"SessionStart","session_id":"abc-123","cwd":"C:\\work\\p","source":"startup","permission_mode":"bypassPermissions"}"#;
-        let ClientMsg::ClaudeEvent { claude_session, cwd, reason, permission_mode, source, .. } = event_msg(1, start, None).unwrap() else { panic!() };
+        let start = r#"{"hook_event_name":"SessionStart","session_id":"abc-123","cwd":"C:\\work\\p","transcript_path":"C:\\u\\abc-123.jsonl","source":"startup","permission_mode":"bypassPermissions"}"#;
+        let ClientMsg::ClaudeEvent { claude_session, cwd, transcript_path, reason, permission_mode, source, .. } = event_msg(1, start, None).unwrap() else { panic!() };
         assert_eq!((claude_session.as_deref(), cwd.as_deref(), reason), (Some("abc-123"), Some(r"C:\work\p"), None));
+        assert_eq!(transcript_path.as_deref(), Some(r"C:\u\abc-123.jsonl"));
         assert_eq!((permission_mode.as_deref(), source.as_deref()), (Some("bypassPermissions"), Some("startup")));
         let end = r#"{"hook_event_name":"SessionEnd","session_id":"abc-123","reason":"prompt_input_exit"}"#;
         let ClientMsg::ClaudeEvent { reason, permission_mode, .. } = event_msg(1, end, None).unwrap() else { panic!() };

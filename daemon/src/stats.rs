@@ -12,9 +12,11 @@ use std::{
 };
 
 use proto::{GpuStats, HostStats, ServerMsg};
-use russh::ChannelMsg;
-
-use crate::{fs, session::Shared, ssh::Conn};
+use crate::{
+    fs,
+    session::Shared,
+    ssh::{self, Conn},
+};
 
 /// 与上次采样间隔超过这段时间则不计算差值（卡片停止轮询后再打开，首个数据显示为“…”）
 const STALE: Duration = Duration::from_secs(15);
@@ -91,31 +93,10 @@ pub fn deltas(prev: &Counters, cur: &Counters) -> (Option<f32>, Option<(u64, u64
 // ---------------- 远程（Linux /proc） ----------------
 
 async fn remote(conn: &Conn, key: &str) -> Result<HostStats, String> {
-    let out = exec(conn, &format!("sh -c '{SCRIPT}'")).await?;
+    let (out, _) = ssh::exec(conn, &format!("sh -c '{SCRIPT}'"), None, REMOTE_TIMEOUT).await?;
     let (mut stats, counters) = parse_remote(&out, Instant::now())?;
     apply_deltas(key, counters, &mut stats);
     Ok(stats)
-}
-
-/// 在已有连接上开 exec channel 运行命令，收集 stdout 直到 channel 关闭；超时也会关闭 channel
-async fn exec(conn: &Conn, cmd: &str) -> Result<String, String> {
-    let mut ch = conn.handle.channel_open_session().await.map_err(|e| tr!("common.open_channel_failed", error = e))?;
-    ch.exec(true, cmd).await.map_err(|e| tr!("stats.exec_failed", error = e))?;
-    let read = async {
-        let mut out = Vec::new();
-        while let Some(msg) = ch.wait().await {
-            match msg {
-                ChannelMsg::Data { data } => out.extend_from_slice(&data),
-                ChannelMsg::Close => break,
-                _ => {}
-            }
-        }
-        out
-    };
-    let result = tokio::time::timeout(REMOTE_TIMEOUT, read).await;
-    let _ = ch.close().await;
-    let out = result.map_err(|_| tr!("stats.timeout"))?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// 解析远程脚本输出；没有 /proc/stat（非 Linux）时报不支持

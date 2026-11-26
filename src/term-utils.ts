@@ -172,3 +172,32 @@ export function pastedPath(path: string): string {
 export function touchRecent(list: number[], id: number, cap: number): number[] {
   return [...list.filter((x) => x !== id), id].slice(-cap);
 }
+
+/** 屏幕上 Claude Code 输入框中输入文字的范围（行为 lines 下标，endCol 不含）：从底部往上找两条主要由 `─` 组成的横线，
+ *  两线之间首行须以提示符 `❯` / `>` 开头；范围从提示符后第一个非空白字符到最后一个非空白字符。lines 中每个字符须对应一个单元格。
+ *  找不到输入框或输入为空时返回 null */
+export function claudeInputRange(lines: string[]): { startRow: number; startCol: number; endRow: number; endCol: number } | null {
+  const isRule = (s: string) => {
+    const t = s.trim();
+    const n = t.split("─").length - 1;
+    return n >= 3 && n * 2 > t.length;
+  };
+  let bottom = lines.length - 1;
+  while (bottom >= 0 && !isRule(lines[bottom])) bottom--;
+  let top = bottom - 1;
+  while (top >= 0 && !isRule(lines[top])) top--;
+  if (top < 0) return null;
+  const prompt = /^\s*[❯>](\s|$)/.exec(lines[top + 1]);
+  if (!prompt) return null;
+  let start: { row: number; col: number } | null = null;
+  let end: { row: number; col: number } | null = null;
+  for (let row = top + 1; row < bottom; row++) {
+    const from = row === top + 1 ? prompt[0].length : 0;
+    const text = lines[row].slice(from);
+    const lead = text.search(/\S/);
+    if (lead < 0) continue;
+    start ??= { row, col: from + lead };
+    end = { row, col: from + text.trimEnd().length };
+  }
+  return start && end ? { startRow: start.row, startCol: start.col, endRow: end.row, endCol: end.col } : null;
+}

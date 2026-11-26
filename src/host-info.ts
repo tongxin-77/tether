@@ -1,5 +1,5 @@
-// 文件面板底部的主机信息状态条（悬停或点击弹出详情）：显示当前激活会话所在机器（本地会话为本机，远程会话为服务器）的 CPU / 内存 / GPU / 网络。
-// 仅在窗口可见、文件面板展开且有激活会话时每 3 秒向 daemon 取一次采样，否则停止。
+// 终端下方的主机信息状态条（悬停或点击弹出详情）：显示当前激活会话所在机器（本地会话为本机，远程会话为服务器）的 CPU / 内存 / GPU / 网络。
+// 仅在窗口可见、状态条在当前布局中且有激活会话时每 3 秒向 daemon 取一次采样，否则停止。
 
 // 与 proto crate 的 HostStats 保持一致
 interface GpuStats {
@@ -28,6 +28,12 @@ interface Deps {
   active: () => { id: number; host: string | null } | undefined;
 }
 
+export interface HostInfo extends Component {
+  /** 激活会话变化时调用：清空旧数据并立即采样 */
+  show(): void;
+  onStats(m: HostStatsServerMsg): void;
+}
+
 const POLL = 3000;
 /** daemon “不支持”类错误的前缀（daemon 按其当前语言生成，与 daemon/src/i18n.rs 的 stats.not_linux 四种语言一致） */
 const UNSUPPORTED_RE = /^(不支持|不支援|Not supported|サポートされていません)/;
@@ -36,10 +42,12 @@ const TIMEOUT = 15000;
 
 import { icon } from "./icons";
 import { fmtNum, onLocaleChange, t, tn } from "./i18n";
+import { type Component, type Ctx, html } from "./ui/component";
+import { activeSession } from "./ui/store";
 
-const $ = (id: string) => document.getElementById(id) as HTMLElement;
-const panel = $("files");
-const card = $("host-info");
+let card: HTMLElement;
+/** 在当前布局中（独立窗口没有状态条，不采样） */
+let visible = false;
 
 let deps: Deps;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -52,8 +60,9 @@ let reqSeq = Math.floor(Math.random() * 2 ** 40);
 /** 最近一次渲染，切换语言时重绘 */
 let redraw: (() => void) | undefined;
 
-export function initHostInfo(d: Deps) {
-  deps = d;
+export function createHostInfo(ctx: Ctx): HostInfo {
+  card = html(`<div id="host-info" tabindex="0" hidden></div>`);
+  deps = { send: ctx.send, active: () => activeSession(ctx.store.get()) };
   document.addEventListener("visibilitychange", kick);
   // 点击状态条固定 / 收起详情（悬停时由 CSS 显示），点别处收起
   card.addEventListener("click", (ev) => {
@@ -62,10 +71,19 @@ export function initHostInfo(d: Deps) {
   });
   document.addEventListener("click", () => card.classList.remove("open"));
   onLocaleChange(() => redraw?.());
+  return {
+    el: card,
+    onVisible(v) {
+      visible = v;
+      kick();
+    },
+    show: showHostInfo,
+    onStats: onHostStats,
+  };
 }
 
 /** 激活会话变化时调用：清空旧数据并立即采样 */
-export function showHostInfo() {
+function showHostInfo() {
   const id = deps.active()?.id;
   if (id === shownId) return;
   shownId = id;
@@ -80,7 +98,7 @@ export function showHostInfo() {
   kick();
 }
 
-export function onHostStats(m: HostStatsServerMsg) {
+function onHostStats(m: HostStatsServerMsg) {
   if (m.reqId !== pending?.reqId) return;
   const sessionId = pending.sessionId;
   pending = undefined;
@@ -94,8 +112,8 @@ export function onHostStats(m: HostStatsServerMsg) {
 }
 
 function canPoll() {
-  // 文件栏不可见（独立窗口）时不采样；文件栏收起不影响（状态条在终端下方）
-  return document.visibilityState === "visible" && panel.offsetWidth > 0;
+  // 状态条不在当前布局中（独立窗口）时不采样
+  return document.visibilityState === "visible" && visible;
 }
 
 /** 条件可能变化时调用：没有进行中的请求则立即采样 */

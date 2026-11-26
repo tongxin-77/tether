@@ -30,8 +30,9 @@ describe("词条一致性", () => {
     });
   }
 
-  it("界面引用的词条都存在：index.html 的 data-i18n* 与 claude-complete.ts 的内置说明", () => {
-    const html: string = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  it("界面引用的词条都存在：index.html 与组件模板的 data-i18n*、claude-complete.ts 的内置说明", () => {
+    const sources = [new URL("../index.html", import.meta.url), ...["./", "./ui/", "./components/"].flatMap((d) => (readdirSync(new URL(d, import.meta.url)) as string[]).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => new URL(d + f, import.meta.url)))];
+    const html = sources.map((u) => readFileSync(u, "utf8") as string).join("\n");
     const keys = [...html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)].map((m) => m[1]);
     const cc: string = readFileSync(new URL("./claude-complete.ts", import.meta.url), "utf8");
     keys.push(...[...cc.matchAll(/"(complete\.[\w.]+)"/g)].map((m) => m[1]));

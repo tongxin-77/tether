@@ -128,9 +128,9 @@ pub fn restart(state: &Shared, st: &mut State) {
     st.hub.task = Some(task.abort_handle());
 }
 
-/// 上报给 hub 的会话列表
+/// 上报给 hub 的会话列表：name 换成显示名（hub 网页只认 name，不能改名，与桌面端显示一致）
 fn sessions(st: &State) -> Vec<proto::SessionInfo> {
-    st.sessions.values().map(|s| s.info.clone()).collect()
+    st.sessions.values().map(|s| proto::SessionInfo { name: s.info.display_name().to_string(), ..s.info.clone() }).collect()
 }
 
 /// 组装常驻连接：各回调持锁操作 State，generation 不匹配（已被新任务取代）的迟到回调丢弃

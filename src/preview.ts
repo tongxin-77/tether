@@ -5,13 +5,15 @@ import type { Editor } from "./editor";
 import { renderMarkdownSections } from "./markdown";
 import { chunkLines, type EditorLang } from "./preview-utils";
 import { t } from "./i18n";
+import { type Component, type Ctx, html } from "./ui/component";
+import { overlay } from "./ui/layout";
 
 interface Deps {
   /** 用默认浏览器打开 http(s) 链接（走 daemon） */
   openUrl: (url: string) => void;
   /** 预览关闭后（重新 fit 并聚焦当前终端） */
   onClose: () => void;
-  /** 确认框：确定返回 ""，取消返回 null（files.ts 的 ask） */
+  /** 确认框：确定返回 ""，取消返回 null */
   ask: (message: string, ok: string) => Promise<string | null>;
 }
 
@@ -31,34 +33,80 @@ export interface OpenFile {
   reload: (edit: boolean) => void;
 }
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const panel = $("preview");
-const nameEl = $("pv-name");
-const noteEl = $("pv-note");
-const editBtn = $<HTMLButtonElement>("pv-edit");
-const saveBtn = $<HTMLButtonElement>("pv-save");
-const cancelBtn = $<HTMLButtonElement>("pv-cancel");
-const bodyEl = $("pv-body");
-const docEl = $("pv-doc");
-const editorEl = $("pv-editor");
-const conflictDlg = $<HTMLDialogElement>("pv-conflict");
+export interface Preview extends Component {
+  /** 打开文件：text 类默认直接编辑；当前有未保存的修改时先确认 */
+  show(f: OpenFile, edit?: boolean): Promise<void>;
+  /** 有未保存的修改 */
+  dirty(): boolean;
+  /** 关闭面板（有未保存的修改时先确认）；返回是否已关闭 */
+  requestClose(): Promise<boolean>;
+  /** 直接关闭（丢弃未保存的修改，如会话已关闭） */
+  close(): void;
+}
+
+let panel: HTMLElement;
+let nameEl: HTMLElement;
+let noteEl: HTMLElement;
+let editBtn: HTMLButtonElement;
+let saveBtn: HTMLButtonElement;
+let cancelBtn: HTMLButtonElement;
+let bodyEl: HTMLElement;
+let docEl: HTMLElement;
+let editorEl: HTMLElement;
+let conflictDlg: HTMLDialogElement;
+/** 打开期间登记 Esc 关闭 */
+let esc: (open: boolean) => void;
 
 let deps: Deps;
 let file: OpenFile | undefined;
 let editor: Editor | undefined;
 let saving = false;
 
-export function initPreview(d: Deps) {
-  deps = d;
+export function createPreview(ctx: Ctx): Preview {
+  panel = html(`      <!-- Markdown 预览：覆盖在终端卡片上方（与 .term 同级，不影响 xterm 容器） -->
+      <div id="preview" hidden>
+        <div id="pv-head">
+          <svg class="i pv-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+          <span id="pv-name"></span>
+          <span id="pv-note" hidden></span>
+          <button id="pv-edit" class="pv-btn" hidden data-i18n="common.edit"></button>
+          <button id="pv-cancel" class="pv-btn" hidden data-i18n="common.cancel"></button>
+          <button id="pv-save" class="pv-btn primary" data-i18n-title="preview.saveTitle" data-i18n="common.save" hidden></button>
+          <button id="pv-open" class="pv-btn" data-i18n="files.openDefault"></button>
+          <button id="pv-close" class="fs-btn" data-i18n-title="common.closeEsc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div id="pv-body" tabindex="-1"><article id="pv-doc"></article></div>
+        <div id="pv-editor" hidden></div>
+      </div>`);
+  conflictDlg = html(`    <!-- 编辑器保存时发现文件已被外部修改（preview.ts） -->
+    <dialog id="pv-conflict">
+      <form method="dialog">
+        <p id="pv-c-msg"></p>
+        <p class="hint" data-i18n="preview.conflict.hint"></p>
+        <div class="actions">
+          <button value="overwrite" class="danger" data-i18n="common.overwrite"></button>
+          <button value="reload" data-i18n="preview.conflict.reload"></button>
+          <button value="cancel" autofocus data-i18n="common.cancel"></button>
+        </div>
+      </form>
+    </dialog>`);
+  const $ = <T extends HTMLElement = HTMLElement>(id: string) => panel.querySelector<T>(`#${id}`)!;
+  nameEl = $("pv-name");
+  noteEl = $("pv-note");
+  editBtn = $("pv-edit");
+  saveBtn = $("pv-save");
+  cancelBtn = $("pv-cancel");
+  bodyEl = $("pv-body");
+  docEl = $("pv-doc");
+  editorEl = $("pv-editor");
+  deps = { openUrl: (url) => ctx.send({ type: "openUrl", url }), onClose: () => ctx.actions.focusTerminal(true), ask: ctx.actions.ask };
+  // 编辑器已处理的 Esc（关闭查找框、取消多选等）不再关闭面板（keymap 跳过 defaultPrevented）
+  esc = ctx.keymap.esc(() => void requestClosePreview());
   $("pv-close").addEventListener("click", () => void requestClosePreview());
   $("pv-open").addEventListener("click", () => file?.openDefault());
   editBtn.addEventListener("click", () => void startEdit());
   saveBtn.addEventListener("click", () => void save());
   cancelBtn.addEventListener("click", () => void cancelEdit());
-  document.addEventListener("keydown", (ev) => {
-    // 有对话框打开时 Esc 交给对话框；编辑器已处理的 Esc（关闭查找框、取消多选等）不再关闭面板
-    if (ev.key === "Escape" && !panel.hidden && !ev.defaultPrevented && !document.querySelector("dialog[open]")) void requestClosePreview();
-  });
   // 链接一律不在 webview 内导航：锚点在预览内滚动，http(s) 交给默认浏览器，其它（已被净化去掉 href）忽略
   docEl.addEventListener("click", (ev) => {
     const a = (ev.target as Element).closest("a");
@@ -73,10 +121,19 @@ export function initPreview(d: Deps) {
   docEl.addEventListener("auxclick", (ev) => {
     if ((ev.target as Element).closest("a")) ev.preventDefault();
   });
+  return {
+    el: panel,
+    mount: () => overlay().append(conflictDlg),
+    unmount: () => conflictDlg.remove(),
+    show: showPreview,
+    dirty: previewDirty,
+    requestClose: requestClosePreview,
+    close: closePreview,
+  };
 }
 
 /** 打开文件：text 类默认直接编辑；当前有未保存的修改时先确认 */
-export async function showPreview(f: OpenFile, edit = f.kind === "text") {
+async function showPreview(f: OpenFile, edit = f.kind === "text") {
   if (!(await confirmDiscard())) return;
   dropEditor();
   docEl.replaceChildren();
@@ -85,6 +142,7 @@ export async function showPreview(f: OpenFile, edit = f.kind === "text") {
   noteEl.hidden = !f.readonly;
   noteEl.textContent = f.readonly ?? "";
   panel.hidden = false;
+  esc(true);
   setMode(false);
   bodyEl.focus();
   if (edit && !f.readonly) await startEdit();
@@ -92,21 +150,22 @@ export async function showPreview(f: OpenFile, edit = f.kind === "text") {
 }
 
 /** 有未保存的修改 */
-export function previewDirty() {
+function previewDirty() {
   return !panel.hidden && !!editor?.dirty();
 }
 
 /** 关闭面板（有未保存的修改时先确认）；返回是否已关闭 */
-export async function requestClosePreview() {
+async function requestClosePreview() {
   if (!(await confirmDiscard())) return false;
   closePreview();
   return true;
 }
 
 /** 直接关闭（丢弃未保存的修改，如会话已关闭） */
-export function closePreview() {
+function closePreview() {
   if (panel.hidden) return;
   panel.hidden = true;
+  esc(false);
   dropEditor();
   docEl.replaceChildren();
   file = undefined;
@@ -204,7 +263,7 @@ async function save(force = false) {
 
 /** 文件已被外部修改：覆盖 / 重新加载 / 取消 */
 function askConflict(name: string): Promise<"overwrite" | "reload" | ""> {
-  $("pv-c-msg").textContent = t("preview.conflict.msg", { name });
+  conflictDlg.querySelector("#pv-c-msg")!.textContent = t("preview.conflict.msg", { name });
   conflictDlg.returnValue = "";
   conflictDlg.showModal();
   return new Promise((resolve) =>

@@ -30,12 +30,13 @@ interface Deps {
 const TEST_TIMEOUT = 15000;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const enabledCheck = $<HTMLInputElement>("hub-enabled");
-const addressInput = $<HTMLInputElement>("hub-address");
-const tokenInput = $<HTMLInputElement>("hub-token");
-const insecureCheck = $<HTMLInputElement>("hub-insecure");
-const takeoverCheck = $<HTMLInputElement>("hub-takeover");
-const testBtn = $<HTMLButtonElement>("hub-test");
+// 设置面板中的元素，initHub 时取（设置面板由组件创建）
+let enabledCheck: HTMLInputElement;
+let addressInput: HTMLInputElement;
+let tokenInput: HTMLInputElement;
+let insecureCheck: HTMLInputElement;
+let takeoverCheck: HTMLInputElement;
+let testBtn: HTMLButtonElement;
 
 let deps: Deps;
 /** 凭据管理器中有已保存的 token（daemon 下发）；undefined 表示 daemon 版本较旧、不支持 hub */
@@ -93,6 +94,12 @@ export function hubAddressError(input: string, allowInsecure: boolean): string |
 }
 
 export function initHub(d: Deps) {
+  enabledCheck = $("hub-enabled");
+  addressInput = $("hub-address");
+  tokenInput = $("hub-token");
+  insecureCheck = $("hub-insecure");
+  takeoverCheck = $("hub-takeover");
+  testBtn = $("hub-test");
   deps = d;
   for (const el of [enabledCheck, addressInput, insecureCheck]) el.addEventListener("input", validate);
   tokenInput.addEventListener("input", renderToken);
