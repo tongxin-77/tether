@@ -4,6 +4,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-26
+
+### ✨ Added
+
+- **Sessions grouped by workspace**
+  - Local sessions are grouped by git repository, with sessions in subfolders showing their relative path; sessions outside a repository are grouped by folder; SSH sessions are grouped by host and remote repository
+  - Group headers show project name, host, branch, a status summary and the change count; groups can be collapsed (kept across restarts), and `+` opens a new session in that workspace
+  - `Ctrl+Shift+K` filters sessions by name, path or host
+- **Changes panel** (`Ctrl+Shift+J`, or click the change stats in the card header)
+  - "Uncommitted" lists changed files with added/removed lines and totals, plus a diff with old/new line numbers; untracked files are marked "new"
+  - "Commits" lists recent commits, with the files and diff of each commit
+  - Switch to other workspaces; `↑` `↓` select files, `Enter` previews, `Esc` closes; the panel height is resizable and remembered
+  - Also works for SSH sessions (requires the new background service); commit details are not yet available for remote sessions
+- **Always-visible change stats in the card header**: shows "N files +added −removed" and refreshes after each Claude turn
+- **Session names use the Claude conversation title**
+  - Taken from the `/rename` title, the auto-generated title, the summary, or the first message, in that order; sessions renamed in Tether keep their name
+  - Hover to see the original name; the hub web page shows the same name
+- **`Ctrl+A` selects the input box in Claude sessions**
+  - `Ctrl+C` copies the selection; when Claude is idle, `Backspace` / `Delete` clears the input box
+- **Editable address bar in the Files panel**
+  - Click to type a path and press `Enter` to go there; supports `~`, relative paths and quoted paths; a file path opens its folder and selects the file
+  - Selecting a folder shows its path in the address bar; right-click "Open folder" or press `Enter` to enter it
+- **README in English, Traditional Chinese and Japanese**
+
+### 🔧 Changed
+
+- **Title bar, brand and session info merged into a single top bar; compact single-line sessions in the sidebar**
+  - The session name above the terminal is gone, giving the terminal more room
+  - The close button appears on hover, memory and takeover become small tags at the end of the row, and unread session names are bold
+  - Host info moved below the Files panel
+- **An update dialog opens at startup when a new version is available**, instead of only a badge in the sidebar
+- **The UI is split into independent components**, preparing for adjustable panel layouts
+- **`Esc` closes open menus and panels first**
+
+### 🐛 Fixed
+
+- **No longer stuck on "Thinking" after interrupting Claude with `Esc`**
+- **Idle teammates no longer count toward "background"** (the similar fix in 0.5.9 never took effect for teammates)
+
 ## [0.6.0] - 2026-11-23
 
 ### ✨ Added
@@ -246,7 +285,8 @@ First release.
 
 - Multi-session terminal whose sessions are held by the background service `tetherd`, with notifications, Claude Code integration, SSH remote sessions, a file tree with transfers and Markdown preview, and detachable session windows.
 
-[Unreleased]: https://github.com/tongxin-77/tether/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tongxin-77/tether/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/tongxin-77/tether/releases/tag/v0.7.0
 [0.6.0]: https://github.com/tongxin-77/tether/releases/tag/v0.6.0
 [0.5.9]: https://github.com/tongxin-77/tether/releases/tag/v0.5.9
 [0.5.8]: https://github.com/tongxin-77/tether/releases/tag/v0.5.8
