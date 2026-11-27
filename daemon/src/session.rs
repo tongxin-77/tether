@@ -218,6 +218,7 @@ impl State {
         self.send(&ServerMsg::Sessions { sessions });
         // hub 常驻连接据此防抖上报（未启用时无人等待，只留一个许可）
         self.hub.changed.notify_one();
+        self.hub.git_changed.notify_one();
     }
 
     pub fn push_recent(&self) {
@@ -651,6 +652,11 @@ fn claude_gone(missing: &mut u8, running: bool, present: bool) -> bool {
 /// 未退出的会话正在运行的 Claude 对话 id（hub 网页列 Claude 历史时标记 open，同桌面端）
 pub fn claude_sessions(st: &State) -> HashSet<String> {
     st.sessions.values().filter(|s| s.info.status != Status::Exited).filter_map(|s| s.resume.as_ref().map(|r| r.id.clone())).collect()
+}
+
+/// 会话的文件后端（本地 / SSH 连接），hub 变更面板据此决定在哪里运行 git；会话不存在为 None
+pub fn fs_backend(st: &State, id: u32) -> Option<fs::Backend> {
+    st.sessions.get(&id).map(|s| s.fs.clone())
 }
 
 /// 本地会话（非 SSH）；会话不存在为 false

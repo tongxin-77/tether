@@ -8,7 +8,13 @@ use std::{
     time::Duration,
 };
 
-use proto::{ClientMsg, ServerMsg};
+use proto::{
+    ClientMsg, ServerMsg,
+    git::{self, find_head},
+};
+/// 已移到 proto::git，测试仍在本文件
+#[cfg(test)]
+use git::{DIFF_LIMIT, parse_gitdir, parse_head, valid_hash};
 
 #[macro_use]
 mod i18n;
@@ -187,90 +193,27 @@ fn find_branch(dir: &std::path::Path) -> Option<String> {
     find_head(dir).map(|(_, branch)| branch)
 }
 
-/// 从 dir 向上查找 `.git`（目录或 worktree / submodule 的 gitdir 文件），读其 HEAD 解析分支；返回 (`.git` 所在目录即仓库根, 分支)
-fn find_head(dir: &std::path::Path) -> Option<(std::path::PathBuf, String)> {
-    let root = dir.ancestors().find(|d| d.join(".git").exists())?;
-    let dot = root.join(".git");
-    let git_dir = if dot.is_dir() { dot } else { parse_gitdir(&std::fs::read_to_string(&dot).ok()?, root)? };
-    Some((root.to_path_buf(), parse_head(&std::fs::read_to_string(git_dir.join("HEAD")).ok()?)?))
-}
-
-/// HEAD 内容：`ref: refs/heads/<name>` 为分支名；十六进制提交哈希为分离 HEAD，取前 7 位；其它为 None
-fn parse_head(content: &str) -> Option<String> {
-    let s = content.trim();
-    if let Some(name) = s.strip_prefix("ref: refs/heads/") {
-        return (!name.is_empty()).then(|| name.to_string());
-    }
-    (s.len() >= 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| s[..7].to_string())
-}
-
-/// `.git` 文件内容 `gitdir: <path>`；相对路径相对于该文件所在目录 base 解析
-fn parse_gitdir(content: &str, base: &std::path::Path) -> Option<std::path::PathBuf> {
-    let path = content.trim().strip_prefix("gitdir:")?.trim();
-    // join 遇到绝对路径时直接取该路径
-    (!path.is_empty()).then(|| base.join(path))
-}
-
 // ---------------- git 操作（调用 git 进程） ----------------
 
-/// 不为控制台子进程创建窗口（避免调用 git 时闪黑窗）
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// 提交详情 diff 的字节上限，超出截断
-const DIFF_LIMIT: usize = 512 * 1024;
-
-/// 在 dir 下运行 git：参数逐个作为 argv 传入，不经 shell。成功返回 (stdout, 是否截断)，失败返回 git 的错误输出。
-/// limit 为 Some 时 stdout 最多读这么多字节（截到最后一个换行），超出即结束 git；ok 为额外视作成功的退出码（如 diff --no-index 有差异时的 1）。
-/// 一律带 --no-optional-locks：后台查询不抢 index.lock，不与终端里的 git 冲突
+/// 在 dir 下运行 git（proto::git::run），错误按本进程的词条表翻译
 fn run_git(dir: &str, args: &[&str], limit: Option<usize>, ok: &[i32]) -> Result<(String, bool), String> {
-    use std::{io::Read, process::Stdio};
-    if !std::path::Path::new(dir).is_dir() {
-        return Err(tr!("git.dir_not_found", dir = dir));
+    git::run(dir, args, limit, ok).map_err(git_error)
+}
+
+fn git_error(e: git::Error) -> String {
+    match e {
+        git::Error::DirNotFound(dir) => tr!("git.dir_not_found", dir = dir),
+        git::Error::NotInstalled => tr!("git.not_found"),
+        git::Error::Run(error) => tr!("git.run_failed", error = error),
+        git::Error::Exit(status) => tr!("git.exit_failed", status = status),
+        git::Error::Git(err) => err,
+        git::Error::BadHash(hash) => tr!("git.bad_hash", hash = hash),
     }
-    let mut child = Command::new("git")
-        // 路径中的非 ASCII 字符不转义
-        .args(["--no-optional-locks", "-c", "core.quotepath=false"])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| if e.kind() == ErrorKind::NotFound { tr!("git.not_found") } else { tr!("git.run_failed", error = e) })?;
-    // stderr 另起线程读，避免两个管道互相写满阻塞
-    let mut stderr = child.stderr.take().unwrap();
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
-    });
-    let mut out = Vec::new();
-    let max = limit.map_or(u64::MAX, |n| n as u64 + 1);
-    child.stdout.take().unwrap().take(max).read_to_end(&mut out).map_err(|e| e.to_string())?;
-    let truncated = limit.is_some_and(|n| out.len() > n);
-    if truncated {
-        let _ = child.kill();
-        out.truncate(out.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1).min(limit.unwrap()));
-    }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    let err = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).trim().to_string();
-    // 允许的退出码也可能是出错（如 diff --no-index 找不到文件同样退出 1）：没有输出且有错误输出时按失败处理
-    let allowed = status.code().is_some_and(|c| ok.contains(&c)) && !(out.is_empty() && !err.is_empty());
-    if !truncated && !status.success() && !allowed {
-        return Err(if err.is_empty() { tr!("git.exit_failed", status = status) } else { err });
-    }
-    Ok((String::from_utf8_lossy(&out).into_owned(), truncated))
 }
 
 /// 分支名参数：非空、不以 - 开头（防止被当成选项）、不含空白与控制字符
 fn valid_ref_arg(s: &str) -> bool {
     !s.is_empty() && !s.starts_with('-') && !s.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-/// 提交哈希：4 ~ 64 位十六进制
-fn valid_hash(s: &str) -> bool {
-    (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// 本地与远程分支，每行 `<*| > refs/...`（* 为当前分支）
@@ -294,42 +237,19 @@ fn log_graph(dir: &str, limit: u32) -> Result<String, String> {
     run_git(dir, &args, None, &[]).map(|r| r.0)
 }
 
-/// 提交改动：(numstat, diff, diff 是否截断)。合并提交按第一父提交比较；不调用外部 diff / textconv 程序
+/// 提交改动：(numstat, diff, diff 是否截断)
 fn show_commit(dir: &str, hash: &str) -> Result<(String, String, bool), String> {
-    if !valid_hash(hash) {
-        return Err(tr!("git.bad_hash", hash = hash));
-    }
-    let base = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv", "--diff-merges=first-parent"];
-    let numstat = run_git(dir, &[&base[..], &["--numstat", hash, "--"]].concat(), None, &[])?.0;
-    let (diff, truncated) = run_git(dir, &[&base[..], &["--patch", hash, "--"]].concat(), Some(DIFF_LIMIT), &[])?;
-    Ok((numstat, diff, truncated))
+    git::show_commit(dir, hash).map_err(git_error)
 }
 
-/// 最近提交的格式（与 daemon 远程脚本一致）：完整哈希、短哈希、refs 装饰、作者、作者时间（秒）、标题，以 \x1f 分隔
-const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%D%x1f%an%x1f%at%x1f%s";
-
-/// 未提交改动（status + numstat）与最近 log_n 个提交的原始输出，由 GUI 解析。
-/// 空仓库（还没有提交）numstat 改比暂存区、log 为空
+/// 未提交改动（status + numstat）与最近 log_n 个提交的原始输出，由 GUI 解析
 fn changes(dir: &str, log_n: u32) -> Result<proto::GitChanges, String> {
-    let status = run_git(dir, &["status", "--porcelain=v2", "-z", "--branch", "-unormal"], None, &[])?.0;
-    let initial = status.starts_with("# branch.oid (initial)\0");
-    let base = if initial { "--cached" } else { "HEAD" };
-    let numstat = run_git(dir, &["diff", "--numstat", "-z", base, "--"], None, &[])?.0;
-    let n = format!("-n{log_n}");
-    let log = if initial { String::new() } else { run_git(dir, &["log", "--no-show-signature", &n, LOG_FORMAT, "--"], None, &[])?.0 };
-    let root = find_head(std::path::Path::new(dir)).map_or_else(|| dir.to_string(), |(r, _)| r.to_string_lossy().into_owned());
-    Ok(proto::GitChanges { root, status, numstat, log })
+    git::changes(dir, log_n).map_err(git_error)
 }
 
-/// 单个文件的 diff：(内容, 是否截断)。已跟踪文件比 HEAD（空仓库比暂存区）；untracked 与 /dev/null 比较（有差异时 git 退出码为 1）
+/// 单个文件的 diff：(内容, 是否截断)
 fn file_diff(dir: &str, path: &str, untracked: bool) -> Result<(String, bool), String> {
-    let base = ["diff", "--no-color", "--no-ext-diff"];
-    if untracked {
-        return run_git(dir, &[&base[..], &["--no-index", "--", "/dev/null", path]].concat(), Some(DIFF_LIMIT), &[1]);
-    }
-    // rev-parse --verify 找不到 HEAD 时退出码为 1、输出为空
-    let head = !run_git(dir, &["rev-parse", "-q", "--verify", "HEAD"], None, &[1])?.0.trim().is_empty();
-    run_git(dir, &[&base[..], &[if head { "HEAD" } else { "--cached" }, "--", path]].concat(), Some(DIFF_LIMIT), &[])
+    git::file_diff(dir, path, untracked).map_err(git_error)
 }
 
 /// 在后台线程执行阻塞的 git 调用，不占用异步运行时

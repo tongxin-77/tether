@@ -176,6 +176,9 @@ pub static TABLE: &[Entry] = &[
     ),
     ("git.status_failed", ["git status 执行失败（需要 git 2.11 及以上）", "git status failed (git 2.11 or later is required)", "git status 執行失敗（需要 git 2.11 以上）", "git status に失敗しました（git 2.11 以降が必要です）"]),
     ("git.failed", ["git 执行失败：{error}", "git failed: {error}", "git 執行失敗：{error}", "git の実行に失敗しました：{error}"]),
+    ("git.local_not_installed", ["本机未找到 git，请安装 Git 并加入 PATH", "git not found on this machine; install Git and add it to PATH", "本機找不到 git，請安裝 Git 並加入 PATH", "このマシンに git が見つかりません。Git をインストールして PATH に追加してください"]),
+    ("git.bad_hash", ["无效的提交哈希：{hash}", "Invalid commit hash: {hash}", "無效的提交雜湊：{hash}", "無効なコミット ハッシュ：{hash}"]),
+    ("git.bad_path", ["无效的文件路径：{path}", "Invalid file path: {path}", "無效的檔案路徑：{path}", "無効なファイル パス：{path}"]),
     // ---------------- SSH ----------------
     ("ssh.exec_failed", ["执行失败：{error}", "Command failed: {error}", "執行失敗：{error}", "実行に失敗しました：{error}"]),
     ("ssh.exec_timeout", ["远程命令 {secs} 秒内未完成", "Remote command did not finish within {secs} s", "遠端命令 {secs} 秒內未完成", "リモート コマンドが {secs} 秒以内に完了しませんでした"]),

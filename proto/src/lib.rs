@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 /// Claude Code 历史对话列表（GUI 的「恢复 Claude 对话…」与 hub 网页新建共用）
 pub mod claude_history;
 
+/// 本地 git 查询与输出解析（GUI 的变更面板与 daemon 的 hub 变更面板共用）
+pub mod git;
+
 /// 界面语言代码解析与词条表查找（daemon 与 GUI 进程各自的词条表共用）
 pub mod i18n;
 
@@ -423,7 +426,7 @@ pub struct HostStats {
     pub net_tx: Option<u64>,
 }
 
-/// 仓库未提交改动的原始 git 输出（GUI 解析）：本地由 Tauri 直接运行 git，远程由 daemon 在 SSH 连接上运行
+/// 仓库未提交改动的原始 git 输出（GUI 解析）：本地由 Tauri 直接运行 git（git::changes），远程由 daemon 在 SSH 连接上运行
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitChanges {

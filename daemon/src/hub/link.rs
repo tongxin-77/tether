@@ -40,7 +40,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 pub const MACHINE_ID_MAX: usize = 64;
 const NAME_MAX: usize = 256;
 /// 本机支持的能力位（hello.caps）：双方都声明的才使用；proto 仍为 2，旧 hub 不回 caps 即视为空集
-pub const CAPS: &[&str] = &["history", "image", "close", "create"];
+pub const CAPS: &[&str] = &["history", "image", "close", "create", "git"];
 
 /// 截断到 max 个字符以内（按 UTF-16 码元计，与 hub 端 JavaScript 的字符串长度一致，不切断代理对）
 pub fn truncate_chars(s: &str, max: usize) -> String {
@@ -248,6 +248,103 @@ pub enum Up {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    /// 工作区摘要（能力 git）：全量，内容变化时才发
+    Workspaces { workspaces: Vec<Workspace> },
+    /// 变更面板的按需请求结果（能力 git）；失败时 reason 为 disabled / not_found / bad_path / unsupported / error（message 为说明）
+    GitChangesResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(flatten)]
+        out: Option<GitChangesOut>,
+    },
+    GitDiffResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(flatten)]
+        out: Option<GitDiffOut>,
+    },
+    GitLogResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(flatten)]
+        out: Option<GitLogOut>,
+    },
+    GitShowResult {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(flatten)]
+        out: Option<GitShowOut>,
+    },
+}
+
+/// 工作区：git 仓库根（不是仓库时为启动目录）及其中的会话；SSH 会话另带主机
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
+    /// 当前分支（分离 HEAD 为提交前 7 位）；不是仓库或还没查到为 None
+    pub branch: Option<String>,
+    pub sessions: Vec<u32>,
+    /// 未提交改动的摘要；不是仓库或查询失败时省略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<ChangeSummary>,
+}
+
+/// 未提交的文件数（含未跟踪）与已跟踪文件的增删行数合计
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeSummary {
+    pub files: usize,
+    pub added: u64,
+    pub deleted: u64,
+}
+
+/// gitChangesResult：未提交改动（文件最多 1000 个，超出 truncated）
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChangesOut {
+    #[serde(flatten)]
+    pub set: proto::git::ChangeSet,
+    pub truncated: bool,
+}
+
+/// gitDiffResult：单文件 diff（最多 512 KB）
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiffOut {
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// gitLogResult：最近的提交
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitLogOut {
+    pub commits: Vec<proto::git::Commit>,
+}
+
+/// gitShowResult：提交的改动文件与 patch（最多 512 KB）
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitShowOut {
+    pub files: Vec<proto::git::FileStat>,
+    pub diff: String,
+    pub truncated: bool,
 }
 
 /// createOptionsResult 的最近目录：remote 带主机 id 与当前显示名
@@ -336,6 +433,17 @@ pub enum Down {
         #[serde(default)]
         rows: Option<u16>,
     },
+    /// 变更面板（能力 git）：以会话指定工作区，daemon 分别回 gitChangesResult / gitDiffResult / gitLogResult / gitShowResult
+    GitChanges { request_id: String, session_id: u32 },
+    GitDiff {
+        request_id: String,
+        session_id: u32,
+        path: String,
+        #[serde(default)]
+        untracked: bool,
+    },
+    GitLog { request_id: String, session_id: u32 },
+    GitShow { request_id: String, session_id: u32, hash: String },
     #[serde(other)]
     Unknown,
 }
@@ -694,7 +802,11 @@ async fn serve(mut ws: Ws, link: &Link, caps: Vec<String>) -> Failure {
                         | Down::Close { .. }
                         | Down::CreateOptions { .. }
                         | Down::ClaudeHistory { .. }
-                        | Down::Create { .. }),
+                        | Down::Create { .. }
+                        | Down::GitChanges { .. }
+                        | Down::GitDiff { .. }
+                        | Down::GitLog { .. }
+                        | Down::GitShow { .. }),
                     )) => (link.down)(msg),
                     Ok(_) => {}
                     Err(f) => return f,
@@ -810,7 +922,7 @@ mod tests {
         let hello = hello("9f1c".into(), "DEV-PC", "0.4.0");
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
-            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0","caps":["history","image","close","create"]}"#
+            r#"{"type":"hello","proto":2,"machineId":"9f1c","machineName":"DEV-PC","version":"0.4.0","caps":["history","image","close","create","git"]}"#
         );
         // 旧版 hello（无 caps）解析为空集
         let old: Up = serde_json::from_str(r#"{"type":"hello","proto":2,"machineId":"m","machineName":"n","version":"v"}"#).unwrap();
@@ -905,6 +1017,31 @@ mod tests {
             serde_json::to_string(&up).unwrap(),
             r#"{"type":"closeResult","sessionId":3,"requestId":"r1","ok":false,"reason":"disabled"}"#
         );
+    }
+
+    #[test]
+    fn git_wire_format() {
+        let d: Down = serde_json::from_str(r#"{"type":"gitChanges","requestId":"r1","sessionId":3}"#).unwrap();
+        assert_eq!(d, Down::GitChanges { request_id: "r1".into(), session_id: 3 });
+        // untracked 可省略
+        let d: Down = serde_json::from_str(r#"{"type":"gitDiff","requestId":"r2","sessionId":3,"path":"a b.txt"}"#).unwrap();
+        assert_eq!(d, Down::GitDiff { request_id: "r2".into(), session_id: 3, path: "a b.txt".into(), untracked: false });
+        let d: Down = serde_json::from_str(r#"{"type":"gitShow","requestId":"r3","sessionId":3,"hash":"abc1"}"#).unwrap();
+        assert_eq!(d, Down::GitShow { request_id: "r3".into(), session_id: 3, hash: "abc1".into() });
+        let d: Down = serde_json::from_str(r#"{"type":"gitLog","requestId":"r4","sessionId":3}"#).unwrap();
+        assert_eq!(d, Down::GitLog { request_id: "r4".into(), session_id: 3 });
+
+        let ws = Workspace { root: "/srv/a".into(), host: Some("dev".into()), host_id: Some("h1".into()), branch: None, sessions: vec![1, 2], changes: None };
+        let local = Workspace { root: r"C:\a".into(), host: None, host_id: None, branch: Some("main".into()), sessions: vec![3], changes: Some(ChangeSummary { files: 2, added: 5, deleted: 1 }) };
+        assert_eq!(
+            serde_json::to_value(Up::Workspaces { workspaces: vec![ws, local] }).unwrap(),
+            serde_json::json!({ "type": "workspaces", "workspaces": [
+                { "root": "/srv/a", "host": "dev", "hostId": "h1", "branch": null, "sessions": [1, 2] },
+                { "root": r"C:\a", "branch": "main", "sessions": [3], "changes": { "files": 2, "added": 5, "deleted": 1 } },
+            ] })
+        );
+        let up = Up::GitLogResult { request_id: "r4".into(), ok: false, reason: Some("error".into()), message: Some("x".into()), out: None };
+        assert_eq!(serde_json::to_value(up).unwrap(), serde_json::json!({ "type": "gitLogResult", "requestId": "r4", "ok": false, "reason": "error", "message": "x" }));
     }
 
     #[test]

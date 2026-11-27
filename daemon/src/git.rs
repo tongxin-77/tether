@@ -1,4 +1,4 @@
-//! 远程会话的 git 查询（本地会话由 Tauri 直接运行 git）：在会话所属的已有 SSH 连接上开一个 exec channel，
+//! 远程会话的 git 查询（本地会话由 Tauri / hub 变更面板经 proto::git 直接运行 git）：在会话所属的已有 SSH 连接上开一个 exec channel，
 //! 一段 sh 脚本跑完全部命令，各段以 `@名称` 行分隔。
 //!
 //! 引号：脚本单行、不含单引号 / 反斜杠 / `!`，经 `sh -c '<脚本>' sh <参数…>` 运行，目录等参数以 `"$1"` 引用、
@@ -54,7 +54,8 @@ pub async fn run(state: Shared, req_id: u64, backend: fs::Backend, op: GitOp) {
     state.lock().unwrap().send(&ServerMsg::Git { req_id, out, error });
 }
 
-async fn remote(conn: &Conn, op: &GitOp) -> Result<GitOut, String> {
+/// 在远程会话的 SSH 连接上执行（GUI 的 ClientMsg::Git 与 hub 的变更面板共用）
+pub async fn remote(conn: &Conn, op: &GitOp) -> Result<GitOut, String> {
     let (cmd, limit) = command(op);
     let (out, truncated) = ssh::exec(conn, &cmd, Some(limit), TIMEOUT).await?;
     match op {
@@ -98,14 +99,7 @@ pub fn parse_changes(out: &str, dir: &str) -> Result<GitChanges, String> {
     let rest = &out[start..];
     let Some(i) = rest.find("\n@status\n") else {
         // rev-parse 失败：@root 段为 git 的错误输出
-        let err = rest.trim();
-        return Err(if err.contains("dubious ownership") {
-            tr!("git.unsafe_dir", dir = dir)
-        } else if err.contains("not a git repository") {
-            tr!("git.not_repo", dir = dir)
-        } else {
-            tr!("git.failed", error = err)
-        });
+        return Err(git_error(rest.trim(), dir));
     };
     let root = rest[..i].trim().to_string();
     let rest = &rest[i + "\n@status\n".len()..];
@@ -116,6 +110,29 @@ pub fn parse_changes(out: &str, dir: &str) -> Result<GitChanges, String> {
     let (status, rest) = rest.split_once("\n@numstat\n").unwrap_or((rest, ""));
     let (numstat, log) = rest.split_once("\n@log\n").unwrap_or((rest, ""));
     Ok(GitChanges { root, status: status.into(), numstat: numstat.into(), log: log.into() })
+}
+
+/// git 的错误输出 → 说明：safe.directory、不是仓库单独说明
+fn git_error(err: &str, dir: &str) -> String {
+    if err.contains("dubious ownership") {
+        tr!("git.unsafe_dir", dir = dir)
+    } else if err.contains("not a git repository") {
+        tr!("git.not_repo", dir = dir)
+    } else {
+        tr!("git.failed", error = err)
+    }
+}
+
+/// 本地 git（proto::git，hub 变更面板用）的错误 → 说明；dir 为运行 git 的目录
+pub fn local_error(e: proto::git::Error, dir: &str) -> String {
+    use proto::git::Error;
+    match e {
+        Error::DirNotFound(d) => tr!("common.dir_not_found", dir = d),
+        Error::NotInstalled => tr!("git.local_not_installed"),
+        Error::Run(error) | Error::Exit(error) => tr!("git.failed", error = error),
+        Error::Git(err) => git_error(&err, dir),
+        Error::BadHash(hash) => tr!("git.bad_hash", hash = hash),
+    }
 }
 
 /// 解析单文件 diff 脚本的输出

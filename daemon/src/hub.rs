@@ -2,6 +2,7 @@
 //! 设置允许时处理 hub 的远程接管（协议第 6 节）。
 //! 默认关闭；未启用 / 未配置 / 连接失败时不影响 daemon 其它功能（连接在独立异步任务中，失败只体现在 HubStatus）。
 
+mod changes;
 mod link;
 
 use std::{
@@ -49,6 +50,10 @@ pub struct Hub {
     caps: HashSet<String>,
     /// 组装中的网页贴图：uploadId → 上传
     uploads: HashMap<String, Upload>,
+    /// 会话列表变化通知（同 changed），工作区摘要任务据此重算
+    pub git_changed: Arc<Notify>,
+    /// 工作区摘要的常驻上报任务（双方都有 git 时随连接启动，断开 / 重建时中止）
+    git_task: Option<AbortHandle>,
 }
 
 /// 组装中的网页贴图
@@ -102,6 +107,7 @@ pub fn restart(state: &Shared, st: &mut State) {
     st.hub.tx = None;
     st.hub.caps.clear();
     st.hub.uploads.clear();
+    stop_git(st);
     release_all(st, None);
     st.hub.generation += 1;
     let generation = st.hub.generation;
@@ -128,6 +134,12 @@ pub fn restart(state: &Shared, st: &mut State) {
     st.hub.task = Some(task.abort_handle());
 }
 
+fn stop_git(st: &mut State) {
+    if let Some(task) = st.hub.git_task.take() {
+        task.abort();
+    }
+}
+
 /// 上报给 hub 的会话列表：name 换成显示名（hub 网页只认 name，不能改名，与桌面端显示一致）
 fn sessions(st: &State) -> Vec<proto::SessionInfo> {
     st.sessions.values().map(|s| proto::SessionInfo { name: s.info.display_name().to_string(), ..s.info.clone() }).collect()
@@ -151,6 +163,12 @@ fn make_link(shared: &Shared, generation: u64, endpoint: link::Endpoint, token: 
                 // 只保留双方都声明的能力（未知能力名忽略）
                 st.hub.caps = caps.unwrap_or_default().into_iter().filter(|c| link::CAPS.contains(&c.as_str())).collect();
                 st.hub.uploads.clear();
+                // 工作区摘要：双方都有 git 时随连接上报，断开即停
+                stop_git(&mut st);
+                if st.hub.tx.is_some() && st.hub.caps.contains("git") {
+                    let task = tokio::spawn(changes::report(conn_state.clone(), st.hub.git_changed.clone()));
+                    st.hub.git_task = Some(task.abort_handle());
+                }
                 release_all(&mut st, None);
             }
         }),
@@ -324,6 +342,10 @@ fn on_down(shared: &Shared, st: &mut State, msg: link::Down) {
                 };
                 shared.lock().unwrap().hub.up(msg);
             });
+        }
+        // 变更面板（能力 git）：复用允许接管开关，结果异步回复
+        msg @ (link::Down::GitChanges { .. } | link::Down::GitDiff { .. } | link::Down::GitLog { .. } | link::Down::GitShow { .. }) => {
+            changes::request(shared, st, msg);
         }
         // 网页新建会话：与桌面端新建相同的路径，但不发 Activate（桌面端不切换）、失败不向 GUI 报错；SSH 不弹任何提示
         link::Down::Create { request_id, target, resume, cols, rows } => {
@@ -854,6 +876,126 @@ mod tests {
         task.abort();
     }
 
+    /// 测试仓库里执行 git（固定作者、关闭签名），失败即 panic
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// 下一条指定类型的上行消息（跳过其它类型）
+    async fn recv_type(ws: &mut Ws, ty: &str) -> Value {
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.expect("等待上行消息超时").unwrap().unwrap();
+            let Message::Text(text) = msg else { continue };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            if v["type"] == ty {
+                return v;
+            }
+        }
+    }
+
+    /// 能力 git 端到端：真实 git 仓库里的本地会话 → workspaces 摘要（仓库根、分支、改动数）、gitChanges /
+    /// gitDiff（已跟踪、未跟踪、越界路径）/ gitLog / gitShow、会话不存在、SSH 会话不支持提交详情、未开启接管 disabled、改动变化后重新上报
+    #[tokio::test]
+    async fn git_end_to_end() {
+        if !std::process::Command::new("git").arg("--version").output().is_ok_and(|o| o.status.success()) {
+            eprintln!("跳过：未安装 git");
+            return;
+        }
+        let repo = std::env::temp_dir().join(format!("tether-hub-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "1\n2\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "first"]);
+        let hash = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(repo.join("a.txt"), "1\n3\n4\n").unwrap();
+        std::fs::write(repo.join("sub").join("new.txt"), "n\n").unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared: Shared = Arc::new(Mutex::new(State::default()));
+        {
+            let mut st = shared.lock().unwrap();
+            st.config.shell = "cmd.exe".into();
+            st.config.hub.allow_takeover = true;
+        }
+        // 启动目录在仓库子目录：工作区为仓库根
+        let cwd = repo.join("sub").display().to_string();
+        let id = session::create_local(&shared, None, cwd, 80, 24, None).unwrap();
+        let changed = shared.lock().unwrap().hub.changed.clone();
+        let endpoint = link::parse_address(&format!("ws://127.0.0.1:{port}"), true).unwrap();
+        let hello = link::hello("mid".into(), "PC", "0.0.1");
+        let task = tokio::spawn(link::run(make_link(&shared, 0, endpoint, Secret("t".into()), hello, changed)));
+        let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
+        assert!(recv(&mut ws).await["caps"].as_array().unwrap().contains(&json!("git")));
+        send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.7.0", "caps": ["git"] })).await;
+
+        let w = recv_type(&mut ws, "workspaces").await;
+        let root = repo.display().to_string();
+        assert_eq!(w["workspaces"], json!([{ "root": root, "branch": "main", "sessions": [id], "changes": { "files": 2, "added": 2, "deleted": 1 } }]));
+
+        send(&mut ws, json!({ "type": "gitChanges", "requestId": "c1", "sessionId": id })).await;
+        let r = recv_type(&mut ws, "gitChangesResult").await;
+        assert_eq!((r["requestId"].as_str(), r["ok"].as_bool(), r["root"].as_str(), r["branch"].as_str()), (Some("c1"), Some(true), Some(root.as_str()), Some("main")));
+        assert_eq!(r["files"], json!([{ "path": "a.txt", "kind": "modified", "add": 2, "del": 1 }, { "path": "sub/", "kind": "untracked", "add": null, "del": null }]));
+        assert_eq!((r["added"].as_u64(), r["deleted"].as_u64(), r["truncated"].as_bool()), (Some(2), Some(1), Some(false)));
+
+        send(&mut ws, json!({ "type": "gitDiff", "requestId": "d1", "sessionId": id, "path": "a.txt" })).await;
+        let r = recv_type(&mut ws, "gitDiffResult").await;
+        assert!(r["ok"].as_bool().unwrap() && r["text"].as_str().unwrap().contains("+4"), "{r}");
+        send(&mut ws, json!({ "type": "gitDiff", "requestId": "d2", "sessionId": id, "path": "sub/new.txt", "untracked": true })).await;
+        let r = recv_type(&mut ws, "gitDiffResult").await;
+        assert!(r["text"].as_str().unwrap().contains("+n"), "{r}");
+        for (i, p) in ["../x", r"C:\Windows\win.ini", ""].iter().enumerate() {
+            send(&mut ws, json!({ "type": "gitDiff", "requestId": format!("b{i}"), "sessionId": id, "path": p, "untracked": true })).await;
+            let r = recv_type(&mut ws, "gitDiffResult").await;
+            assert_eq!((r["ok"].as_bool(), r["reason"].as_str()), (Some(false), Some("bad_path")), "{p}");
+        }
+
+        send(&mut ws, json!({ "type": "gitLog", "requestId": "l1", "sessionId": id })).await;
+        let r = recv_type(&mut ws, "gitLogResult").await;
+        assert_eq!(r["commits"].as_array().unwrap().len(), 1);
+        assert_eq!((r["commits"][0]["hash"].as_str(), r["commits"][0]["subject"].as_str()), (Some(hash.as_str()), Some("first")));
+        assert!(r["commits"][0]["refs"].as_array().unwrap().contains(&json!("HEAD -> main")));
+
+        send(&mut ws, json!({ "type": "gitShow", "requestId": "s1", "sessionId": id, "hash": hash })).await;
+        let r = recv_type(&mut ws, "gitShowResult").await;
+        assert_eq!(r["files"], json!([{ "path": "a.txt", "add": 2, "del": 0 }]));
+        assert!(r["diff"].as_str().unwrap().contains("+2") && r["truncated"] == json!(false), "{r}");
+        send(&mut ws, json!({ "type": "gitShow", "requestId": "s2", "sessionId": id, "hash": "--help" })).await;
+        let r = recv_type(&mut ws, "gitShowResult").await;
+        assert_eq!((r["ok"].as_bool(), r["reason"].as_str()), (Some(false), Some("error")));
+
+        // 会话不存在；SSH 会话不支持提交详情；关闭允许接管后 disabled
+        send(&mut ws, json!({ "type": "gitLog", "requestId": "l2", "sessionId": 9999 })).await;
+        assert_eq!(recv_type(&mut ws, "gitLogResult").await, json!({ "type": "gitLogResult", "requestId": "l2", "ok": false, "reason": "not_found" }));
+        shared.lock().unwrap().sessions.get_mut(&id).unwrap().info.host = Some("srv".into());
+        send(&mut ws, json!({ "type": "gitShow", "requestId": "s3", "sessionId": id, "hash": hash })).await;
+        assert_eq!(recv_type(&mut ws, "gitShowResult").await, json!({ "type": "gitShowResult", "requestId": "s3", "ok": false, "reason": "unsupported" }));
+        shared.lock().unwrap().sessions.get_mut(&id).unwrap().info.host = None;
+        shared.lock().unwrap().config.hub.allow_takeover = false;
+        send(&mut ws, json!({ "type": "gitChanges", "requestId": "c2", "sessionId": id })).await;
+        assert_eq!(recv_type(&mut ws, "gitChangesResult").await, json!({ "type": "gitChangesResult", "requestId": "c2", "ok": false, "reason": "disabled" }));
+
+        // 改动变化后（会话列表变化触发重算）重新上报
+        std::fs::remove_file(repo.join("sub").join("new.txt")).unwrap();
+        shared.lock().unwrap().push_sessions();
+        let w = recv_type(&mut ws, "workspaces").await;
+        assert_eq!(w["workspaces"][0]["changes"], json!({ "files": 1, "added": 2, "deleted": 1 }));
+
+        let removed = session::remove(&mut shared.lock().unwrap(), id);
+        std::thread::spawn(move || removed.unwrap().close()).join().unwrap();
+        task.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     #[test]
     fn recent_dirs_and_history_items() {
         let host = |id: &str, name: &str| proto::Host {
@@ -934,7 +1076,7 @@ mod tests {
 
         // 旧 hub：welcome 无 caps → attached 不带 history
         let mut ws = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
-        assert_eq!(recv(&mut ws).await["caps"], json!(["history", "image", "close", "create"]));
+        assert_eq!(recv(&mut ws).await["caps"], json!(["history", "image", "close", "create", "git"]));
         send(&mut ws, json!({ "type": "welcome", "proto": 2, "hubVersion": "0.3.0" })).await;
         send(&mut ws, json!({ "type": "attach", "sessionId": id })).await;
         let attached = recv(&mut ws).await;
