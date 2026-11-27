@@ -85,19 +85,6 @@ export function rowState(s: SessionInfo): RowState {
   return c === "thinking" || c === "background" || c === "done" ? c : "shell";
 }
 
-/** 组头的状态汇总：运行中（思考 / 后台）、待确认、已完成、shell；已退出的不计 */
-export function summarize(sessions: readonly SessionInfo[]) {
-  const n = { run: 0, wait: 0, done: 0, shell: 0 };
-  for (const s of sessions) {
-    const st = rowState(s);
-    if (st === "thinking" || st === "background") n.run++;
-    else if (st === "waiting") n.wait++;
-    else if (st === "done") n.done++;
-    else if (st === "shell") n.shell++;
-  }
-  return n;
-}
-
 /** 会话启动目录相对工作区目录的子路径（就是工作区目录本身或不在其下时为空串），按原始大小写返回 */
 export function relSubdir(cwd: string, dir: string): string {
   const c = normPath(cwd);
@@ -113,4 +100,49 @@ export function relSubdir(cwd: string, dir: string): string {
 export function matchSession(s: SessionInfo, query: string): boolean {
   const q = query.trim().toLowerCase();
   return !q || [s.name, s.claudeTitle ?? "", s.cwd, s.host ?? ""].some((v) => v.toLowerCase().includes(q));
+}
+
+/** 会话排序记录用的键。daemon 重启后按 sessions.json 重建会话、id 从头分配（文件不存 id），故不用 id，
+ *  改用重启后不变的「主机 id | 启动目录 | 名称」；相同的按 id 先后加 #1、#2… */
+export function sessionOrderKeys(sessions: readonly SessionInfo[]): Map<number, string> {
+  const seen = new Map<string, number>();
+  const keys = new Map<number, string>();
+  for (const s of [...sessions].sort((a, b) => a.id - b.id)) {
+    const base = `${s.hostId ?? s.host ?? ""}|${normPath(s.cwd)}|${s.name}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    keys.set(s.id, n ? `${base}#${n}` : base);
+  }
+  return keys;
+}
+
+/** 按记录的顺序排列：记录里有的按记录先后，没有的（新出现的）保持原相对顺序排在最后 */
+export function sortByOrder<T>(items: readonly T[], keyOf: (x: T) => string, order: readonly string[]): T[] {
+  const rank = new Map(order.map((k, i) => [k, i]));
+  return items
+    .map((x, i) => ({ x, r: rank.get(keyOf(x)) ?? order.length + i }))
+    .sort((a, b) => a.r - b.r)
+    .map((v) => v.x);
+}
+
+/** 写回记录前合并：去掉已消失的键，新出现的按 present 中的先后追加在后 */
+export function mergeOrder(order: readonly string[], present: readonly string[]): string[] {
+  const has = new Set(present);
+  const kept = order.filter((k) => has.has(k));
+  const known = new Set(kept);
+  return [...kept, ...present.filter((k) => !known.has(k))];
+}
+
+/** 把 key 移到 target 之前（after 时之后）；两者相同或有一个不在记录里时不变 */
+export function moveKey(order: readonly string[], key: string, target: string, after: boolean): string[] {
+  if (key === target || !order.includes(key) || !order.includes(target)) return [...order];
+  const rest = order.filter((k) => k !== key);
+  const i = rest.indexOf(target) + (after ? 1 : 0);
+  return [...rest.slice(0, i), key, ...rest.slice(i)];
+}
+
+/** 同一会话的键变了（改名等）：记录里的旧键换成新键，位置不变 */
+export function rekey(order: readonly string[], from: string, to: string): string[] {
+  if (!order.includes(from)) return [...order];
+  return order.filter((k) => k !== to).map((k) => (k === from ? to : k));
 }

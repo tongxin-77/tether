@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "./protocol";
-import { type GitHead, baseName, groupSessions, remoteRootKey, matchSession, normPath, relSubdir, rowState, summarize } from "./workspace";
+import { type GitHead, baseName, groupSessions, mergeOrder, moveKey, rekey, remoteRootKey, matchSession, normPath, relSubdir, rowState, sessionOrderKeys, sortByOrder } from "./workspace";
 
 let seq = 0;
 const s = (cwd: string, extra: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -85,7 +85,7 @@ describe("groupSessions", () => {
   });
 });
 
-describe("rowState / summarize", () => {
+describe("rowState", () => {
   it("按 Claude 状态与会话状态得出行状态", () => {
     expect(rowState(s("C:\\", { claude: { state: "thinking", at: 0 } }))).toBe("thinking");
     expect(rowState(s("C:\\", { claude: { state: "background", at: 0, count: 2 } }))).toBe("background");
@@ -97,17 +97,6 @@ describe("rowState / summarize", () => {
     expect(rowState(s("C:\\", { status: "exited", claude: { state: "thinking", at: 0 } }))).toBe("exited");
   });
 
-  it("汇总运行中、待确认、完成、shell，不计已退出", () => {
-    const list = [
-      s("C:\\", { claude: { state: "thinking", at: 0 } }),
-      s("C:\\", { claude: { state: "background", at: 0 } }),
-      s("C:\\", { claude: { state: "waiting", at: 0 } }),
-      s("C:\\", { claude: { state: "done", at: 0 } }),
-      s("C:\\"),
-      s("C:\\", { status: "exited" }),
-    ];
-    expect(summarize(list)).toEqual({ run: 2, wait: 1, done: 1, shell: 1 });
-  });
 });
 
 describe("relSubdir", () => {
@@ -145,5 +134,46 @@ describe("路径辅助与筛选", () => {
     expect(matchSession(a, "SRV")).toBe(true);
     expect(matchSession(a, "日志")).toBe(true);
     expect(matchSession(a, "tether")).toBe(false);
+  });
+});
+
+describe("侧栏排序", () => {
+  it("sessionOrderKeys：主机 | 目录 | 名称，与 id 无关；重名按 id 先后加 #n", () => {
+    const a = s("C:\\Work\\Tether\\", { id: 30, name: "pwsh" });
+    const b = s("c:/work/tether", { id: 12, name: "pwsh" });
+    const c = remote("h1", "prod", "/srv", { id: 5, name: "app" });
+    const k = sessionOrderKeys([a, b, c]);
+    expect(k.get(12)).toBe("|c:\\work\\tether|pwsh");
+    expect(k.get(30)).toBe("|c:\\work\\tether|pwsh#1");
+    expect(k.get(5)).toBe("h1|/srv|app");
+    // daemon 重启后 id 重新分配，相对先后不变 → 键不变
+    const k2 = sessionOrderKeys([{ ...a, id: 2 }, { ...b, id: 1 }, { ...c, id: 3 }]);
+    expect([k2.get(1), k2.get(2), k2.get(3)]).toEqual([k.get(12), k.get(30), k.get(5)]);
+  });
+
+  it("sortByOrder：按记录排列，新条目保持原相对顺序排在最后", () => {
+    expect(sortByOrder(["a", "b", "c", "d"], (x) => x, ["c", "a"])).toEqual(["c", "a", "b", "d"]);
+    expect(sortByOrder(["a", "b"], (x) => x, [])).toEqual(["a", "b"]);
+    // 记录里已消失的键不影响排列
+    expect(sortByOrder(["b", "a"], (x) => x, ["gone", "a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("mergeOrder：清理消失的键，追加新键", () => {
+    expect(mergeOrder(["c", "gone", "a"], ["a", "b", "c", "d"])).toEqual(["c", "a", "b", "d"]);
+    expect(mergeOrder([], ["x", "y"])).toEqual(["x", "y"]);
+  });
+
+  it("moveKey：移到目标之前 / 之后", () => {
+    expect(moveKey(["a", "b", "c", "d"], "d", "b", false)).toEqual(["a", "d", "b", "c"]);
+    expect(moveKey(["a", "b", "c", "d"], "a", "c", true)).toEqual(["b", "c", "a", "d"]);
+    expect(moveKey(["a", "b", "c"], "a", "c", false)).toEqual(["b", "a", "c"]);
+    expect(moveKey(["a", "b"], "a", "a", true)).toEqual(["a", "b"]);
+    expect(moveKey(["a", "b"], "x", "a", false)).toEqual(["a", "b"]);
+  });
+
+  it("rekey：旧键原位换成新键，去掉重复的新键", () => {
+    expect(rekey(["a", "b", "c"], "b", "B")).toEqual(["a", "B", "c"]);
+    expect(rekey(["a#1", "x", "a"], "a#1", "a")).toEqual(["a", "x"]);
+    expect(rekey(["a", "b"], "gone", "b")).toEqual(["a", "b"]);
   });
 });
