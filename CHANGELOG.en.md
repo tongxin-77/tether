@@ -4,6 +4,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-27
+
+### ✨ Added
+
+- **Resizable sidebar**
+  - Drag the gap between the sidebar and the terminal to change its width; the width is remembered
+- **Drag to reorder sessions and groups**
+  - Drag a session within its group, or drag a group header to reorder groups; the order is kept across restarts
+  - Dragging outside the window still opens the session in a separate window
+- **Workspace grouping and changes in the hub web page** (requires the matching new tether-hub)
+  - The web page groups by machine › workspace › session, with the same changes panel as the desktop app
+  - Respects the "Allow takeover" switch; commit details are not yet available for SSH sessions
+
+### 🔧 Changed
+
+- **Roomier sidebar and simpler group headers**
+  - Wider default width, taller rows and more spacing between groups
+  - Group headers keep only the project name, SSH host and the new-session button; branch and change count move to the header tooltip
+- **Session memory moved to the hover tooltip**, marked "(high)" when it is high
+- **The thinking status dot now uses an expanding halo animation**
+
+### 🐛 Fixed
+
+- **Status text at the end of sidebar rows is colored again**, and the background state has its own color
+
 ## [0.7.0] - 2026-11-26
 
 ### ✨ Added
@@ -285,7 +310,8 @@ First release.
 
 - Multi-session terminal whose sessions are held by the background service `tetherd`, with notifications, Claude Code integration, SSH remote sessions, a file tree with transfers and Markdown preview, and detachable session windows.
 
-[Unreleased]: https://github.com/tongxin-77/tether/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/tongxin-77/tether/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/tongxin-77/tether/releases/tag/v0.7.1
 [0.7.0]: https://github.com/tongxin-77/tether/releases/tag/v0.7.0
 [0.6.0]: https://github.com/tongxin-77/tether/releases/tag/v0.6.0
 [0.5.9]: https://github.com/tongxin-77/tether/releases/tag/v0.5.9
